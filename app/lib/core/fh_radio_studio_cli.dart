@@ -277,7 +277,7 @@ class FhRadioStudioCli {
     final err = StringBuffer();
 
     final outDone = process.stdout
-        .transform(utf8.decoder)
+        .transform(const Utf8Decoder(allowMalformed: true))
         .transform(const LineSplitter())
         .listen((line) {
           out.writeln(line);
@@ -286,7 +286,7 @@ class FhRadioStudioCli {
         .asFuture<void>();
 
     final errDone = process.stderr
-        .transform(utf8.decoder)
+        .transform(const Utf8Decoder(allowMalformed: true))
         .transform(const LineSplitter())
         .listen((line) {
           if (line.trim().isEmpty) return;
@@ -578,6 +578,8 @@ class UvRuntime {
       'UV_PROJECT_ENVIRONMENT': profileEnvironment,
       'UV_CACHE_DIR': activeCacheDir,
       'UV_MANAGED_PYTHON': 'true',
+      'PYTHONUTF8': '1',
+      'PYTHONIOENCODING': 'utf-8',
       if (offline && !allowNetwork) 'UV_OFFLINE': 'true',
       if (noIndex) 'UV_NO_INDEX': 'true',
       if (noPythonDownloads) 'UV_PYTHON_DOWNLOADS': 'never',

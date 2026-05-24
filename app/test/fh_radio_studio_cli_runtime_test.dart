@@ -44,6 +44,8 @@ void main() {
     );
     expect(runtime.environment['UV_CACHE_DIR'], runtime.cacheDir);
     expect(runtime.environment['UV_MANAGED_PYTHON'], 'true');
+    expect(runtime.environment['PYTHONUTF8'], '1');
+    expect(runtime.environment['PYTHONIOENCODING'], 'utf-8');
     expect(
       runtime.environmentForProfile('local-heavy')['UV_PROJECT_ENVIRONMENT'],
       runtime.projectEnvironmentForProfile('local-heavy'),
@@ -230,6 +232,66 @@ void main() {
       result.stderr.trim().split('\n').where((line) => line.trim().isEmpty),
       isEmpty,
     );
+  });
+
+  test('CLI runtime tolerates malformed process output bytes', () async {
+    final repoRoot = Directory.systemTemp.createTempSync(
+      'fh_radio_studio_uv_malformed_output_',
+    );
+    addTearDown(() {
+      if (repoRoot.existsSync()) {
+        repoRoot.deleteSync(recursive: true);
+      }
+    });
+
+    final separator = Platform.pathSeparator;
+    String join(List<String> parts) => parts.join(separator);
+
+    final fakeUv = File(
+      '${repoRoot.path}$separator${Platform.isWindows ? 'uv.cmd' : 'uv'}',
+    );
+    if (Platform.isWindows) {
+      await fakeUv.writeAsString(
+        '@echo off\r\n'
+        'powershell -NoProfile -Command "\$out=[Console]::OpenStandardOutput();'
+        '\$out.Write([byte[]](111,107,10,233,10),0,5);'
+        '\$err=[Console]::OpenStandardError();'
+        '\$err.Write([byte[]](101,114,114,10,233,10),0,6)"\r\n'
+        'exit /b 0\r\n',
+      );
+    } else {
+      await fakeUv.writeAsString(
+        '#!/bin/sh\nprintf "ok\\n\\351\\n"\nprintf "err\\n\\351\\n" >&2\nexit 0\n',
+      );
+      await Process.run('chmod', ['+x', fakeUv.path]);
+    }
+
+    final runtime = UvRuntime(
+      uvExecutable: fakeUv.path,
+      appRoot: repoRoot.path,
+      projectRoot: repoRoot.path,
+      toolchainHome: '${repoRoot.path}$separator${join(['toolchain'])}',
+      projectEnvironment:
+          '${repoRoot.path}$separator${join(['toolchain', 'envs', 'base'])}',
+      cacheDir:
+          '${repoRoot.path}$separator${join(['toolchain', 'uv', 'cache'])}',
+      audioToolsDir:
+          '${repoRoot.path}$separator${join(['toolchain', 'tools', 'audio'])}',
+      aiModelDir:
+          '${repoRoot.path}$separator${join(['toolchain', 'tools', 'ai', 'models'])}',
+      mode: 'dev',
+      torchExtra: 'torch-cpu',
+      profileEnvironments: true,
+    );
+    final cli = FhRadioStudioCli(repoRoot: repoRoot.path, uvRuntime: runtime);
+
+    final result = await cli.runBase(['status']);
+
+    expect(result.ok, isTrue);
+    expect(result.stdout, contains('ok'));
+    expect(result.stdout, contains('\uFFFD'));
+    expect(result.stderr, contains('err'));
+    expect(result.stderr, contains('\uFFFD'));
   });
 
   test('active CLI processes can be cancelled globally', () async {
@@ -447,6 +509,8 @@ void main() {
     );
     expect(runtime.environment['UV_CACHE_DIR'], runtime.cacheDir);
     expect(runtime.environment['UV_PYTHON_DOWNLOADS'], 'never');
+    expect(runtime.environment['PYTHONUTF8'], '1');
+    expect(runtime.environment['PYTHONIOENCODING'], 'utf-8');
     expect(
       runtime.environment['UV_PYTHON_INSTALL_DIR'],
       runtime.pythonInstallDir,
