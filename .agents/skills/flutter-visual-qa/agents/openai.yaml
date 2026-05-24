@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flutter Visual QA"
+  short_description: "Render-check project Flutter UI"
+  default_prompt: "Use $flutter-visual-qa when changing this repo's Flutter UI or diagnosing layout, rendering, screenshot, or runtime assertion issues."

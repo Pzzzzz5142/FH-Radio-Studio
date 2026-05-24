@@ -1,0 +1,110 @@
+[build-system]
+requires = ["setuptools>=77,<81", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fh-radio-studio"
+version = "0.1.0"
+description = "FH Radio Studio CLI and desktop tooling"
+requires-python = ">=3.10"
+dependencies = [
+  "mutagen>=1.47,<2",
+  "numpy>=1.24,<3",
+  "pyloudnorm>=0.1.1,<0.2",
+  "soundfile>=0.12,<0.14",
+]
+
+[project.scripts]
+fh-radio-studio = "backend.fh_radio_studio_cli.cli:main"
+
+[project.optional-dependencies]
+torch-cpu = [
+  "torch>=2.11,<2.12",
+  "torchaudio>=2.11,<2.12",
+]
+torch-cu128 = [
+  "torch>=2.11,<2.12",
+  "torchaudio>=2.11,<2.12",
+]
+
+[dependency-groups]
+dev = [
+  "black>=26.5.1",
+  "isort>=8.0.1",
+  "pre-commit>=4.6.0",
+  "pre-commit-hooks>=6.0.0",
+  "pytest>=8.0,<9",
+]
+ai-beat-this = [
+  "beat-this>=1.1,<2",
+]
+ai-mert = [
+  "transformers>=4.46,<6",
+  "safetensors>=0.4,<1",
+  "huggingface-hub>=0.24,<2",
+]
+ai-demucs = [
+  "demucs>=4,<5",
+]
+ai-songformer = [
+    "antlr4-python3-runtime==4.9.3",
+    "ema-pytorch>=0.7,<1",
+    "librosa>=0.11,<0.12",
+    "loguru>=0.7,<1",
+    "msaf>=0.1.80,<0.2",
+    "muq>=0.1",
+    "omegaconf>=2.3,<3",
+    "safetensors>=0.4,<1",
+    "triton==3.6.0; sys_platform == 'linux'",
+    "triton-windows==3.7.0.post26; sys_platform == 'win32'",
+    "tqdm>=4.67,<5",
+    "x-transformers>=2,<3",
+]
+
+[tool.uv]
+conflicts = [
+  [
+    { extra = "torch-cpu" },
+    { extra = "torch-cu128" },
+  ],
+]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "torch-cpu" },
+  { index = "pytorch-cu128", extra = "torch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchaudio = [
+  { index = "pytorch-cpu", extra = "torch-cpu" },
+  { index = "pytorch-cu128", extra = "torch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+pythonpath = ["."]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-ra"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["backend", "tools"]
+
+[tool.setuptools.packages.find]
+include = ["backend*"]

@@ -1,0 +1,159 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Python and Flutter tests
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    env:
+      NO_PROXY: localhost,127.0.0.1,::1
+      no_proxy: localhost,127.0.0.1,::1
+      TrackFileAccess: "false"
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Print tool versions
+        run: |
+          uv --version
+          flutter --version
+
+      - name: Run pre-commit
+        run: uv run --locked pre-commit run --all-files --show-diff-on-failure
+
+      - name: Compile Python modules
+        run: uv run --locked python -m compileall backend tools test
+
+      - name: Run Python tests
+        run: uv run --locked pytest
+
+      - name: Generate Flutter test fixtures
+        run: |
+          uv run --locked python tools/test/create_mock_game.py --reset
+          uv run --locked pytest test/test_cli_mock_game.py::test_full_project_flow_builds_baseline_and_deploys_to_mock
+
+      - name: Get Flutter packages
+        working-directory: app
+        run: flutter pub get
+
+      - name: Run Flutter tests
+        working-directory: app
+        run: flutter test
+
+  windows-release:
+    name: Build and publish Windows release
+    runs-on: windows-latest
+    timeout-minutes: 180
+    needs: test
+
+    env:
+      NO_PROXY: localhost,127.0.0.1,::1
+      no_proxy: localhost,127.0.0.1,::1
+      TrackFileAccess: "false"
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Validate release tag
+        run: |
+          $pubspec = Get-Content -Encoding UTF8 -Raw -LiteralPath "app/pubspec.yaml"
+          if ($pubspec -notmatch '(?m)^version:\s*[''"]?([^''"\s#]+)') {
+            throw "Could not read version from app/pubspec.yaml"
+          }
+          $appVersion = $Matches[1]
+          $coreVersion = ($appVersion -split '\+')[0]
+          $tag = $env:GITHUB_REF_NAME
+          $expectedTags = @("v$appVersion", "v$coreVersion")
+          if ($expectedTags -notcontains $tag) {
+            throw "Release tag '$tag' does not match app version '$appVersion'. Expected one of: $($expectedTags -join ', ')"
+          }
+          "APP_VERSION=$appVersion" >> $env:GITHUB_ENV
+
+      - name: Build release archive
+        run: .\tools\build_release.ps1 -Python "3.12" -CleanBuild -CleanDist -ArchiveName "FHRadioStudio-$env:GITHUB_REF_NAME-windows-x64.zip"
+
+      - name: Generate checksum
+        run: |
+          $zip = Get-ChildItem -LiteralPath "dist" -Filter "*.zip" |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if (-not $zip) {
+            throw "No release zip found under dist"
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip.FullName).Hash.ToLowerInvariant()
+          $shaPath = "$($zip.FullName).sha256"
+          "$hash  $($zip.Name)" | Set-Content -Encoding UTF8 -LiteralPath $shaPath
+          "RELEASE_ZIP=$($zip.FullName)" >> $env:GITHUB_ENV
+          "RELEASE_SHA256=$shaPath" >> $env:GITHUB_ENV
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FHRadioStudio-${{ github.ref_name }}-windows-x64
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $assets = @($env:RELEASE_ZIP, $env:RELEASE_SHA256)
+          if (gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null) {
+            gh release upload $tag @assets --repo $env:GITHUB_REPOSITORY --clobber
+          } else {
+            gh release create $tag @assets --repo $env:GITHUB_REPOSITORY --title $tag --generate-notes --verify-tag
+          }

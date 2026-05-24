@@ -1,0 +1,95 @@
+# OS/editor noise
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+*.iml
+.claude/
+
+# Internal project docs and temporary design handoff exports
+docs/internal/
+design_handoff/
+
+# Python caches and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+htmlcov/
+.venv/
+venv/
+env/
+.uv-cache/
+*.egg-info/
+.eggs/
+
+# Python build/package outputs
+build/
+dist/
+/*.whl
+/*.egg
+
+# Project-local uv/runtime/toolchain outputs
+.fh-radio-studio-dev/
+runtime/
+toolchain/
+tools/audio/
+tools/uv/
+third_party/
+
+# Flutter/Dart/Pub generated files
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.pub-cache/
+**/.pub/
+**/build/
+**/coverage/
+**/doc/api/
+**/ios/Flutter/.last_build_id
+**/windows/flutter/ephemeral/
+**/macos/Flutter/ephemeral/
+**/.widget_preview/
+app.*.symbols
+app.*.map.json
+migrate_working_dir/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+
+# Generated FH Radio Studio workspaces and packages
+work/
+mod_output/
+test/fixtures/
+test/project/
+
+# Local media imported during experiments
+/*.wav
+/*.wave
+/*.flac
+/*.mp3
+/*.m4a
+/*.aac
+/*.ogg
+/*.opus
+/*.aif
+/*.aiff
+/*.wma
+
+# Root-level release archives and generated bundles
+/*.zip
+/*.7z
+/*.tar
+/*.tar.gz
+/*.tgz
