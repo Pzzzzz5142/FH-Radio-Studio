@@ -42,9 +42,9 @@ void main() {
   });
 
   test('fallback main-style build exposes build commit line', () {
-    expect(fallbackAppReleaseId, '0.1.0-rc.1');
+    expect(fallbackAppReleaseId, '0.1.0-rc.2');
     expect(AppInfo.fallback.sidebarLines, [
-      'FH Radio Studio 0.1.0-rc.1',
+      'FH Radio Studio 0.1.0-rc.2',
       'build None',
     ]);
   });
