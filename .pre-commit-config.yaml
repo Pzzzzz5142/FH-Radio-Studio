@@ -1,0 +1,85 @@
+default_language_version:
+  python: python3.12
+
+repos:
+  - repo: local
+    hooks:
+      - id: check-added-large-files
+        name: check added large files
+        entry: uv run --locked check-added-large-files
+        language: system
+        args: ["--maxkb=1024"]
+
+      - id: check-case-conflict
+        name: check case conflict
+        entry: uv run --locked check-case-conflict
+        language: system
+
+      - id: check-json
+        name: check json
+        entry: uv run --locked check-json
+        language: system
+        types: [json]
+
+      - id: check-merge-conflict
+        name: check merge conflict
+        entry: uv run --locked check-merge-conflict
+        language: system
+        types: [text]
+
+      - id: check-toml
+        name: check toml
+        entry: uv run --locked check-toml
+        language: system
+        types: [toml]
+
+      - id: check-yaml
+        name: check yaml
+        entry: uv run --locked check-yaml
+        language: system
+        types: [yaml]
+
+      - id: debug-statements
+        name: check python debug statements
+        entry: uv run --locked debug-statement-hook
+        language: system
+        types: [python]
+
+      - id: fix-byte-order-marker
+        name: fix utf-8 byte order marker
+        entry: uv run --locked fix-byte-order-marker
+        language: system
+        types: [text]
+
+      - id: trailing-whitespace
+        name: trim trailing whitespace
+        entry: uv run --locked trailing-whitespace-fixer
+        language: system
+        types: [text]
+
+      - id: end-of-file-fixer
+        name: fix end of files
+        entry: uv run --locked end-of-file-fixer
+        language: system
+        types: [text]
+
+      - id: isort
+        name: isort
+        entry: uv run --locked isort
+        language: system
+        files: ^(backend|tools|test)/.*\.py$
+        types_or: [python, pyi]
+
+      - id: black
+        name: black
+        entry: uv run --locked black
+        language: system
+        files: ^(backend|tools|test)/.*\.py$
+        types_or: [python, pyi]
+
+      - id: dart-format
+        name: dart format
+        entry: dart format --output=none --set-exit-if-changed
+        language: system
+        files: ^app/(lib|test|tool)/.*\.dart$
+        types: [dart]

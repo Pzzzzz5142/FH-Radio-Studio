@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python and Flutter tests
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    env:
+      NO_PROXY: localhost,127.0.0.1,::1
+      no_proxy: localhost,127.0.0.1,::1
+      TrackFileAccess: "false"
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Print tool versions
+        run: |
+          uv --version
+          flutter --version
+
+      - name: Run pre-commit
+        run: uv run --locked pre-commit run --all-files --show-diff-on-failure
+
+      - name: Compile Python modules
+        run: uv run --locked python -m compileall backend tools test
+
+      - name: Run Python tests
+        run: uv run --locked pytest
+
+      - name: Generate Flutter test fixtures
+        run: |
+          uv run --locked python tools/test/create_mock_game.py --reset
+          uv run --locked pytest test/test_cli_mock_game.py::test_full_project_flow_builds_baseline_and_deploys_to_mock
+
+      - name: Get Flutter packages
+        working-directory: app
+        run: flutter pub get
+
+      - name: Run Flutter tests
+        working-directory: app
+        run: flutter test

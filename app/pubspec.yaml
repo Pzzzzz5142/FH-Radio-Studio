@@ -1,0 +1,36 @@
+name: fh_radio_studio
+description: "FH Radio Studio - third-party FH radio editor for PC"
+publish_to: 'none'
+version: 0.1.0-rc.1
+
+environment:
+  sdk: ^3.10.7
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  flutter_riverpod: ^2.5.1
+  go_router: ^14.6.0
+  google_fonts: ^6.2.1
+  lucide_icons_flutter: ^3.0.0
+  shared_preferences: ^2.3.3
+  collection: ^1.18.0
+  file_picker: ^11.0.2
+  path: ^1.9.1
+  crypto: ^3.0.7
+  media_kit: ^1.2.6
+  media_kit_libs_audio: ^1.0.7
+  xml: ^6.6.1
+  package_info_plus: ^9.0.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/app_logo.png
+    - assets/images/monster_siren_share_logo.png
