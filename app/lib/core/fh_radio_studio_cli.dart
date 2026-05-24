@@ -436,7 +436,7 @@ class UvRuntime {
         if (shouldUseNoSync(profile)) '--no-sync',
         ..._projectPythonArgs,
         ..._modeRunArgs,
-        ..._indexArgs,
+        ..._indexArgs(extraEnvironment),
         ..._groupArgs(groups),
         cliCommand,
         ...cliArgs,
@@ -462,7 +462,7 @@ class UvRuntime {
         if (shouldUseNoSync('local-base')) '--no-sync',
         ..._projectPythonArgs,
         ..._modeRunArgs,
-        ..._indexArgs,
+        ..._indexArgs(extraEnvironment),
         cliCommand,
         ...cliArgs,
       ],
@@ -488,7 +488,8 @@ class UvRuntime {
         ..._projectPythonArgs,
         if (forceReinstall) '--reinstall',
         ..._modeSyncArgs,
-        ..._indexArgs,
+        ..._indexArgs(extraEnvironment),
+        ..._noSourcesPackageArgs(extraEnvironment),
         ..._groupArgs(groups),
       ],
     );
@@ -534,10 +535,39 @@ class UvRuntime {
     if (noEditable) '--no-editable',
   ];
 
-  List<String> get _indexArgs => [
-    if (noIndex) '--no-index',
-    if (wheelhouseDir != null) ...['--find-links', wheelhouseDir!],
-  ];
+  List<String> _indexArgs(Map<String, String>? extraEnvironment) {
+    final args = <String>[
+      if (noIndex) '--no-index',
+      if (wheelhouseDir != null) ...['--find-links', wheelhouseDir!],
+    ];
+    final extraFindLinks = _splitEnvironmentList(
+      extraEnvironment?['UV_FIND_LINKS'],
+    );
+    for (final link in extraFindLinks) {
+      if (link != wheelhouseDir) {
+        args.addAll(['--find-links', link]);
+      }
+    }
+    return args;
+  }
+
+  List<String> _noSourcesPackageArgs(Map<String, String>? extraEnvironment) {
+    final packages = _splitEnvironmentList(
+      extraEnvironment?['UV_NO_SOURCES_PACKAGE'],
+    );
+    return [
+      for (final package in packages) ...['--no-sources-package', package],
+    ];
+  }
+
+  List<String> _splitEnvironmentList(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) return const [];
+    return trimmed
+        .split(RegExp(r'\s+'))
+        .where((item) => item.isNotEmpty)
+        .toList(growable: false);
+  }
 
   List<String> _groupArgs(List<String> groups) {
     return [

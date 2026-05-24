@@ -493,6 +493,16 @@ void main() {
     final sync = await cli.syncEnvironment(profile: 'local-base');
     final repairSync = await cli.syncRepairEnvironment(profile: 'local-heavy');
     final runBase = await cli.runBase(['status', '--json']);
+    final mirrorRepairSync = runtime.syncInvocation(
+      profile: 'local-heavy',
+      allowNetwork: true,
+      extraEnvironment: const {
+        'UV_FIND_LINKS':
+            'https://mirror.example.com/pytorch/cu128/torch/ '
+            'https://mirror.example.com/pytorch/cu128/torchaudio/',
+        'UV_NO_SOURCES_PACKAGE': 'torch torchaudio',
+      },
+    );
 
     for (final result in [sync, runBase]) {
       expect(result.ok, isTrue);
@@ -516,6 +526,28 @@ void main() {
     expect(repairSync.commandLine, contains('--no-python-downloads'));
     expect(repairSync.commandLine, contains('--group ai-songformer'));
     expect(repairSync.commandLine, contains('--extra torch-cpu'));
+    expect(
+      mirrorRepairSync.commandLine,
+      contains('--find-links ${runtime.wheelhouseDir}'),
+    );
+    expect(
+      mirrorRepairSync.commandLine,
+      contains('--find-links https://mirror.example.com/pytorch/cu128/torch/'),
+    );
+    expect(
+      mirrorRepairSync.commandLine,
+      contains(
+        '--find-links https://mirror.example.com/pytorch/cu128/torchaudio/',
+      ),
+    );
+    expect(
+      mirrorRepairSync.commandLine,
+      contains('--no-sources-package torch'),
+    );
+    expect(
+      mirrorRepairSync.commandLine,
+      contains('--no-sources-package torchaudio'),
+    );
     expect(runtime.environment['UV_OFFLINE'], 'true');
     expect(
       runtime.environmentForProfile('local-heavy', allowNetwork: true),
