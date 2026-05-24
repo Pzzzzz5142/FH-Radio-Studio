@@ -3451,10 +3451,7 @@ class StudioController extends StateNotifier<StudioState> {
         cancellationToken.isCancelled) {
       return false;
     }
-    if (environment['UV_NO_SOURCES_PACKAGE']
-            ?.split(RegExp(r'\s+'))
-            .contains('torch') ??
-        false) {
+    if (environment.containsKey('UV_FIND_LINKS')) {
       return false;
     }
     final output = '${result.stdout}\n${result.stderr}'.toLowerCase();
