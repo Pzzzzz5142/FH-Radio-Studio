@@ -45,7 +45,7 @@ void main() {
     expect(runtime.environment['UV_CACHE_DIR'], runtime.cacheDir);
     expect(runtime.environment['UV_MANAGED_PYTHON'], 'true');
     expect(runtime.environment['PYTHONUTF8'], '1');
-    expect(runtime.environment['PYTHONIOENCODING'], 'utf-8');
+    expect(runtime.environment['PYTHONIOENCODING'], 'utf-8:replace');
     expect(
       runtime.environmentForProfile('local-heavy')['UV_PROJECT_ENVIRONMENT'],
       runtime.projectEnvironmentForProfile('local-heavy'),
@@ -133,8 +133,11 @@ void main() {
     final separator = Platform.pathSeparator;
     String join(List<String> parts) => parts.join(separator);
 
+    final fakeUvDir = Directory(
+      '${repoRoot.path}$separator${join(['tool path with spaces'])}',
+    )..createSync(recursive: true);
     final fakeUv = File(
-      '${repoRoot.path}$separator${Platform.isWindows ? 'uv.cmd' : 'uv'}',
+      '${fakeUvDir.path}$separator${Platform.isWindows ? 'uv.cmd' : 'uv'}',
     );
     if (Platform.isWindows) {
       await fakeUv.writeAsString('@echo off\r\necho %*\r\nexit /b 0\r\n');
@@ -161,6 +164,7 @@ void main() {
       profileEnvironments: true,
     );
     final cli = FhRadioStudioCli(repoRoot: repoRoot.path, uvRuntime: runtime);
+    expect(runtime.uvExecutable, contains(' '));
 
     final sync = await cli.syncEnvironment(profile: 'local-heavy');
     final run = await cli.run(['status', '--profile', 'local-heavy']);
@@ -234,9 +238,9 @@ void main() {
     );
   });
 
-  test('CLI runtime tolerates malformed process output bytes', () async {
+  test('CLI runtime decodes system-encoded process output bytes', () async {
     final repoRoot = Directory.systemTemp.createTempSync(
-      'fh_radio_studio_uv_malformed_output_',
+      'fh_radio_studio_uv_system_output_',
     );
     addTearDown(() {
       if (repoRoot.existsSync()) {
@@ -246,6 +250,17 @@ void main() {
 
     final separator = Platform.pathSeparator;
     String join(List<String> parts) => parts.join(separator);
+    const nativeText = 'é';
+    final stdoutBytes = [
+      ...'ok '.codeUnits,
+      ...systemEncoding.encode(nativeText),
+      10,
+    ];
+    final stderrBytes = [
+      ...'err '.codeUnits,
+      ...systemEncoding.encode(nativeText),
+      10,
+    ];
 
     final fakeUv = File(
       '${repoRoot.path}$separator${Platform.isWindows ? 'uv.cmd' : 'uv'}',
@@ -254,14 +269,22 @@ void main() {
       await fakeUv.writeAsString(
         '@echo off\r\n'
         'powershell -NoProfile -Command "\$out=[Console]::OpenStandardOutput();'
-        '\$out.Write([byte[]](111,107,10,233,10),0,5);'
+        '\$outBytes=[byte[]](${stdoutBytes.join(',')});'
+        '\$out.Write(\$outBytes,0,\$outBytes.Length);'
         '\$err=[Console]::OpenStandardError();'
-        '\$err.Write([byte[]](101,114,114,10,233,10),0,6)"\r\n'
+        '\$errBytes=[byte[]](${stderrBytes.join(',')});'
+        '\$err.Write(\$errBytes,0,\$errBytes.Length)"\r\n'
         'exit /b 0\r\n',
       );
     } else {
+      final stdoutEscapes = stdoutBytes
+          .map((byte) => '\\${byte.toRadixString(8).padLeft(3, '0')}')
+          .join();
+      final stderrEscapes = stderrBytes
+          .map((byte) => '\\${byte.toRadixString(8).padLeft(3, '0')}')
+          .join();
       await fakeUv.writeAsString(
-        '#!/bin/sh\nprintf "ok\\n\\351\\n"\nprintf "err\\n\\351\\n" >&2\nexit 0\n',
+        "#!/bin/sh\nprintf '$stdoutEscapes'\nprintf '$stderrEscapes' >&2\nexit 0\n",
       );
       await Process.run('chmod', ['+x', fakeUv.path]);
     }
@@ -288,10 +311,8 @@ void main() {
     final result = await cli.runBase(['status']);
 
     expect(result.ok, isTrue);
-    expect(result.stdout, contains('ok'));
-    expect(result.stdout, contains('\uFFFD'));
-    expect(result.stderr, contains('err'));
-    expect(result.stderr, contains('\uFFFD'));
+    expect(result.stdout, contains('ok $nativeText'));
+    expect(result.stderr, contains('err $nativeText'));
   });
 
   test('active CLI processes can be cancelled globally', () async {
@@ -510,7 +531,7 @@ void main() {
     expect(runtime.environment['UV_CACHE_DIR'], runtime.cacheDir);
     expect(runtime.environment['UV_PYTHON_DOWNLOADS'], 'never');
     expect(runtime.environment['PYTHONUTF8'], '1');
-    expect(runtime.environment['PYTHONIOENCODING'], 'utf-8');
+    expect(runtime.environment['PYTHONIOENCODING'], 'utf-8:replace');
     expect(
       runtime.environment['UV_PYTHON_INSTALL_DIR'],
       runtime.pythonInstallDir,

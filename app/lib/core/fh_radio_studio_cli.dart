@@ -252,7 +252,7 @@ class FhRadioStudioCli {
       invocation.executable,
       invocation.args,
       workingDirectory: invocation.workingDirectory,
-      runInShell: true,
+      runInShell: false,
       environment: invocation.environment,
     );
     final activeProcess = _ActiveCliProcess(process);
@@ -276,24 +276,16 @@ class FhRadioStudioCli {
     final out = StringBuffer();
     final err = StringBuffer();
 
-    final outDone = process.stdout
-        .transform(const Utf8Decoder(allowMalformed: true))
-        .transform(const LineSplitter())
-        .listen((line) {
-          out.writeln(line);
-          onStdout?.call(line);
-        })
-        .asFuture<void>();
+    final outDone = _decodedProcessLines(process.stdout).listen((line) {
+      out.writeln(line);
+      onStdout?.call(line);
+    }).asFuture<void>();
 
-    final errDone = process.stderr
-        .transform(const Utf8Decoder(allowMalformed: true))
-        .transform(const LineSplitter())
-        .listen((line) {
-          if (line.trim().isEmpty) return;
-          err.writeln(line);
-          onStderr?.call(line);
-        })
-        .asFuture<void>();
+    final errDone = _decodedProcessLines(process.stderr).listen((line) {
+      if (line.trim().isEmpty) return;
+      err.writeln(line);
+      onStderr?.call(line);
+    }).asFuture<void>();
 
     int exitCode;
     try {
@@ -579,7 +571,7 @@ class UvRuntime {
       'UV_CACHE_DIR': activeCacheDir,
       'UV_MANAGED_PYTHON': 'true',
       'PYTHONUTF8': '1',
-      'PYTHONIOENCODING': 'utf-8',
+      'PYTHONIOENCODING': 'utf-8:replace',
       if (offline && !allowNetwork) 'UV_OFFLINE': 'true',
       if (noIndex) 'UV_NO_INDEX': 'true',
       if (noPythonDownloads) 'UV_PYTHON_DOWNLOADS': 'never',
@@ -897,4 +889,36 @@ String _formatCommand(List<String> parts) {
         return '"${part.replaceAll('"', r'\"')}"';
       })
       .join(' ');
+}
+
+Stream<String> _decodedProcessLines(Stream<List<int>> stream) async* {
+  final buffer = <int>[];
+  await for (final chunk in stream) {
+    for (final byte in chunk) {
+      if (byte == 10) {
+        yield _decodeProcessLine(buffer);
+        buffer.clear();
+      } else {
+        buffer.add(byte);
+      }
+    }
+  }
+  if (buffer.isNotEmpty) {
+    yield _decodeProcessLine(buffer);
+  }
+}
+
+String _decodeProcessLine(List<int> bytes) {
+  final line = bytes.isNotEmpty && bytes.last == 13
+      ? bytes.sublist(0, bytes.length - 1)
+      : List<int>.from(bytes);
+  try {
+    return utf8.decode(line, allowMalformed: false);
+  } on FormatException {
+    try {
+      return systemEncoding.decode(line);
+    } on FormatException {
+      return utf8.decode(line, allowMalformed: true);
+    }
+  }
 }
