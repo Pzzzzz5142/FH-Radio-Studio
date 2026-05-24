@@ -297,10 +297,21 @@ function New-ReleaseArchive {
 
   $tar = Get-Command "tar.exe" -ErrorAction SilentlyContinue
   if ($tar) {
-    Invoke-Checked $tar.Source @("-a", "-cf", $archivePath, "-C", $BundleDir, ".")
+    $bundleItems = Get-ChildItem -LiteralPath $BundleDir -Force | ForEach-Object { $_.Name }
+    Invoke-Checked $tar.Source (@("-a", "-cf", $archivePath, "-C", $BundleDir) + $bundleItems)
   } else {
     $bundleItems = Get-ChildItem -LiteralPath $BundleDir -Force | ForEach-Object { $_.FullName }
     Compress-Archive -Path $bundleItems -DestinationPath $archivePath -CompressionLevel Optimal
+  }
+
+  if ($tar) {
+    $firstEntry = & $tar.Source -tf $archivePath | Select-Object -First 1
+    if ($LASTEXITCODE -ne 0) {
+      throw "Release archive could not be listed: $archivePath"
+    }
+    if ($firstEntry -eq "./" -or $firstEntry.StartsWith("./", [System.StringComparison]::Ordinal)) {
+      throw "Release archive contains Windows Explorer-incompatible './' entries"
+    }
   }
 
   return $archivePath
