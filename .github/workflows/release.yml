@@ -2,15 +2,18 @@ name: Release
 
 on:
   push:
+    branches:
+      - "release/**"
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   test:
@@ -103,7 +106,8 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Validate release tag
+      - name: Resolve release metadata
+        id: release_meta
         run: |
           $pubspec = Get-Content -Encoding UTF8 -Raw -LiteralPath "app/pubspec.yaml"
           if ($pubspec -notmatch '(?m)^version:\s*[''"]?([^''"\s#]+)') {
@@ -111,15 +115,30 @@ jobs:
           }
           $appVersion = $Matches[1]
           $coreVersion = ($appVersion -split '\+')[0]
+          $releaseId = "v$coreVersion"
+          $isTag = $env:GITHUB_REF -like "refs/tags/*"
+          if ($isTag) {
+            $releaseId = $env:GITHUB_REF_NAME
+          }
           $tag = $env:GITHUB_REF_NAME
           $expectedTags = @("v$appVersion", "v$coreVersion")
-          if ($expectedTags -notcontains $tag) {
+          if ($isTag -and $expectedTags -notcontains $tag) {
             throw "Release tag '$tag' does not match app version '$appVersion'. Expected one of: $($expectedTags -join ', ')"
           }
+          if (-not $isTag -and $env:GITHUB_REF -like "refs/heads/release/*") {
+            $branchReleaseId = $env:GITHUB_REF_NAME.Substring("release/".Length)
+            if ($expectedTags -notcontains $branchReleaseId) {
+              throw "Release branch '$($env:GITHUB_REF_NAME)' does not match app version '$appVersion'. Expected release branch ending in one of: $($expectedTags -join ', ')"
+            }
+          }
           "APP_VERSION=$appVersion" >> $env:GITHUB_ENV
+          "RELEASE_ID=$releaseId" >> $env:GITHUB_ENV
+          "IS_RELEASE_TAG=$($isTag.ToString().ToLowerInvariant())" >> $env:GITHUB_ENV
+          "release_id=$releaseId" >> $env:GITHUB_OUTPUT
+          "is_release_tag=$($isTag.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
 
       - name: Build release archive
-        run: .\tools\build_release.ps1 -Python "3.12" -CleanBuild -CleanDist -ArchiveName "FHRadioStudio-$env:GITHUB_REF_NAME-windows-x64.zip"
+        run: .\tools\build_release.ps1 -Python "3.12" -CleanBuild -CleanDist -ArchiveName "FHRadioStudio-${{ steps.release_meta.outputs.release_id }}-windows-x64.zip"
 
       - name: Generate checksum
         run: |
@@ -138,20 +157,46 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FHRadioStudio-${{ github.ref_name }}-windows-x64
+          name: FHRadioStudio-${{ steps.release_meta.outputs.release_id }}-windows-x64
           path: |
             dist/*.zip
             dist/*.sha256
           if-no-files-found: error
 
       - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
           $assets = @($env:RELEASE_ZIP, $env:RELEASE_SHA256)
-          if (gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null) {
+          foreach ($asset in $assets) {
+            if (-not (Test-Path -LiteralPath $asset)) {
+              throw "Release asset not found: $asset"
+            }
+          }
+
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          $viewExit = $LASTEXITCODE
+          if ($viewExit -eq 0) {
             gh release upload $tag @assets --repo $env:GITHUB_REPOSITORY --clobber
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to upload assets to existing release '$tag'."
+            }
           } else {
-            gh release create $tag @assets --repo $env:GITHUB_REPOSITORY --title $tag --generate-notes --verify-tag
+            $createArgs = @("release", "create", $tag)
+            $createArgs += $assets
+            $createArgs += @(
+              "--repo", $env:GITHUB_REPOSITORY,
+              "--title", $tag,
+              "--generate-notes",
+              "--verify-tag"
+            )
+            if ($tag -match "-") {
+              $createArgs += "--prerelease"
+            }
+            gh @createArgs
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to create release '$tag'."
+            }
           }
