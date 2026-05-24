@@ -419,6 +419,8 @@ void main() {
     }
 
     expect(runBase.commandLine, contains('fh-radio-studio status --json'));
+    expect(runBase.commandLine, contains('--frozen'));
+    expect(repairSync.commandLine, isNot(contains('--frozen')));
     expect(repairSync.ok, isTrue);
     expect(repairSync.commandLine, isNot(contains('--offline')));
     expect(repairSync.commandLine, contains('--no-dev'));
