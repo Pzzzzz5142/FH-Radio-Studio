@@ -238,7 +238,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
 
       expect(find.text('AI OK'), findsOneWidget);
-      expect(find.text('CUDA accelerated'), findsOneWidget);
+      expect(find.text('CUDA Accelerated'), findsOneWidget);
       expect(
         tester.widget<Text>(find.text('AI OK')).style?.color,
         accentColors(AppAccent.lime, Brightness.light).base,
