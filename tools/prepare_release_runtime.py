@@ -118,7 +118,7 @@ def main() -> int:
     python_dir = toolchain_dir / "python"
     audio_tools_dir = toolchain_dir / "tools" / "audio"
     ai_models_dir = toolchain_dir / "tools" / "ai" / "models"
-    seed_env_dir = toolchain_dir / ".seed-env"
+    base_env_dir = toolchain_dir / "envs" / "base"
     tool_install_env_dir = toolchain_dir / ".tool-install-env"
 
     if args.clear:
@@ -172,7 +172,7 @@ def main() -> int:
     )
 
     if not args.skip_sync:
-        remove_dir(seed_env_dir)
+        remove_dir(base_env_dir)
         run(
             [
                 args.uv_exe,
@@ -188,9 +188,8 @@ def main() -> int:
                 "--compile-bytecode",
             ],
             cwd=repo_root,
-            env=runtime_env(cache_dir, python_dir, seed_env_dir),
+            env=runtime_env(cache_dir, python_dir, base_env_dir),
         )
-        remove_dir(seed_env_dir)
 
     if not args.skip_audio_tools:
         prepare_audio_tools(

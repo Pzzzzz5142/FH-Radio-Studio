@@ -438,6 +438,7 @@ class UvRuntime {
       args: [
         ..._offlineArgs(allowNetwork: allowNetwork),
         'run',
+        ..._frozenArgs(allowNetwork: allowNetwork),
         '--project',
         projectRoot,
         if (shouldUseNoSync(profile)) '--no-sync',
@@ -463,6 +464,7 @@ class UvRuntime {
       args: [
         ..._offlineArgs(allowNetwork: allowNetwork),
         'run',
+        ..._frozenArgs(allowNetwork: allowNetwork),
         '--project',
         projectRoot,
         if (shouldUseNoSync('local-base')) '--no-sync',
@@ -524,6 +526,10 @@ class UvRuntime {
 
   List<String> _offlineArgs({required bool allowNetwork}) => [
     if (offline && !allowNetwork) '--offline',
+  ];
+
+  List<String> _frozenArgs({required bool allowNetwork}) => [
+    if (mode == 'release' && !allowNetwork) '--frozen',
   ];
 
   List<String> get _modeRunArgs => [

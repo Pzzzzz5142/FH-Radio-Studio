@@ -261,6 +261,7 @@ function Assert-ReleaseBundle {
   Assert-Exists (Join-Path $BundleDir "runtime\pyproject.toml") "release runtime pyproject"
   Assert-Exists (Join-Path $BundleDir "runtime\uv.lock") "release runtime lockfile"
   Assert-Exists (Join-Path $BundleDir "toolchain\python") "bundled Python runtime"
+  Assert-Exists (Join-Path $BundleDir "toolchain\envs\base") "bundled base Python environment"
   Assert-Exists (Join-Path $BundleDir "toolchain\uv\cache") "bundled uv cache"
   Assert-Exists (Join-Path $BundleDir "tools\uv\uv.exe") "bundled uv executable"
   Assert-Exists (Join-Path $BundleDir "toolchain\tools\audio\ffmpeg\ffmpeg.exe") "bundled ffmpeg"
