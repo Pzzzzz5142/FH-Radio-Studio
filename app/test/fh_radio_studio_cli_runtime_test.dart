@@ -404,6 +404,9 @@ void main() {
     );
     final cli = FhRadioStudioCli(repoRoot: appRoot.path, uvRuntime: runtime);
 
+    expect(runtime.shouldUseNoSync('local-base'), isFalse);
+    expect(runtime.shouldUseNoSync('local-heavy'), isTrue);
+
     final sync = await cli.syncEnvironment(profile: 'local-base');
     final repairSync = await cli.syncRepairEnvironment(profile: 'local-heavy');
     final runBase = await cli.runBase(['status', '--json']);
@@ -420,6 +423,8 @@ void main() {
 
     expect(runBase.commandLine, contains('fh-radio-studio status --json'));
     expect(runBase.commandLine, contains('--frozen'));
+    expect(sync.commandLine, isNot(contains('--no-sync')));
+    expect(runBase.commandLine, isNot(contains('--no-sync')));
     expect(repairSync.commandLine, isNot(contains('--frozen')));
     expect(repairSync.ok, isTrue);
     expect(repairSync.commandLine, isNot(contains('--offline')));
@@ -447,5 +452,8 @@ void main() {
       runtime.pythonInstallDir,
     );
     expect(runtime.environment['UV_LINK_MODE'], 'copy');
+
+    Directory(runtime.projectEnvironment).createSync(recursive: true);
+    expect(runtime.shouldUseNoSync('local-base'), isTrue);
   });
 }

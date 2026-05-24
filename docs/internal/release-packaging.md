@@ -17,7 +17,15 @@ Release packages include:
 - bundled uv executable;
 - prepared Python toolchain;
 - offline wheel/runtime inputs;
+- seeded uv cache for rebuilding the local virtual environment;
 - core audio tools under the packaged toolchain.
+
+Release packages do not include prebuilt `toolchain/envs/*` virtual
+environments. `tools/prepare_release_runtime.py` syncs once into a temporary
+`.seed-env` to validate the lockfile and seed the bundled cache, then removes
+that environment. The installed app creates `toolchain/envs/base` locally on
+first run, and creates AI profile environments only when the user syncs those
+profiles.
 
 The preparation path uses:
 

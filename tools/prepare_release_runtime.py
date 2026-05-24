@@ -118,7 +118,8 @@ def main() -> int:
     python_dir = toolchain_dir / "python"
     audio_tools_dir = toolchain_dir / "tools" / "audio"
     ai_models_dir = toolchain_dir / "tools" / "ai" / "models"
-    base_env_dir = toolchain_dir / "envs" / "base"
+    packaged_envs_dir = toolchain_dir / "envs"
+    seed_env_dir = toolchain_dir / ".seed-env"
     tool_install_env_dir = toolchain_dir / ".tool-install-env"
 
     if args.clear:
@@ -128,6 +129,9 @@ def main() -> int:
     wheel_dir.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
     python_dir.mkdir(parents=True, exist_ok=True)
+    remove_dir(packaged_envs_dir)
+    remove_dir(seed_env_dir)
+    remove_dir(tool_install_env_dir)
 
     root_pyproject = read_pyproject(repo_root / "pyproject.toml")
     version = root_pyproject["project"]["version"]
@@ -172,24 +176,26 @@ def main() -> int:
     )
 
     if not args.skip_sync:
-        remove_dir(base_env_dir)
-        run(
-            [
-                args.uv_exe,
-                "sync",
-                "--project",
-                str(runtime_dir),
-                "--no-dev",
-                "--locked",
-                "--python",
-                args.python,
-                "--managed-python",
-                "--no-editable",
-                "--compile-bytecode",
-            ],
-            cwd=repo_root,
-            env=runtime_env(cache_dir, python_dir, base_env_dir),
-        )
+        try:
+            run(
+                [
+                    args.uv_exe,
+                    "sync",
+                    "--project",
+                    str(runtime_dir),
+                    "--no-dev",
+                    "--locked",
+                    "--python",
+                    args.python,
+                    "--managed-python",
+                    "--no-editable",
+                    "--compile-bytecode",
+                ],
+                cwd=repo_root,
+                env=runtime_env(cache_dir, python_dir, seed_env_dir),
+            )
+        finally:
+            remove_dir(seed_env_dir)
 
     if not args.skip_audio_tools:
         prepare_audio_tools(

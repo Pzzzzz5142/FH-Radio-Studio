@@ -200,7 +200,9 @@ if(EXISTS "${FH_RADIO_STUDIO_RELEASE_TOOLCHAIN_INPUT_DIR}")
     COMPONENT Runtime
     PATTERN "__pycache__" EXCLUDE
     PATTERN "*.pyc" EXCLUDE
-    PATTERN ".seed-env" EXCLUDE)
+    PATTERN "envs" EXCLUDE
+    PATTERN ".seed-env" EXCLUDE
+    PATTERN ".tool-install-env" EXCLUDE)
 elseif(FH_RADIO_STUDIO_REQUIRE_RELEASE_TOOLCHAIN)
   message(FATAL_ERROR
     "Prepared release toolchain not found; run uv run python tools/prepare_release_runtime.py or set FH_RADIO_STUDIO_RELEASE_TOOLCHAIN_INPUT_DIR.")
