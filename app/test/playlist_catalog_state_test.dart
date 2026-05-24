@@ -742,9 +742,12 @@ void main() {
     expect(container.read(effectivePlaylistPlanProvider).assignments, isEmpty);
   });
 
-  test('playlist plan store drops assignments outside project sources', () {
+  test('playlist plan store keeps project sources and siren assignments', () {
     final projectDir = _tempProjectDir();
     final sourceTrack = _testTrack('inside', 'Inside', projectDir);
+    final sirenTrack = File(
+      p.join(FhRadioStudioProject.sirenDir(projectDir), 'MSR-232251.wav'),
+    )..createSync(recursive: true);
     final outside = p.join(Directory.current.path, 'outside.wav');
 
     PlaylistPlanStore.write(
@@ -761,6 +764,12 @@ void main() {
             radioCode: 'XS',
             playlistType: 'FreeRoam',
             slot: 1,
+          )
+          .assign(
+            source: sirenTrack.path,
+            radioCode: 'R5',
+            playlistType: 'Event',
+            slot: 3,
           ),
     );
 
@@ -768,6 +777,7 @@ void main() {
 
     expect(restored.assignmentsForPath(outside), isEmpty);
     expect(restored.assignmentsForPath(sourceTrack.source), hasLength(1));
+    expect(restored.assignmentsForPath(sirenTrack.path), hasLength(1));
   });
 }
 

@@ -3802,10 +3802,14 @@ class StudioController extends StateNotifier<StudioState> {
 
   String _missingMusicInputMessage(String source) {
     final absolute = File(source).absolute.path;
-    if (_projectArtifactPath(absolute, state.sourcesDir)) {
+    if (_projectArtifactPath(absolute, state.sourcesDir) ||
+        _projectArtifactPath(
+          absolute,
+          FhRadioStudioProject.sirenDir(state.projectDir),
+        )) {
       return '播放列表草稿引用的项目源文件已不存在：$absolute。请重新导入这首歌，或从播放列表移除后再准备包。';
     }
-    return '播放列表草稿引用了项目 sources 之外的旧路径：$absolute。请先重新导入到项目 sources，再分配到播放列表。';
+    return '播放列表草稿引用了项目音频目录之外的旧路径：$absolute。请先重新导入到项目 sources 或 siren，再分配到播放列表。';
   }
 
   Future<BaselinePlanSummary?> previewPristineBaselinePlan() async {
