@@ -20,7 +20,6 @@ jobs:
 
     env:
       NO_PROXY: localhost,127.0.0.1,::1
-      no_proxy: localhost,127.0.0.1,::1
       TrackFileAccess: "false"
 
     defaults:
@@ -79,7 +78,6 @@ jobs:
 
     env:
       NO_PROXY: localhost,127.0.0.1,::1
-      no_proxy: localhost,127.0.0.1,::1
       TrackFileAccess: "false"
 
     defaults:
