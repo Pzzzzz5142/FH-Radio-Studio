@@ -363,7 +363,7 @@ foreach (\$id in \$toKill) { Stop-Process -Id \$id -Force }
       '-NoProfile',
       '-Command',
       r"@(Get-Process | Where-Object { $_.ProcessName -ieq 'forzahorizon6' -or $_.ProcessName -like '*ForzaHorizon6*' }).Count",
-    ], runInShell: true);
+    ], runInShell: false);
     final text = '${result.stdout}'.trim();
     return int.tryParse(text) != null && int.parse(text) > 0;
   }
@@ -769,7 +769,7 @@ class UvRuntime {
       return 'torch-cpu';
     }
     try {
-      final result = Process.runSync('nvidia-smi', ['-L'], runInShell: true);
+      final result = Process.runSync('nvidia-smi', ['-L'], runInShell: false);
       if (result.exitCode == 0 && '${result.stdout}'.trim().isNotEmpty) {
         return 'torch-cu128';
       }
