@@ -119,8 +119,10 @@ Map<String, String> torchWheelMirrorEnvironment(
       'UV_NO_SOURCES_PACKAGE': kTorchMirrorNoSourcesPackages,
     };
   }
-  final indexName = torchIndexNameForExtra(torchExtra);
-  return {'UV_INDEX': '$indexName=$indexUrl'};
+  return {
+    'UV_FIND_LINKS': _torchPackageFindLinks(indexUrl).join(' '),
+    'UV_NO_SOURCES_PACKAGE': kTorchMirrorNoSourcesPackages,
+  };
 }
 
 List<String> torchWheelMirrorEnvironmentPreview(
@@ -129,12 +131,49 @@ List<String> torchWheelMirrorEnvironmentPreview(
 ) {
   final env = torchWheelMirrorEnvironment(url, torchExtra);
   final lines = <String>[];
-  for (final key in ['UV_INDEX', 'UV_FIND_LINKS', 'UV_NO_SOURCES_PACKAGE']) {
+  for (final key in ['UV_FIND_LINKS', 'UV_NO_SOURCES_PACKAGE']) {
     final value = env[key];
     if (value != null && value.isNotEmpty) lines.add('$key=$value');
   }
   return lines;
 }
+
+List<String> _torchPackageFindLinks(String simpleIndexUrl) {
+  return [
+    _torchPackageFindLink(simpleIndexUrl, 'torch'),
+    _torchPackageFindLink(simpleIndexUrl, 'torchaudio'),
+  ];
+}
+
+String _torchPackageFindLink(String simpleIndexUrl, String packageName) {
+  final trimmed = simpleIndexUrl.trim();
+  final uri = Uri.tryParse(trimmed);
+  if (uri != null && uri.hasScheme) {
+    final packagePath = _torchPackageFindLinkPath(uri.path, packageName);
+    return _trimEmptyQueryOrFragment(uri.replace(path: packagePath).toString());
+  }
+  final withoutTrailingSlash = trimmed.replaceFirst(RegExp(r'/+$'), '');
+  final lower = withoutTrailingSlash.toLowerCase();
+  for (final package in _torchFindLinksPackages) {
+    if (lower.endsWith('/$package')) {
+      return '${withoutTrailingSlash.substring(0, withoutTrailingSlash.length - package.length)}$packageName/';
+    }
+  }
+  return '$withoutTrailingSlash/$packageName/';
+}
+
+String _torchPackageFindLinkPath(String path, String packageName) {
+  final withoutTrailingSlash = path.replaceFirst(RegExp(r'/+$'), '');
+  final lower = withoutTrailingSlash.toLowerCase();
+  for (final package in _torchFindLinksPackages) {
+    if (lower.endsWith('/$package')) {
+      return '${withoutTrailingSlash.substring(0, withoutTrailingSlash.length - package.length)}$packageName/';
+    }
+  }
+  return '$withoutTrailingSlash/$packageName/';
+}
+
+const _torchFindLinksPackages = ['torch', 'torchaudio'];
 
 const _torchWheelFlavors = [
   'cpu',
@@ -3097,7 +3136,7 @@ class StudioController extends StateNotifier<StudioState> {
                 hfEndpoint: hfEndpoint,
               );
               const retryLine =
-                  'Torch mirror named index 解析失败，自动改用 flat wheel 目录重试。';
+                  'Torch mirror simple index 解析失败，自动改用 flat wheel 目录重试。';
               const retryAction = '执行：重试 Python / AI 依赖下载';
               final firstExitLine = result.ok
                   ? '退出码：0'
@@ -3112,7 +3151,7 @@ class StudioController extends StateNotifier<StudioState> {
               _setAiEnvironmentProgress(
                 label: '$action Python / AI 依赖下载',
                 detail:
-                    '当前 Torch mirror 不像 PEP 503 named index，正在改用 find-links 模式重试。',
+                    '当前 Torch mirror 的 package links 不可用，正在改用 flat wheel 目录重试。',
                 percent: plan.prepareModelCache ? 24 : 34,
               );
               result = await _cli.syncRepairEnvironment(
@@ -3451,7 +3490,10 @@ class StudioController extends StateNotifier<StudioState> {
         cancellationToken.isCancelled) {
       return false;
     }
-    if (environment.containsKey('UV_FIND_LINKS')) {
+    final findLinks = environment['UV_FIND_LINKS']?.trim();
+    if (findLinks != null &&
+        findLinks.isNotEmpty &&
+        findLinks.split(RegExp(r'\s+')).length <= 1) {
       return false;
     }
     final output = '${result.stdout}\n${result.stderr}'.toLowerCase();

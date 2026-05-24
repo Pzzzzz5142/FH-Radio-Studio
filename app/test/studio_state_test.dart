@@ -75,28 +75,32 @@ void main() {
       );
     });
 
-    test('uses named index override for simple index mirrors', () {
+    test('uses package find-links for simple index mirrors', () {
       expect(
         torchWheelMirrorEnvironment(
           'https://mirror.sjtu.edu.cn/pytorch-wheels/cu128/',
           'torch-cu128',
         ),
         equals({
-          'UV_INDEX':
-              'pytorch-cu128=https://mirror.sjtu.edu.cn/pytorch-wheels/cu128/',
+          'UV_FIND_LINKS':
+              'https://mirror.sjtu.edu.cn/pytorch-wheels/cu128/torch/ '
+              'https://mirror.sjtu.edu.cn/pytorch-wheels/cu128/torchaudio/',
+          'UV_NO_SOURCES_PACKAGE': 'torch torchaudio',
         }),
       );
     });
 
-    test('allows forcing named index for known flat mirrors', () {
+    test('allows forcing package find-links for known flat mirrors', () {
       expect(
         torchWheelMirrorEnvironment(
           'https://mirrors.aliyun.com/pytorch-wheels/cu128/#index',
           'torch-cu128',
         ),
         equals({
-          'UV_INDEX':
-              'pytorch-cu128=https://mirrors.aliyun.com/pytorch-wheels/cu128/',
+          'UV_FIND_LINKS':
+              'https://mirrors.aliyun.com/pytorch-wheels/cu128/torch/ '
+              'https://mirrors.aliyun.com/pytorch-wheels/cu128/torchaudio/',
+          'UV_NO_SOURCES_PACKAGE': 'torch torchaudio',
         }),
       );
     });
