@@ -5767,7 +5767,7 @@ _PillarModel _toolPillar(BuildContext context, StudioState s) {
             : 'AI OK',
         detail: scanning || optionalWarn > 0 || !cudaAccelerated
             ? null
-            : 'CUDA accelerated',
+            : 'CUDA Accelerated',
       ),
     ],
     more: scanning ? '处理中' : '详情',

@@ -252,7 +252,7 @@ class FhRadioStudioCli {
       invocation.executable,
       invocation.args,
       workingDirectory: invocation.workingDirectory,
-      runInShell: true,
+      runInShell: false,
       environment: invocation.environment,
     );
     final activeProcess = _ActiveCliProcess(process);
@@ -276,24 +276,16 @@ class FhRadioStudioCli {
     final out = StringBuffer();
     final err = StringBuffer();
 
-    final outDone = process.stdout
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .listen((line) {
-          out.writeln(line);
-          onStdout?.call(line);
-        })
-        .asFuture<void>();
+    final outDone = _decodedProcessLines(process.stdout).listen((line) {
+      out.writeln(line);
+      onStdout?.call(line);
+    }).asFuture<void>();
 
-    final errDone = process.stderr
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .listen((line) {
-          if (line.trim().isEmpty) return;
-          err.writeln(line);
-          onStderr?.call(line);
-        })
-        .asFuture<void>();
+    final errDone = _decodedProcessLines(process.stderr).listen((line) {
+      if (line.trim().isEmpty) return;
+      err.writeln(line);
+      onStderr?.call(line);
+    }).asFuture<void>();
 
     int exitCode;
     try {
@@ -371,7 +363,7 @@ foreach (\$id in \$toKill) { Stop-Process -Id \$id -Force }
       '-NoProfile',
       '-Command',
       r"@(Get-Process | Where-Object { $_.ProcessName -ieq 'forzahorizon6' -or $_.ProcessName -like '*ForzaHorizon6*' }).Count",
-    ], runInShell: true);
+    ], runInShell: false);
     final text = '${result.stdout}'.trim();
     return int.tryParse(text) != null && int.parse(text) > 0;
   }
@@ -438,12 +430,13 @@ class UvRuntime {
       args: [
         ..._offlineArgs(allowNetwork: allowNetwork),
         'run',
+        ..._frozenArgs(allowNetwork: allowNetwork),
         '--project',
         projectRoot,
         if (shouldUseNoSync(profile)) '--no-sync',
         ..._projectPythonArgs,
         ..._modeRunArgs,
-        ..._indexArgs,
+        ..._indexArgs(extraEnvironment),
         ..._groupArgs(groups),
         cliCommand,
         ...cliArgs,
@@ -463,12 +456,13 @@ class UvRuntime {
       args: [
         ..._offlineArgs(allowNetwork: allowNetwork),
         'run',
+        ..._frozenArgs(allowNetwork: allowNetwork),
         '--project',
         projectRoot,
         if (shouldUseNoSync('local-base')) '--no-sync',
         ..._projectPythonArgs,
         ..._modeRunArgs,
-        ..._indexArgs,
+        ..._indexArgs(extraEnvironment),
         cliCommand,
         ...cliArgs,
       ],
@@ -494,7 +488,8 @@ class UvRuntime {
         ..._projectPythonArgs,
         if (forceReinstall) '--reinstall',
         ..._modeSyncArgs,
-        ..._indexArgs,
+        ..._indexArgs(extraEnvironment),
+        ..._noSourcesPackageArgs(extraEnvironment),
         ..._groupArgs(groups),
       ],
     );
@@ -526,6 +521,10 @@ class UvRuntime {
     if (offline && !allowNetwork) '--offline',
   ];
 
+  List<String> _frozenArgs({required bool allowNetwork}) => [
+    if (mode == 'release' && !allowNetwork) '--frozen',
+  ];
+
   List<String> get _modeRunArgs => [
     if (mode == 'release') '--no-dev',
     if (noEditable) '--no-editable',
@@ -536,10 +535,39 @@ class UvRuntime {
     if (noEditable) '--no-editable',
   ];
 
-  List<String> get _indexArgs => [
-    if (noIndex) '--no-index',
-    if (wheelhouseDir != null) ...['--find-links', wheelhouseDir!],
-  ];
+  List<String> _indexArgs(Map<String, String>? extraEnvironment) {
+    final args = <String>[
+      if (noIndex) '--no-index',
+      if (wheelhouseDir != null) ...['--find-links', wheelhouseDir!],
+    ];
+    final extraFindLinks = _splitEnvironmentList(
+      extraEnvironment?['UV_FIND_LINKS'],
+    );
+    for (final link in extraFindLinks) {
+      if (link != wheelhouseDir) {
+        args.addAll(['--find-links', link]);
+      }
+    }
+    return args;
+  }
+
+  List<String> _noSourcesPackageArgs(Map<String, String>? extraEnvironment) {
+    final packages = _splitEnvironmentList(
+      extraEnvironment?['UV_NO_SOURCES_PACKAGE'],
+    );
+    return [
+      for (final package in packages) ...['--no-sources-package', package],
+    ];
+  }
+
+  List<String> _splitEnvironmentList(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) return const [];
+    return trimmed
+        .split(RegExp(r'\s+'))
+        .where((item) => item.isNotEmpty)
+        .toList(growable: false);
+  }
 
   List<String> _groupArgs(List<String> groups) {
     return [
@@ -572,6 +600,8 @@ class UvRuntime {
       'UV_PROJECT_ENVIRONMENT': profileEnvironment,
       'UV_CACHE_DIR': activeCacheDir,
       'UV_MANAGED_PYTHON': 'true',
+      'PYTHONUTF8': '1',
+      'PYTHONIOENCODING': 'utf-8:replace',
       if (offline && !allowNetwork) 'UV_OFFLINE': 'true',
       if (noIndex) 'UV_NO_INDEX': 'true',
       if (noPythonDownloads) 'UV_PYTHON_DOWNLOADS': 'never',
@@ -769,7 +799,7 @@ class UvRuntime {
       return 'torch-cpu';
     }
     try {
-      final result = Process.runSync('nvidia-smi', ['-L'], runInShell: true);
+      final result = Process.runSync('nvidia-smi', ['-L'], runInShell: false);
       if (result.exitCode == 0 && '${result.stdout}'.trim().isNotEmpty) {
         return 'torch-cu128';
       }
@@ -889,4 +919,36 @@ String _formatCommand(List<String> parts) {
         return '"${part.replaceAll('"', r'\"')}"';
       })
       .join(' ');
+}
+
+Stream<String> _decodedProcessLines(Stream<List<int>> stream) async* {
+  final buffer = <int>[];
+  await for (final chunk in stream) {
+    for (final byte in chunk) {
+      if (byte == 10) {
+        yield _decodeProcessLine(buffer);
+        buffer.clear();
+      } else {
+        buffer.add(byte);
+      }
+    }
+  }
+  if (buffer.isNotEmpty) {
+    yield _decodeProcessLine(buffer);
+  }
+}
+
+String _decodeProcessLine(List<int> bytes) {
+  final line = bytes.isNotEmpty && bytes.last == 13
+      ? bytes.sublist(0, bytes.length - 1)
+      : List<int>.from(bytes);
+  try {
+    return utf8.decode(line, allowMalformed: false);
+  } on FormatException {
+    try {
+      return systemEncoding.decode(line);
+    } on FormatException {
+      return utf8.decode(line, allowMalformed: true);
+    }
+  }
 }

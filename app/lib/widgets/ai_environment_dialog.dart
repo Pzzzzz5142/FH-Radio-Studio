@@ -750,7 +750,7 @@ class _AiEnvironmentDialogState extends State<_AiEnvironmentDialog> {
               onChanged: (value) =>
                   setState(() => _useTorchWheelMirror = value),
               title: 'Torch Wheel Mirror',
-              detail: '自动适配 named index / flat wheel 源',
+              detail: '自动适配 simple index / flat wheel 源',
               controller: _torchWheelController,
               inputLabel: 'Torch wheel URL',
               invalidText:

@@ -536,10 +536,13 @@ class PlaylistPlanStore {
       return null;
     }
     final absolute = File(source).absolute.path;
-    final sourceDir = Directory(
+    final projectAudioDirs = [
       FhRadioStudioProject.sourcesDir(projectDir),
-    ).absolute.path;
-    if (!isCanonicalPathInside(sourceDir, absolute)) return null;
+      FhRadioStudioProject.sirenDir(projectDir),
+    ].map((path) => Directory(path).absolute.path);
+    if (!projectAudioDirs.any((dir) => isCanonicalPathInside(dir, absolute))) {
+      return null;
+    }
     return assignment.copyWith(source: absolute);
   }
 

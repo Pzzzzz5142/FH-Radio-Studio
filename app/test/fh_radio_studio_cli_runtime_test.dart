@@ -44,6 +44,8 @@ void main() {
     );
     expect(runtime.environment['UV_CACHE_DIR'], runtime.cacheDir);
     expect(runtime.environment['UV_MANAGED_PYTHON'], 'true');
+    expect(runtime.environment['PYTHONUTF8'], '1');
+    expect(runtime.environment['PYTHONIOENCODING'], 'utf-8:replace');
     expect(
       runtime.environmentForProfile('local-heavy')['UV_PROJECT_ENVIRONMENT'],
       runtime.projectEnvironmentForProfile('local-heavy'),
@@ -131,8 +133,11 @@ void main() {
     final separator = Platform.pathSeparator;
     String join(List<String> parts) => parts.join(separator);
 
+    final fakeUvDir = Directory(
+      '${repoRoot.path}$separator${join(['tool path with spaces'])}',
+    )..createSync(recursive: true);
     final fakeUv = File(
-      '${repoRoot.path}$separator${Platform.isWindows ? 'uv.cmd' : 'uv'}',
+      '${fakeUvDir.path}$separator${Platform.isWindows ? 'uv.cmd' : 'uv'}',
     );
     if (Platform.isWindows) {
       await fakeUv.writeAsString('@echo off\r\necho %*\r\nexit /b 0\r\n');
@@ -159,6 +164,7 @@ void main() {
       profileEnvironments: true,
     );
     final cli = FhRadioStudioCli(repoRoot: repoRoot.path, uvRuntime: runtime);
+    expect(runtime.uvExecutable, contains(' '));
 
     final sync = await cli.syncEnvironment(profile: 'local-heavy');
     final run = await cli.run(['status', '--profile', 'local-heavy']);
@@ -230,6 +236,83 @@ void main() {
       result.stderr.trim().split('\n').where((line) => line.trim().isEmpty),
       isEmpty,
     );
+  });
+
+  test('CLI runtime decodes system-encoded process output bytes', () async {
+    final repoRoot = Directory.systemTemp.createTempSync(
+      'fh_radio_studio_uv_system_output_',
+    );
+    addTearDown(() {
+      if (repoRoot.existsSync()) {
+        repoRoot.deleteSync(recursive: true);
+      }
+    });
+
+    final separator = Platform.pathSeparator;
+    String join(List<String> parts) => parts.join(separator);
+    const nativeText = 'é';
+    final stdoutBytes = [
+      ...'ok '.codeUnits,
+      ...systemEncoding.encode(nativeText),
+      10,
+    ];
+    final stderrBytes = [
+      ...'err '.codeUnits,
+      ...systemEncoding.encode(nativeText),
+      10,
+    ];
+
+    final fakeUv = File(
+      '${repoRoot.path}$separator${Platform.isWindows ? 'uv.cmd' : 'uv'}',
+    );
+    if (Platform.isWindows) {
+      await fakeUv.writeAsString(
+        '@echo off\r\n'
+        'powershell -NoProfile -Command "\$out=[Console]::OpenStandardOutput();'
+        '\$outBytes=[byte[]](${stdoutBytes.join(',')});'
+        '\$out.Write(\$outBytes,0,\$outBytes.Length);'
+        '\$err=[Console]::OpenStandardError();'
+        '\$errBytes=[byte[]](${stderrBytes.join(',')});'
+        '\$err.Write(\$errBytes,0,\$errBytes.Length)"\r\n'
+        'exit /b 0\r\n',
+      );
+    } else {
+      final stdoutEscapes = stdoutBytes
+          .map((byte) => '\\${byte.toRadixString(8).padLeft(3, '0')}')
+          .join();
+      final stderrEscapes = stderrBytes
+          .map((byte) => '\\${byte.toRadixString(8).padLeft(3, '0')}')
+          .join();
+      await fakeUv.writeAsString(
+        "#!/bin/sh\nprintf '$stdoutEscapes'\nprintf '$stderrEscapes' >&2\nexit 0\n",
+      );
+      await Process.run('chmod', ['+x', fakeUv.path]);
+    }
+
+    final runtime = UvRuntime(
+      uvExecutable: fakeUv.path,
+      appRoot: repoRoot.path,
+      projectRoot: repoRoot.path,
+      toolchainHome: '${repoRoot.path}$separator${join(['toolchain'])}',
+      projectEnvironment:
+          '${repoRoot.path}$separator${join(['toolchain', 'envs', 'base'])}',
+      cacheDir:
+          '${repoRoot.path}$separator${join(['toolchain', 'uv', 'cache'])}',
+      audioToolsDir:
+          '${repoRoot.path}$separator${join(['toolchain', 'tools', 'audio'])}',
+      aiModelDir:
+          '${repoRoot.path}$separator${join(['toolchain', 'tools', 'ai', 'models'])}',
+      mode: 'dev',
+      torchExtra: 'torch-cpu',
+      profileEnvironments: true,
+    );
+    final cli = FhRadioStudioCli(repoRoot: repoRoot.path, uvRuntime: runtime);
+
+    final result = await cli.runBase(['status']);
+
+    expect(result.ok, isTrue);
+    expect(result.stdout, contains('ok $nativeText'));
+    expect(result.stderr, contains('err $nativeText'));
   });
 
   test('active CLI processes can be cancelled globally', () async {
@@ -404,9 +487,22 @@ void main() {
     );
     final cli = FhRadioStudioCli(repoRoot: appRoot.path, uvRuntime: runtime);
 
+    expect(runtime.shouldUseNoSync('local-base'), isFalse);
+    expect(runtime.shouldUseNoSync('local-heavy'), isTrue);
+
     final sync = await cli.syncEnvironment(profile: 'local-base');
     final repairSync = await cli.syncRepairEnvironment(profile: 'local-heavy');
     final runBase = await cli.runBase(['status', '--json']);
+    final mirrorRepairSync = runtime.syncInvocation(
+      profile: 'local-heavy',
+      allowNetwork: true,
+      extraEnvironment: const {
+        'UV_FIND_LINKS':
+            'https://mirror.example.com/pytorch/cu128/torch/ '
+            'https://mirror.example.com/pytorch/cu128/torchaudio/',
+        'UV_NO_SOURCES_PACKAGE': 'torch torchaudio',
+      },
+    );
 
     for (final result in [sync, runBase]) {
       expect(result.ok, isTrue);
@@ -419,6 +515,10 @@ void main() {
     }
 
     expect(runBase.commandLine, contains('fh-radio-studio status --json'));
+    expect(runBase.commandLine, contains('--frozen'));
+    expect(sync.commandLine, isNot(contains('--no-sync')));
+    expect(runBase.commandLine, isNot(contains('--no-sync')));
+    expect(repairSync.commandLine, isNot(contains('--frozen')));
     expect(repairSync.ok, isTrue);
     expect(repairSync.commandLine, isNot(contains('--offline')));
     expect(repairSync.commandLine, contains('--no-dev'));
@@ -426,6 +526,28 @@ void main() {
     expect(repairSync.commandLine, contains('--no-python-downloads'));
     expect(repairSync.commandLine, contains('--group ai-songformer'));
     expect(repairSync.commandLine, contains('--extra torch-cpu'));
+    expect(
+      mirrorRepairSync.commandLine,
+      contains('--find-links ${runtime.wheelhouseDir}'),
+    );
+    expect(
+      mirrorRepairSync.commandLine,
+      contains('--find-links https://mirror.example.com/pytorch/cu128/torch/'),
+    );
+    expect(
+      mirrorRepairSync.commandLine,
+      contains(
+        '--find-links https://mirror.example.com/pytorch/cu128/torchaudio/',
+      ),
+    );
+    expect(
+      mirrorRepairSync.commandLine,
+      contains('--no-sources-package torch'),
+    );
+    expect(
+      mirrorRepairSync.commandLine,
+      contains('--no-sources-package torchaudio'),
+    );
     expect(runtime.environment['UV_OFFLINE'], 'true');
     expect(
       runtime.environmentForProfile('local-heavy', allowNetwork: true),
@@ -440,10 +562,15 @@ void main() {
     );
     expect(runtime.environment['UV_CACHE_DIR'], runtime.cacheDir);
     expect(runtime.environment['UV_PYTHON_DOWNLOADS'], 'never');
+    expect(runtime.environment['PYTHONUTF8'], '1');
+    expect(runtime.environment['PYTHONIOENCODING'], 'utf-8:replace');
     expect(
       runtime.environment['UV_PYTHON_INSTALL_DIR'],
       runtime.pythonInstallDir,
     );
     expect(runtime.environment['UV_LINK_MODE'], 'copy');
+
+    Directory(runtime.projectEnvironment).createSync(recursive: true);
+    expect(runtime.shouldUseNoSync('local-base'), isTrue);
   });
 }

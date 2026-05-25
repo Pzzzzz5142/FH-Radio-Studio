@@ -267,6 +267,10 @@ function Assert-ReleaseBundle {
   Assert-Exists (Join-Path $BundleDir "toolchain\tools\audio\vgmstream\vgmstream-cli.exe") "bundled vgmstream"
   Assert-Exists (Join-Path $BundleDir "toolchain\tools\audio\fmod\fsbankcl.exe") "bundled fsbankcl"
   Assert-Exists (Join-Path $BundleDir "toolchain\tools\ai\models\beat_this\torch_home\hub\checkpoints\beat_this-final0.ckpt") "bundled Beat This final0 checkpoint"
+  $envsDir = Join-Path $BundleDir "toolchain\envs"
+  if (Test-Path -LiteralPath $envsDir) {
+    throw "Release bundle should not include prebuilt Python environments: $envsDir"
+  }
 
   $wheelDir = Join-Path $BundleDir "runtime\wheels"
   $wheel = Get-ChildItem -LiteralPath $wheelDir -Filter "fh_radio_studio-*.whl" | Select-Object -First 1
