@@ -49,20 +49,20 @@ class _DashboardCaptureController extends StudioController {
   _DashboardCaptureController(super.prefs, _DashboardCaptureConfig config) {
     final readyToolchain = _toolchainReady(config);
     state = state.copyWith(
-      gameDir: p.join(config.projectDir, 'game'),
-      sourceLang: 'JP',
-      targetLang: 'EN',
-      gameSourceLang: 'CHS',
-      gameTargetLang: 'EN',
+      gameDir: config.gameDir,
+      sourceLang: config.sourceLang,
+      targetLang: config.targetLang,
+      gameSourceLang: config.gameSourceLang,
+      gameTargetLang: config.gameTargetLang,
       availableLanguages: const ['CHS', 'EN', 'JP'],
-      preferredLang: 'EN',
+      preferredLang: config.preferredLang,
       sourceLanguageExists: true,
       targetLanguageExists: true,
-      targetMatchesSource: false,
+      targetMatchesSource: config.targetMatchesSource,
       preferredMatchesTarget: true,
       voiceSlotVerified: true,
-      languageReady: false,
-      languageSummary: 'JP 显示 · EN 语音（准备包待写入）',
+      languageReady: config.languageReady,
+      languageSummary: config.languageSummary,
       busy: config.scanning,
       busyLabel: config.scanning ? '完整校验当前环境' : null,
       toolchainStatus: config.scanning
@@ -72,13 +72,19 @@ class _DashboardCaptureController extends StudioController {
           ? p.join(config.projectDir, 'packages', 'current')
           : null,
       lastPackageSummary: config.hasCurrentPackage
-          ? _packageSummary(sourceLang: 'CHS')
+          ? _packageSummary(
+              sourceLang: config.sourceLang,
+              targetLang: config.targetLang,
+            )
           : null,
       pendingPackageDir: config.hasPendingPackage
           ? p.join(config.projectDir, 'packages', 'pending')
           : null,
       pendingPackageSummary: config.hasPendingPackage
-          ? _packageSummary(sourceLang: 'JP')
+          ? _packageSummary(
+              sourceLang: config.sourceLang,
+              targetLang: config.targetLang,
+            )
           : null,
       fileIntegrity: _integritySummary(
         level: config.integrityLevel,
@@ -230,7 +236,16 @@ class _DashboardCaptureAppState extends State<_DashboardCaptureApp> {
 class _DashboardCaptureConfig {
   const _DashboardCaptureConfig({
     required this.projectDir,
+    required this.gameDir,
     required this.repoRoot,
+    required this.sourceLang,
+    required this.targetLang,
+    required this.gameSourceLang,
+    required this.gameTargetLang,
+    required this.preferredLang,
+    required this.languageReady,
+    required this.targetMatchesSource,
+    required this.languageSummary,
     required this.captures,
     required this.pixelRatio,
     required this.delay,
@@ -267,6 +282,30 @@ class _DashboardCaptureConfig {
     final projectDir =
         values['project-dir'] ??
         p.join(repoRoot, 'test', 'project', 'cli-full-flow');
+    final settings = FhRadioStudioProject.readSettings(projectDir);
+    final sourceLang =
+        values['source-lang'] ??
+        _settingString(settings['source_lang']) ??
+        'CHS';
+    final targetLang =
+        values['target-lang'] ??
+        _settingString(settings['target_lang']) ??
+        'EN';
+    final gameSourceLang =
+        values['game-source-lang'] ?? values['game-display-lang'] ?? targetLang;
+    final gameTargetLang =
+        values['game-target-lang'] ?? values['game-voice-lang'] ?? targetLang;
+    final languageReady = values.containsKey('language-ready')
+        ? _parseBool(values['language-ready'])
+        : sourceLang == gameSourceLang && targetLang == gameTargetLang;
+    final targetMatchesSource = values.containsKey('target-matches-source')
+        ? _parseBool(values['target-matches-source'])
+        : languageReady;
+    final languageSummary =
+        values['language-summary'] ??
+        (languageReady
+            ? '$sourceLang 显示 · $targetLang 语音'
+            : '$sourceLang 显示 · $targetLang 语音（准备包待写入）');
     final openDetails = (values['open-details'] ?? '')
         .split(',')
         .map((value) => value.trim().toLowerCase())
@@ -274,7 +313,19 @@ class _DashboardCaptureConfig {
         .toSet();
     return _DashboardCaptureConfig(
       projectDir: projectDir,
+      gameDir:
+          values['game-dir'] ??
+          _settingString(settings['game_dir']) ??
+          p.join(projectDir, 'game'),
       repoRoot: repoRoot,
+      sourceLang: sourceLang,
+      targetLang: targetLang,
+      gameSourceLang: gameSourceLang,
+      gameTargetLang: gameTargetLang,
+      preferredLang: values['preferred-lang'] ?? targetLang,
+      languageReady: languageReady,
+      targetMatchesSource: targetMatchesSource,
+      languageSummary: languageSummary,
       captures: [
         _CaptureSpec(
           name: 'regular',
@@ -339,7 +390,16 @@ class _DashboardCaptureConfig {
   }
 
   final String projectDir;
+  final String gameDir;
   final String repoRoot;
+  final String sourceLang;
+  final String targetLang;
+  final String gameSourceLang;
+  final String gameTargetLang;
+  final String preferredLang;
+  final bool languageReady;
+  final bool targetMatchesSource;
+  final String languageSummary;
   final List<_CaptureSpec> captures;
   final double pixelRatio;
   final Duration delay;
@@ -362,6 +422,12 @@ class _DashboardCaptureConfig {
   final bool baselineBuildCompatible;
   final List<String> baselineSupportedGameVersionIds;
   final List<Map<String, Object?>> issues;
+}
+
+String? _settingString(Object? value) {
+  if (value is! String) return null;
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
 }
 
 bool _parseBool(String? value) {
@@ -601,7 +667,10 @@ ToolchainStatusSummary _toolchainReady(_DashboardCaptureConfig config) {
   );
 }
 
-PackageArtifactSummary _packageSummary({required String sourceLang}) {
+PackageArtifactSummary _packageSummary({
+  required String sourceLang,
+  required String targetLang,
+}) {
   return PackageArtifactSummary(
     radio: 4,
     station: 'Horizon XS',
@@ -612,7 +681,7 @@ PackageArtifactSummary _packageSummary({required String sourceLang}) {
     skipBank: false,
     runtimeVerified: true,
     sourceLang: sourceLang,
-    targetLang: 'EN',
+    targetLang: targetLang,
     previewTracks: const ['Test Track'],
     assignments: const [],
   );
