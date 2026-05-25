@@ -8,6 +8,29 @@
 - In Python scripts, pass `encoding="utf-8"` when opening text files.
 - Do not change line endings or file encoding unless the task explicitly requires it.
 
+## Commit Messages
+
+- Use bracketed conventional commit messages: `[type][scope] summary`.
+- Scope is optional for repository-wide maintenance changes, for example `[chore] update project metadata`.
+- Use lowercase `type` and `scope`. Keep `summary` in English, imperative, lowercase after the brackets, and without a trailing period.
+- Keep the header concise, preferably at or below 72 characters.
+- Use one of these types: `feat`, `fix`, `perf`, `refactor`, `build`, `ci`, `test`, `docs`, `style`, `chore`, or `revert`.
+- Preferred scopes include `app`, `backend`, `audio`, `analysis`, `runtime`, `release`, `windows`, `tools`, `deps`, `docs`, and `ci`.
+- Mark breaking changes on the type with `!`, for example `[feat!][runtime] remove global uv fallback`, and include a `BREAKING CHANGE:` footer.
+- Add a body only when it explains the why, impact, migration notes, or test coverage.
+
+Examples:
+
+```text
+[fix][runtime] launch release uv from bundled toolchain
+[feat][audio] preserve siren playlist assignments in package builds
+[build][windows] require bundled release runtime artifacts
+[docs][release] document portable runtime preparation
+[test][analysis] cover local-heavy point selection rules
+[refactor][app] centralize cli process creation in UvRuntime
+[chore] update project metadata
+```
+
 ## Python Runtime and uv
 
 - All Python CLI execution must go through `uv`. Dev app code should call the `fh-radio-studio` console script through the centralized Dart `UvRuntime`; agent shell commands can use `uv run fh-radio-studio ...` or `uv run python -m backend.fh_radio_studio_cli ...` when directly debugging the module. Do not call bare `python -m backend.fh_radio_studio_cli` from app code, tests, docs, or agent commands unless explicitly debugging a non-uv failure mode.

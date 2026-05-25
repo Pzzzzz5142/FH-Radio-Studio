@@ -163,6 +163,63 @@ For focused Flutter verification after state/CLI integration changes:
 flutter test test/project_workspace_test.dart test/playlist_catalog_state_test.dart test/studio_state_test.dart test/fh_radio_studio_cli_runtime_test.dart test/widget_test.dart
 ```
 
+## Commit Messages
+
+Use bracketed conventional commit messages:
+
+```text
+[type][scope] summary
+```
+
+Scope is optional for repository-wide maintenance changes:
+
+```text
+[chore] update project metadata
+```
+
+Rules:
+
+- Use lowercase `type` and `scope`.
+- Keep `summary` in English, imperative, lowercase after the brackets, and without a trailing period.
+- Keep the header concise, preferably at or below 72 characters.
+- Use a body only when it adds why, impact, migration notes, or test coverage.
+- Mark breaking changes with `!` on the type, for example `[feat!][runtime] remove global uv fallback`, and include a `BREAKING CHANGE:` footer.
+
+Types:
+
+```text
+feat, fix, perf, refactor, build, ci, test, docs, style, chore, revert
+```
+
+Preferred scopes:
+
+```text
+app, backend, audio, analysis, runtime, release, windows, tools, deps, docs, ci
+```
+
+Examples:
+
+```text
+[fix][runtime] launch release uv from bundled toolchain
+[feat][audio] preserve siren playlist assignments in package builds
+[build][windows] require bundled release runtime artifacts
+[docs][release] document portable runtime preparation
+[test][analysis] cover local-heavy point selection rules
+[refactor][app] centralize cli process creation in UvRuntime
+[chore] update project metadata
+```
+
+Full example with body:
+
+```text
+[fix][audio] keep siren playlist assignments in package builds
+
+Preserve generated playlist metadata during package assembly so siren tracks
+retain their station mapping after export.
+
+Tests: uv run pytest test/test_cli_mock_game.py
+```
+
 ## Release Build
 
 Build a Windows release package from the repository root:
