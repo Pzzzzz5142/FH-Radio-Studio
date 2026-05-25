@@ -9,6 +9,10 @@ import 'app_info.dart';
 import 'siren_catalog.dart';
 
 const defaultSirenAudioCacheMaxBytes = 2 * 1024 * 1024 * 1024;
+const _sirenAudioDownloadMaxAttempts = 3;
+const _fakeSirenContentLengthFailure = bool.fromEnvironment(
+  'FH_RADIO_STUDIO_FAKE_SIREN_CONTENT_LENGTH_FAILURE',
+);
 
 final sirenAudioCacheProvider = Provider<SirenAudioCache>((ref) {
   return SirenAudioCache();
@@ -82,8 +86,31 @@ class SirenAudioCache {
     if (existing != null) return existing;
     final pending = _cacheAudio(detail, track: track);
     _activeDownloads[detail.cid] = pending;
-    pending.whenComplete(() => _activeDownloads.remove(detail.cid));
+    pending.then<void>(
+      (_) {
+        _activeDownloads.remove(detail.cid);
+      },
+      onError: (_, _) {
+        _activeDownloads.remove(detail.cid);
+      },
+    );
     return pending;
+  }
+
+  Future<int> cleanupPartialDownloads() async {
+    final partialDir = Directory(p.join(rootPath, 'partial'));
+    if (!await partialDir.exists()) return 0;
+    var deleted = 0;
+    await for (final entity in partialDir.list(followLinks: false)) {
+      if (entity is! File || !entity.path.endsWith('.part')) continue;
+      try {
+        await entity.delete();
+        deleted += 1;
+      } on FileSystemException {
+        // The next startup can retry this stale partial download.
+      }
+    }
+    return deleted;
   }
 
   Future<File?> cacheCover(SirenTrack track) async {
@@ -122,12 +149,20 @@ class SirenAudioCache {
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw SirenAudioCacheException('封面缓存失败：HTTP ${response.statusCode}');
       }
+      final expectedLength = response.contentLength;
       final sink = partial.openWrite();
       await response.pipe(sink);
+      await _verifyPartialLength(
+        partial,
+        expectedLength: expectedLength,
+        label: '封面缓存',
+      );
       if (await destination.exists()) await destination.delete();
       await partial.rename(destination.path);
       return destination;
     } on SocketException catch (error) {
+      throw SirenAudioCacheException('封面缓存失败：${error.message}', cause: error);
+    } on HttpException catch (error) {
       throw SirenAudioCacheException('封面缓存失败：${error.message}', cause: error);
     } finally {
       client.close(force: true);
@@ -154,8 +189,73 @@ class SirenAudioCache {
     final basename = _cacheBasename(detail);
     final destination = File(p.join(audioDir.path, basename));
     final partial = File(p.join(partialDir.path, '$basename.part'));
-    if (await partial.exists()) await partial.delete();
 
+    await _downloadAudioWithRetry(
+      detail,
+      destination: destination,
+      partial: partial,
+    );
+
+    final stat = await destination.stat();
+    final manifest = await _readManifest();
+    manifest.entries[detail.cid] = _SirenCacheEntry(
+      cid: detail.cid,
+      title: detail.name,
+      albumCid: detail.albumCid,
+      albumName: track?.albumName,
+      artists: detail.artists,
+      sourceUrl: detail.sourceUrl,
+      path: destination.path,
+      size: stat.size,
+      cachedAtMs: DateTime.now().millisecondsSinceEpoch,
+      lastAccessedMs: DateTime.now().millisecondsSinceEpoch,
+    );
+    await _writeManifest(manifest);
+    await trimToSize(protectedCids: {detail.cid});
+    return destination;
+  }
+
+  Future<void> _downloadAudioWithRetry(
+    SirenSongDetail detail, {
+    required File destination,
+    required File partial,
+  }) async {
+    SirenAudioCacheException? lastError;
+    for (
+      var attempt = 1;
+      attempt <= _sirenAudioDownloadMaxAttempts;
+      attempt += 1
+    ) {
+      try {
+        await _downloadAudioAttempt(
+          detail,
+          destination: destination,
+          partial: partial,
+        );
+        return;
+      } on _RestartSirenDownloadException catch (error) {
+        lastError = SirenAudioCacheException(error.message, cause: error);
+        await _deleteIfExists(partial);
+      } on SirenAudioCacheException catch (error) {
+        lastError = error;
+      }
+    }
+    await _deleteIfExists(partial);
+    final detailMessage = _withoutCacheFailurePrefix(
+      lastError?.message ?? '未知错误',
+    );
+    throw SirenAudioCacheException(
+      '音频缓存失败：已重试 $_sirenAudioDownloadMaxAttempts 次，$detailMessage',
+      cause: lastError,
+    );
+  }
+
+  Future<void> _downloadAudioAttempt(
+    SirenSongDetail detail, {
+    required File destination,
+    required File partial,
+  }) async {
+    final resumeFrom = await partial.exists() ? await partial.length() : 0;
     final client = HttpClient();
     try {
       final request = await client.getUrl(Uri.parse(detail.sourceUrl));
@@ -168,44 +268,81 @@ class SirenAudioCache {
         HttpHeaders.refererHeader,
         '$monsterSirenOrigin/music/${detail.cid}',
       );
+      if (resumeFrom > 0) {
+        request.headers.set(HttpHeaders.rangeHeader, 'bytes=$resumeFrom-');
+      }
       final response = await request.close();
-      if (response.statusCode < 200 || response.statusCode >= 300) {
+      if (response.statusCode == HttpStatus.requestedRangeNotSatisfiable &&
+          resumeFrom > 0) {
+        throw const _RestartSirenDownloadException('服务器拒绝续传位置，已改为重新下载。');
+      }
+      if (response.statusCode != HttpStatus.ok &&
+          response.statusCode != HttpStatus.partialContent) {
         throw SirenAudioCacheException('音频缓存失败：HTTP ${response.statusCode}');
       }
-      final sink = partial.openWrite();
+
+      final append = response.statusCode == HttpStatus.partialContent;
+      var expectedLength = response.contentLength;
+      if (append) {
+        final range = _parseContentRange(
+          response.headers.value(HttpHeaders.contentRangeHeader),
+        );
+        if (resumeFrom <= 0 || range == null || range.start != resumeFrom) {
+          throw const _RestartSirenDownloadException('服务器返回的续传范围不匹配，已改为重新下载。');
+        }
+        expectedLength =
+            range.total ??
+            (expectedLength < 0 ? -1 : resumeFrom + expectedLength);
+      } else if (resumeFrom > 0) {
+        await _deleteIfExists(partial);
+      }
+
+      final sink = partial.openWrite(
+        mode: append ? FileMode.append : FileMode.write,
+      );
       await response.pipe(sink);
+      await _verifyPartialLength(
+        partial,
+        expectedLength: expectedLength,
+        label: '音频缓存',
+      );
       if (await destination.exists()) await destination.delete();
       await partial.rename(destination.path);
-
-      final stat = await destination.stat();
-      final manifest = await _readManifest();
-      manifest.entries[detail.cid] = _SirenCacheEntry(
-        cid: detail.cid,
-        title: detail.name,
-        albumCid: detail.albumCid,
-        albumName: track?.albumName,
-        artists: detail.artists,
-        sourceUrl: detail.sourceUrl,
-        path: destination.path,
-        size: stat.size,
-        cachedAtMs: DateTime.now().millisecondsSinceEpoch,
-        lastAccessedMs: DateTime.now().millisecondsSinceEpoch,
-      );
-      await _writeManifest(manifest);
-      await trimToSize(protectedCids: {detail.cid});
-      return destination;
+    } on _RestartSirenDownloadException {
+      rethrow;
     } on SocketException catch (error) {
+      throw SirenAudioCacheException('音频缓存失败：${error.message}', cause: error);
+    } on HttpException catch (error) {
       throw SirenAudioCacheException('音频缓存失败：${error.message}', cause: error);
     } finally {
       client.close(force: true);
-      if (await partial.exists()) {
-        try {
-          await partial.delete();
-        } on FileSystemException {
-          // A later cache attempt can replace this stale partial file.
-        }
-      }
     }
+  }
+
+  Future<void> _deleteIfExists(File file) async {
+    try {
+      if (await file.exists()) await file.delete();
+    } on FileSystemException {
+      // A later attempt or startup cleanup can replace this stale partial file.
+    }
+  }
+
+  Future<void> _verifyPartialLength(
+    File partial, {
+    required int expectedLength,
+    required String label,
+  }) async {
+    if (expectedLength < 0) return;
+    final actualLength = await partial.length();
+    if (_fakeSirenContentLengthFailure) {
+      throw SirenAudioCacheException(
+        '$label失败：下载大小不完整（$actualLength / $expectedLength 字节）',
+      );
+    }
+    if (actualLength == expectedLength) return;
+    throw SirenAudioCacheException(
+      '$label失败：下载大小不完整（$actualLength / $expectedLength 字节）',
+    );
   }
 
   Future<void> trimToSize({Set<String> protectedCids = const {}}) async {
@@ -289,6 +426,13 @@ class SirenAudioCache {
   String get _manifestPath => p.join(rootPath, 'manifest.json');
 }
 
+String _withoutCacheFailurePrefix(String message) {
+  const prefix = '音频缓存失败：';
+  return message.startsWith(prefix)
+      ? message.substring(prefix.length)
+      : message;
+}
+
 class SirenAudioCacheException implements Exception {
   const SirenAudioCacheException(this.message, {this.cause});
 
@@ -297,6 +441,35 @@ class SirenAudioCacheException implements Exception {
 
   @override
   String toString() => message;
+}
+
+class _RestartSirenDownloadException implements Exception {
+  const _RestartSirenDownloadException(this.message);
+
+  final String message;
+}
+
+class _SirenContentRange {
+  const _SirenContentRange({required this.start, required this.total});
+
+  final int start;
+  final int? total;
+}
+
+_SirenContentRange? _parseContentRange(String? value) {
+  if (value == null) return null;
+  final match = RegExp(
+    r'^bytes\s+(\d+)-(\d+)/(\d+|\*)$',
+    caseSensitive: false,
+  ).firstMatch(value.trim());
+  if (match == null) return null;
+  final start = int.tryParse(match.group(1)!);
+  if (start == null) return null;
+  final totalText = match.group(3)!;
+  return _SirenContentRange(
+    start: start,
+    total: totalText == '*' ? null : int.tryParse(totalText),
+  );
 }
 
 class _SirenCacheManifest {

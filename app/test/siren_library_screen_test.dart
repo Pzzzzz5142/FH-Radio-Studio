@@ -540,6 +540,10 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('正在导入清单'), findsOneWidget);
+    final progress = tester.widget<Semantics>(
+      find.byKey(const ValueKey('siren-import-queue-progress')),
+    );
+    expect(progress.properties.label, '成功 0/2');
     expect(
       find.byKey(const ValueKey('siren-importing-queue-item-232222')),
       findsNothing,
@@ -553,6 +557,283 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('shows failed Siren import summary after finishing the queue', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1500, 1000);
+    addTearDown(() {
+      tester.view.resetDevicePixelRatio();
+      tester.view.resetPhysicalSize();
+    });
+
+    final client = _FakeSirenClient();
+    final project = Directory.systemTemp.createTempSync(
+      'fh-radio-studio-siren-test-',
+    );
+    addTearDown(() {
+      if (project.existsSync()) project.deleteSync(recursive: true);
+    });
+    final cachedFile = File(p.join(project.path, 'cached.wav'))
+      ..createSync(recursive: true)
+      ..writeAsBytesSync([1, 2, 3]);
+
+    SharedPreferences.setMockInitialValues({_projectDirKey: project.path});
+    final prefs = await SharedPreferences.getInstance();
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+          sirenCatalogClientProvider.overrideWithValue(client),
+          sirenAudioCacheProvider.overrideWithValue(
+            _SelectiveSirenAudioCache(
+              cachedFile: cachedFile,
+              failingCids: const {'232222'},
+            ),
+          ),
+          studioProvider.overrideWith(
+            (ref) => _ImportMotionStudioController(prefs),
+          ),
+        ],
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: buildAppTheme(
+            brightness: Brightness.light,
+            accent: AppAccent.lime,
+          ),
+          home: const Scaffold(
+            body: ColoredBox(
+              color: RmTokens.bgLight,
+              child: SirenLibraryScreen(),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+
+    await tester.tap(find.text('加入清单').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    await tester.tap(find.text('加入清单').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+
+    await tester.tap(find.text('导入全部').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    final dialog = find.byKey(const ValueKey('siren-import-failure-dialog'));
+    expect(dialog, findsOneWidget);
+    expect(find.text('部分塞壬曲目导入失败'), findsOneWidget);
+    expect(
+      find.descendant(of: dialog, matching: find.text('对峙')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: dialog, matching: find.text('新生蓝图')),
+      findsNothing,
+    );
+    expect(find.text('1 项'), findsOneWidget);
+
+    await tester.tap(find.text('知道了'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+
+    expect(dialog, findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('uses danger dialog theme when every Siren import fails', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1500, 1000);
+    addTearDown(() {
+      tester.view.resetDevicePixelRatio();
+      tester.view.resetPhysicalSize();
+    });
+
+    final client = _FakeSirenClient();
+    final project = Directory.systemTemp.createTempSync(
+      'fh-radio-studio-siren-test-',
+    );
+    addTearDown(() {
+      if (project.existsSync()) project.deleteSync(recursive: true);
+    });
+    final cachedFile = File(p.join(project.path, 'cached.wav'))
+      ..createSync(recursive: true)
+      ..writeAsBytesSync([1, 2, 3]);
+
+    SharedPreferences.setMockInitialValues({_projectDirKey: project.path});
+    final prefs = await SharedPreferences.getInstance();
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+          sirenCatalogClientProvider.overrideWithValue(client),
+          sirenAudioCacheProvider.overrideWithValue(
+            _SelectiveSirenAudioCache(
+              cachedFile: cachedFile,
+              failingCids: const {'232222', '461111'},
+            ),
+          ),
+          studioProvider.overrideWith(
+            (ref) => _ImportMotionStudioController(prefs),
+          ),
+        ],
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: buildAppTheme(
+            brightness: Brightness.light,
+            accent: AppAccent.lime,
+          ),
+          home: const Scaffold(
+            body: ColoredBox(
+              color: RmTokens.bgLight,
+              child: SirenLibraryScreen(),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+
+    await tester.tap(find.text('加入清单').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    await tester.tap(find.text('加入清单').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+
+    await tester.tap(find.text('导入全部').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    final dialog = find.byKey(const ValueKey('siren-import-failure-dialog'));
+    expect(dialog, findsOneWidget);
+    expect(find.text('塞壬曲目导入失败'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('siren-import-failure-tone-danger')),
+      findsOneWidget,
+    );
+    expect(find.text('2 项'), findsOneWidget);
+
+    await tester.tap(find.text('知道了'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+
+    expect(dialog, findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'keeps Siren batch import running while the screen is remounted',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1500, 1000);
+      addTearDown(() {
+        tester.view.resetDevicePixelRatio();
+        tester.view.resetPhysicalSize();
+      });
+
+      final client = _FakeSirenClient();
+      final project = Directory.systemTemp.createTempSync(
+        'fh-radio-studio-siren-test-',
+      );
+      addTearDown(() {
+        if (project.existsSync()) project.deleteSync(recursive: true);
+      });
+      final cachedFile = File(p.join(project.path, 'cached.wav'))
+        ..createSync(recursive: true)
+        ..writeAsBytesSync([1, 2, 3]);
+      final cacheRelease = Completer<void>();
+
+      SharedPreferences.setMockInitialValues({_projectDirKey: project.path});
+      final prefs = await SharedPreferences.getInstance();
+      var showSiren = true;
+      StateSetter? hostSetState;
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            sharedPreferencesProvider.overrideWithValue(prefs),
+            sirenCatalogClientProvider.overrideWithValue(client),
+            sirenAudioCacheProvider.overrideWithValue(
+              _BlockingSirenAudioCache(
+                cachedFile: cachedFile,
+                release: cacheRelease,
+              ),
+            ),
+            studioProvider.overrideWith(
+              (ref) => _ImportMotionStudioController(prefs),
+            ),
+          ],
+          child: StatefulBuilder(
+            builder: (context, setState) {
+              hostSetState = setState;
+              return MaterialApp(
+                debugShowCheckedModeBanner: false,
+                theme: buildAppTheme(
+                  brightness: Brightness.light,
+                  accent: AppAccent.lime,
+                ),
+                home: Scaffold(
+                  body: ColoredBox(
+                    color: RmTokens.bgLight,
+                    child: showSiren
+                        ? const SirenLibraryScreen()
+                        : const Center(child: Text('其它页面')),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 120));
+
+      await tester.tap(find.text('加入清单').first);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 120));
+      await tester.tap(find.text('加入清单').first);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 120));
+      await tester.tap(find.text('导入全部').first);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 120));
+
+      expect(
+        find.byKey(const ValueKey('siren-importing-queue-overlay')),
+        findsOneWidget,
+      );
+
+      hostSetState!(() => showSiren = false);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 120));
+      expect(find.text('其它页面'), findsOneWidget);
+
+      hostSetState!(() => showSiren = true);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 120));
+      expect(
+        find.byKey(const ValueKey('siren-importing-queue-overlay')),
+        findsOneWidget,
+      );
+
+      cacheRelease.complete();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(
+        find.byKey(const ValueKey('siren-importing-queue-overlay')),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('latest ticker keeps recent song spacing compact and slower', (
     tester,
@@ -740,6 +1021,27 @@ class _BlockingSirenAudioCache extends SirenAudioCache {
   @override
   Future<File> cacheAudio(SirenSongDetail detail, {SirenTrack? track}) async {
     await release.future;
+    return cachedFile;
+  }
+
+  @override
+  Future<File?> cacheCover(SirenTrack track) async => null;
+}
+
+class _SelectiveSirenAudioCache extends SirenAudioCache {
+  _SelectiveSirenAudioCache({
+    required this.cachedFile,
+    required this.failingCids,
+  });
+
+  final File cachedFile;
+  final Set<String> failingCids;
+
+  @override
+  Future<File> cacheAudio(SirenSongDetail detail, {SirenTrack? track}) async {
+    if (failingCids.contains(detail.cid)) {
+      throw const SirenAudioCacheException('音频缓存失败：已重试 3 次，测试传输失败');
+    }
     return cachedFile;
   }
 

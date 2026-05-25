@@ -18,6 +18,9 @@ TRACK_METADATA_CACHE_NAME = "track_metadata.json"
 AUDIO_SUFFIXES = {".wav", ".flac", ".ogg", ".aiff", ".aif", ".mp3", ".m4a", ".aac"}
 LOUDNESS_ANALYSIS_CACHE_KEY = "loudness_analysis"
 LOUDNESS_CACHE_META_KEYS = {"cached_at", "source_size", "source_mtime_ms"}
+_IMPORT_COMPLETE_TAG = "FH_RADIO_STUDIO_IMPORT_COMPLETE"
+_IMPORT_COMPLETE_VALUE = "1"
+_MP4_IMPORT_COMPLETE_KEY = "----:com.fh-radio-studio:import-complete"
 
 
 @dataclass(frozen=True)
@@ -119,6 +122,32 @@ def write_track_metadata_tags(
             cover=cover,
         )
     return _write_easy_tags(path, title=title, artist=artist, album=album)
+
+
+def write_import_completion_marker(path: Path) -> bool:
+    suffix = path.suffix.lower()
+    if suffix in {".wav", ".aif", ".aiff", ".mp3"}:
+        return _write_id3_import_completion_marker(path)
+    if suffix == ".flac":
+        return _write_flac_import_completion_marker(path)
+    if suffix in {".m4a", ".mp4", ".aac"}:
+        return _write_mp4_import_completion_marker(path)
+    if suffix == ".ogg":
+        return _write_vorbis_import_completion_marker(path)
+    return False
+
+
+def has_import_completion_marker(path: Path) -> bool:
+    suffix = path.suffix.lower()
+    if suffix in {".wav", ".aif", ".aiff", ".mp3"}:
+        return _has_id3_import_completion_marker(path)
+    if suffix == ".flac":
+        return _has_flac_import_completion_marker(path)
+    if suffix in {".m4a", ".mp4", ".aac"}:
+        return _has_mp4_import_completion_marker(path)
+    if suffix == ".ogg":
+        return _has_vorbis_import_completion_marker(path)
+    return False
 
 
 def metadata_cache_path(project_dir: Path) -> Path:
@@ -501,6 +530,66 @@ def _write_id3_container_tags(
         return False
 
 
+def _write_id3_import_completion_marker(path: Path) -> bool:
+    try:
+        if path.suffix.lower() == ".wav":
+            from mutagen.wave import WAVE
+
+            audio = WAVE(str(path))
+        elif path.suffix.lower() in {".aif", ".aiff"}:
+            from mutagen.aiff import AIFF
+
+            audio = AIFF(str(path))
+        else:
+            from mutagen.mp3 import MP3
+
+            audio = MP3(str(path))
+        from mutagen.id3 import TXXX
+
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags.setall(
+            "TXXX",
+            [
+                frame
+                for frame in audio.tags.getall("TXXX")
+                if getattr(frame, "desc", "") != _IMPORT_COMPLETE_TAG
+            ]
+            + [TXXX(encoding=3, desc=_IMPORT_COMPLETE_TAG, text=[_IMPORT_COMPLETE_VALUE])],
+        )
+        audio.save()
+        return True
+    except Exception:
+        return False
+
+
+def _has_id3_import_completion_marker(path: Path) -> bool:
+    try:
+        if path.suffix.lower() == ".wav":
+            from mutagen.wave import WAVE
+
+            audio = WAVE(str(path))
+        elif path.suffix.lower() in {".aif", ".aiff"}:
+            from mutagen.aiff import AIFF
+
+            audio = AIFF(str(path))
+        else:
+            from mutagen.mp3 import MP3
+
+            audio = MP3(str(path))
+    except Exception:
+        return False
+    tags = getattr(audio, "tags", None)
+    if tags is None:
+        return False
+    for frame in tags.getall("TXXX"):
+        if getattr(frame, "desc", "") != _IMPORT_COMPLETE_TAG:
+            continue
+        if _IMPORT_COMPLETE_VALUE in _flatten_tag_value(getattr(frame, "text", None)):
+            return True
+    return False
+
+
 def _write_flac_container_tags(
     path: Path,
     *,
@@ -534,6 +623,28 @@ def _write_flac_container_tags(
         return False
 
 
+def _write_flac_import_completion_marker(path: Path) -> bool:
+    try:
+        from mutagen.flac import FLAC
+
+        audio = FLAC(str(path))
+        audio[_IMPORT_COMPLETE_TAG] = [_IMPORT_COMPLETE_VALUE]
+        audio.save()
+        return True
+    except Exception:
+        return False
+
+
+def _has_flac_import_completion_marker(path: Path) -> bool:
+    try:
+        from mutagen.flac import FLAC
+
+        audio = FLAC(str(path))
+    except Exception:
+        return False
+    return _has_comment_import_completion_marker(audio)
+
+
 def _write_mp4_container_tags(
     path: Path,
     *,
@@ -562,6 +673,29 @@ def _write_mp4_container_tags(
         return True
     except Exception:
         return False
+
+
+def _write_mp4_import_completion_marker(path: Path) -> bool:
+    try:
+        from mutagen.mp4 import MP4
+
+        audio = MP4(str(path))
+        audio[_MP4_IMPORT_COMPLETE_KEY] = [_IMPORT_COMPLETE_VALUE.encode("utf-8")]
+        audio.save()
+        return True
+    except Exception:
+        return False
+
+
+def _has_mp4_import_completion_marker(path: Path) -> bool:
+    try:
+        from mutagen.mp4 import MP4
+
+        audio = MP4(str(path))
+    except Exception:
+        return False
+    values = audio.get(_MP4_IMPORT_COMPLETE_KEY, [])
+    return _IMPORT_COMPLETE_VALUE in _flatten_tag_value(values)
 
 
 def _write_vorbis_comment_tags(
@@ -599,6 +733,34 @@ def _write_vorbis_comment_tags(
         return True
     except Exception:
         return False
+
+
+def _write_vorbis_import_completion_marker(path: Path) -> bool:
+    try:
+        from mutagen import File as MutagenFile
+
+        audio = MutagenFile(str(path))
+        if audio is None:
+            return False
+        if audio.tags is None:
+            audio.add_tags()
+        audio[_IMPORT_COMPLETE_TAG] = [_IMPORT_COMPLETE_VALUE]
+        audio.save()
+        return True
+    except Exception:
+        return False
+
+
+def _has_vorbis_import_completion_marker(path: Path) -> bool:
+    try:
+        from mutagen import File as MutagenFile
+
+        audio = MutagenFile(str(path))
+    except Exception:
+        return False
+    if audio is None:
+        return False
+    return _has_comment_import_completion_marker(audio)
 
 
 def _write_easy_tags(
@@ -793,6 +955,18 @@ def _cover_extension(mime: str) -> str:
 
 def _clean_optional_text(value: object) -> Optional[str]:
     return _clean_tag(str(value)) if value is not None else None
+
+
+def _has_comment_import_completion_marker(audio: object) -> bool:
+    tags = getattr(audio, "tags", None) or audio
+    items = tags.items() if hasattr(tags, "items") else []
+    expected_key = _normalize_tag_key(_IMPORT_COMPLETE_TAG)
+    for raw_key, raw_value in items:
+        if _normalize_tag_key(str(raw_key)) != expected_key:
+            continue
+        if _IMPORT_COMPLETE_VALUE in _flatten_tag_value(raw_value):
+            return True
+    return False
 
 
 def _collect_mutagen_tags(tags: object, out: Dict[str, str]) -> None:

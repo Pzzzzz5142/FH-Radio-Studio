@@ -11,6 +11,7 @@ import '../state/studio_state.dart';
 import '../state/custom_pool_tracks.dart';
 import '../state/playlist_plan_state.dart';
 import '../state/router.dart';
+import '../state/siren_import_queue_state.dart';
 import '../state/track_timing_state.dart';
 import '../theme/app_theme.dart';
 import '../theme/text_styles.dart';
@@ -42,6 +43,8 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
   Widget build(BuildContext context) {
     final all = ref.watch(realPoolTracksProvider);
     final cli = ref.watch(studioProvider);
+    final sirenImport = ref.watch(sirenImportQueueProvider);
+    final sirenImporting = sirenImport.importing || cli.busyLabel == '导入塞壬唱片';
     final playlistPlan = ref.watch(effectivePlaylistPlanProvider);
     final latestPackage = cli.pendingPackageSummary ?? cli.lastPackageSummary;
     final gameMatchesLatestPackage =
@@ -62,15 +65,12 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
     final customRadios = kRadios
         .where((r) => kStationModes[r.code] == StationMode.custom)
         .toList();
-    final importing =
-        cli.busy && (cli.busyLabel == '导入自建歌曲' || cli.busyLabel == '导入塞壬唱片');
+    final importing = cli.busy && cli.busyLabel == '导入自建歌曲';
 
     return PendingGate(
       pending: importing,
-      label: cli.busyLabel == '导入塞壬唱片' ? '正在导入塞壬唱片' : '正在导入自建歌曲',
-      detail: cli.busyLabel == '导入塞壬唱片'
-          ? '正在从 AppData 缓存规范化音频到项目 siren，并刷新曲目信息。'
-          : '正在导入音频到项目 sources，必要时转换到 48 kHz，并刷新曲目信息。',
+      label: '正在导入自建歌曲',
+      detail: '正在导入音频到项目 sources，必要时转换到 48 kHz，并刷新曲目信息。',
       overlayKey: const ValueKey('custom-pool-import-gate'),
       childOpacity: 0.42,
       borderRadius: BorderRadius.zero,
@@ -84,7 +84,7 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    _pageHead(context, cli),
+                    _pageHead(context, cli, sirenImporting: sirenImporting),
                     const SizedBox(height: 28),
                     _statRow(
                       context,
@@ -105,6 +105,7 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
                       latestPackage: latestPackage,
                       playlistPlan: playlistPlan,
                       gameMatchesLatestPackage: gameMatchesLatestPackage,
+                      sirenImporting: sirenImporting,
                     ),
                     const SizedBox(height: 14),
                     _infoBanner(context, customRadios: customRadios),
@@ -118,8 +119,16 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
     );
   }
 
-  Widget _pageHead(BuildContext context, StudioState cli) {
+  Widget _pageHead(
+    BuildContext context,
+    StudioState cli, {
+    required bool sirenImporting,
+  }) {
     final rm = context.rm;
+    final localImporting = cli.busy && cli.busyLabel == '导入自建歌曲';
+    final localImportLocked = cli.busy || sirenImporting;
+    final sirenNavigationLocked =
+        cli.busy && cli.busyLabel != '导入塞壬唱片' && !sirenImporting;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
@@ -148,16 +157,26 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
             ),
             const SizedBox(width: 8),
             RmButton(
-              onPressed: () => context.go(RmRoutes.siren),
-              leading: const RmIcon('spark', size: 12),
-              label: '塞壬唱片',
+              onPressed: sirenNavigationLocked
+                  ? null
+                  : () => context.go(RmRoutes.siren),
+              leading: sirenImporting
+                  ? const _ButtonSpinner()
+                  : const RmIcon('spark', size: 12),
+              label: sirenImporting ? '塞壬导入中' : '塞壬唱片',
+              tooltip: sirenImporting
+                  ? '塞壬唱片正在导入，点击查看进度'
+                  : sirenNavigationLocked
+                  ? '当前正在导入自建歌曲'
+                  : null,
             ),
             const SizedBox(width: 8),
             RmButton(
-              onPressed: cli.busy ? null : _pickMusicFiles,
+              onPressed: localImportLocked ? null : _pickMusicFiles,
               variant: RmButtonVariant.primary,
               leading: const RmIcon('import', size: 12),
-              label: '导入新曲目',
+              label: localImporting ? '导入中' : '导入新曲目',
+              tooltip: sirenImporting ? '塞壬唱片正在导入，完成后可导入本地歌曲' : null,
             ),
           ],
         ),
@@ -225,6 +244,7 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
     required PackageArtifactSummary? latestPackage,
     required PlaylistPlan playlistPlan,
     required bool gameMatchesLatestPackage,
+    required bool sirenImporting,
   }) {
     final rm = context.rm;
     return RmPanel(
@@ -268,7 +288,12 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
         children: [
           _PoolHeaderRow(),
           if (visible.isEmpty)
-            _empty(context, cli, msrOnly: _msrOnly)
+            _empty(
+              context,
+              cli,
+              msrOnly: _msrOnly,
+              sirenImporting: sirenImporting,
+            )
           else
             for (int i = 0; i < visible.length; i++)
               _PoolRow(
@@ -294,6 +319,7 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
     BuildContext context,
     StudioState cli, {
     required bool msrOnly,
+    required bool sirenImporting,
   }) {
     final rm = context.rm;
     return Padding(
@@ -308,14 +334,21 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
           ),
           const SizedBox(height: 16),
           RmButton(
-            onPressed: cli.busy
+            onPressed: cli.busy || (!msrOnly && sirenImporting)
                 ? null
                 : (msrOnly
                       ? () => context.go(RmRoutes.siren)
                       : _pickMusicFiles),
             variant: RmButtonVariant.primary,
-            leading: RmIcon(msrOnly ? 'spark' : 'import', size: 12),
-            label: msrOnly ? '前往 MSR' : '导入曲目',
+            leading: msrOnly && sirenImporting
+                ? const _ButtonSpinner()
+                : RmIcon(msrOnly ? 'spark' : 'import', size: 12),
+            label: msrOnly && sirenImporting
+                ? '塞壬导入中'
+                : msrOnly
+                ? '前往 MSR'
+                : '导入曲目',
+            tooltip: !msrOnly && sirenImporting ? '塞壬唱片正在导入，完成后可导入本地歌曲' : null,
           ),
         ],
       ),
@@ -384,6 +417,10 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
   }
 
   Future<void> _pickMusicFiles() async {
+    if (ref.read(studioProvider).busy ||
+        ref.read(sirenImportQueueProvider).importing) {
+      return;
+    }
     final result = await FilePicker.pickFiles(
       dialogTitle: '导入自建歌曲',
       type: FileType.custom,
@@ -395,6 +432,11 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
         .whereType<String>()
         .toList(growable: false);
     if (paths == null || paths.isEmpty) return;
+    if (!mounted ||
+        ref.read(studioProvider).busy ||
+        ref.read(sirenImportQueueProvider).importing) {
+      return;
+    }
     await ref.read(studioProvider.notifier).importMusicPaths(paths);
   }
 
@@ -439,6 +481,23 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
         context,
       ).showSnackBar(SnackBar(content: Text('删除失败：${error.message}')));
     }
+  }
+}
+
+class _ButtonSpinner extends StatelessWidget {
+  const _ButtonSpinner();
+
+  @override
+  Widget build(BuildContext context) {
+    final color = IconTheme.of(context).color ?? context.rm.accent.base;
+    return SizedBox(
+      width: 12,
+      height: 12,
+      child: CircularProgressIndicator(
+        strokeWidth: 1.8,
+        valueColor: AlwaysStoppedAnimation<Color>(color),
+      ),
+    );
   }
 }
 

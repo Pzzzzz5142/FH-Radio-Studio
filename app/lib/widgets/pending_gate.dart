@@ -4,6 +4,8 @@ import '../theme/app_theme.dart';
 import '../theme/text_styles.dart';
 import '../theme/tokens.dart';
 
+enum PendingOverlayTone { accent, danger }
+
 class PendingGate extends StatelessWidget {
   const PendingGate({
     super.key,
@@ -11,22 +13,26 @@ class PendingGate extends StatelessWidget {
     required this.child,
     required this.label,
     this.detail,
+    this.detailWidget,
     this.overlayKey,
     this.blockInput = true,
     this.compact = false,
     this.childOpacity = 0.36,
     this.borderRadius,
+    this.tone = PendingOverlayTone.accent,
   });
 
   final bool pending;
   final Widget child;
   final String label;
   final String? detail;
+  final Widget? detailWidget;
   final Key? overlayKey;
   final bool blockInput;
   final bool compact;
   final double childOpacity;
   final BorderRadius? borderRadius;
+  final PendingOverlayTone tone;
 
   @override
   Widget build(BuildContext context) {
@@ -45,8 +51,10 @@ class PendingGate extends StatelessWidget {
               key: overlayKey,
               label: label,
               detail: detail,
+              detailWidget: detailWidget,
               compact: compact,
               borderRadius: radius,
+              tone: tone,
             ),
           ),
         ],
@@ -60,6 +68,7 @@ class PendingOverlay extends StatelessWidget {
     super.key,
     required this.label,
     this.detail,
+    this.detailWidget,
     this.progressLabel,
     this.progressDetail,
     this.progressValue,
@@ -69,10 +78,12 @@ class PendingOverlay extends StatelessWidget {
     this.interactive = false,
     this.compact = false,
     this.borderRadius,
+    this.tone = PendingOverlayTone.accent,
   });
 
   final String label;
   final String? detail;
+  final Widget? detailWidget;
   final String? progressLabel;
   final String? progressDetail;
   final double? progressValue;
@@ -82,10 +93,19 @@ class PendingOverlay extends StatelessWidget {
   final bool interactive;
   final bool compact;
   final BorderRadius? borderRadius;
+  final PendingOverlayTone tone;
 
   @override
   Widget build(BuildContext context) {
     final rm = context.rm;
+    final toneColor = switch (tone) {
+      PendingOverlayTone.accent => rm.accent.base,
+      PendingOverlayTone.danger => rm.danger,
+    };
+    final toneRing = switch (tone) {
+      PendingOverlayTone.accent => rm.accent.ring,
+      PendingOverlayTone.danger => rm.danger.withAlpha(77),
+    };
     final tint = rm.panel.withAlpha(compact ? 232 : 222);
     final border = rm.border.withAlpha(180);
     final content = Container(
@@ -113,11 +133,9 @@ class PendingOverlay extends StatelessWidget {
                   dimension: compact ? 7 : 8,
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      color: rm.accent.base,
+                      color: toneColor,
                       shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(color: rm.accent.ring, blurRadius: 8),
-                      ],
+                      boxShadow: [BoxShadow(color: toneRing, blurRadius: 8)],
                     ),
                   ),
                 ),
@@ -132,9 +150,19 @@ class PendingOverlay extends StatelessWidget {
                 ),
               ],
             ),
-            if (detail != null && !compact) ...[
+            if (detail != null || detailWidget != null) ...[
               const SizedBox(height: 4),
-              Text(detail!, style: RmText.sans(11.5, color: rm.fg3)),
+              detailWidget ??
+                  Text(
+                    detail!,
+                    style: RmText.sans(
+                      compact ? 11 : 11.5,
+                      color: tone == PendingOverlayTone.danger
+                          ? toneColor
+                          : rm.fg3,
+                      weight: compact ? FontWeight.w600 : FontWeight.w400,
+                    ),
+                  ),
             ],
             if (progressLabel != null && !compact) ...[
               const SizedBox(height: 10),
@@ -172,7 +200,7 @@ class PendingOverlay extends StatelessWidget {
                           const SizedBox(width: 12),
                           Text(
                             progressCaption!,
-                            style: RmText.mono(11, color: rm.accent.base),
+                            style: RmText.mono(11, color: toneColor),
                           ),
                         ],
                       ],
@@ -205,7 +233,7 @@ class PendingOverlay extends StatelessWidget {
                   minHeight: 2,
                   value: progressValue,
                   backgroundColor: rm.border.withAlpha(120),
-                  valueColor: AlwaysStoppedAnimation<Color>(rm.accent.base),
+                  valueColor: AlwaysStoppedAnimation<Color>(toneColor),
                 ),
               ),
             ),

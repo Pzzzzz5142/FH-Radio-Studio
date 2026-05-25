@@ -7,7 +7,10 @@ from pathlib import Path
 import soundfile as sf
 
 from backend.fh_radio_studio_cli.cli import main
-from backend.fh_radio_studio_cli.metadata import read_track_metadata
+from backend.fh_radio_studio_cli.metadata import (
+    has_import_completion_marker,
+    read_track_metadata,
+)
 
 _PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -40,6 +43,7 @@ def test_import_audio_transcodes_non_48k_file(tmp_path: Path, capsys) -> None:
     assert "loudness_analysis" in item
     assert imported.parent == project / "sources"
     assert sf.info(str(imported)).samplerate == 48000
+    assert has_import_completion_marker(imported)
     cache_path = project / ".fh-radio-studio" / "track_metadata.json"
     cached = json.loads(cache_path.read_text(encoding="utf-8"))["tracks"][0]
     assert cached["source"] == str(imported.resolve())
@@ -69,6 +73,8 @@ def test_import_audio_copies_48k_file_without_transcoding(tmp_path: Path, capsys
     assert item["source_sample_rate"] == 48000
     assert imported.name == source.name
     assert sf.info(str(imported)).samplerate == 48000
+    assert has_import_completion_marker(imported)
+    assert not list((project / "sources").glob("*.fh-radio-studio-import-tmp*"))
 
 
 def test_import_audio_can_target_siren_folder(tmp_path: Path, capsys) -> None:
@@ -106,6 +112,7 @@ def test_import_audio_can_target_siren_folder(tmp_path: Path, capsys) -> None:
     assert imported.parent == project / "siren"
     assert imported.name == source.name
     assert item["metadata_tags_written"] is True
+    assert not has_import_completion_marker(imported)
     cache_path = project / ".fh-radio-studio" / "track_metadata.json"
     cached = json.loads(cache_path.read_text(encoding="utf-8"))["tracks"][0]
     assert cached["source"] == str(imported.resolve())

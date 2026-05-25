@@ -16,6 +16,7 @@ import '../theme/text_styles.dart';
 import '../theme/tokens.dart';
 import '../widgets/pending_gate.dart';
 import '../widgets/rm_button.dart';
+import '../widgets/rm_banner.dart';
 import '../widgets/rm_chip.dart';
 import '../widgets/rm_icon.dart';
 import '../widgets/rm_panel.dart';
@@ -53,7 +54,6 @@ class _SirenLibraryScreenState extends ConsumerState<SirenLibraryScreen> {
   final _songDetails = <String, AsyncValue<SirenSongDetail>>{};
   final _albumDetails = <String, AsyncValue<SirenAlbumDetail>>{};
   final _playingBusyCids = <String>{};
-  final _importingCids = <String>{};
   final _trackErrors = <String, String>{};
   final _autoFetchingSongCids = <String>{};
   final _autoFetchingAlbumCids = <String>{};
@@ -68,8 +68,8 @@ class _SirenLibraryScreenState extends ConsumerState<SirenLibraryScreen> {
   String? _activeTrackCid;
   String? _playingCid;
   bool _playing = false;
-  bool _queueImporting = false;
   double _importSidePanelHeight = 0;
+  bool _failureDialogScheduled = false;
 
   @override
   void dispose() {
@@ -111,6 +111,15 @@ class _SirenLibraryScreenState extends ConsumerState<SirenLibraryScreen> {
     final importQueue = ref.watch(sirenImportQueueProvider);
     final queuedCids = importQueue.queuedCids;
     final importedPreviewCids = importQueue.importedPreviewCids;
+    final queueImporting = importQueue.importing;
+    final importingCids = importQueue.importingCids;
+    final trackErrors = {...importQueue.trackErrors, ..._trackErrors};
+    _scheduleBatchFailureDialog(
+      importQueue.lastBatchErrors,
+      importQueue.lastBatchTotal,
+      snapshot.tracks,
+    );
+    final sourceImportBlocked = cli.busy && !queueImporting;
     final importedCids = <String>{
       if (cli.hasProject) ...SirenImportRegistry.importedCids(cli.projectDir),
       ...importedPreviewCids,
@@ -123,6 +132,7 @@ class _SirenLibraryScreenState extends ConsumerState<SirenLibraryScreen> {
       snapshot.tracks,
       importedCids,
       queuedCids: queuedCids,
+      trackErrors: trackErrors,
       albumOrder: albumOrder,
       trackOrder: trackOrder,
     );
@@ -260,7 +270,10 @@ class _SirenLibraryScreenState extends ConsumerState<SirenLibraryScreen> {
                     final side = _ImportSidePanel(
                       key: const ValueKey('siren-import-side-panel'),
                       queuedTracks: queuedTracks,
-                      queueImporting: _queueImporting,
+                      queueImporting: queueImporting,
+                      batchTotal: importQueue.batchTotal,
+                      importingCount: importingCids.length,
+                      failedCount: importQueue.trackErrors.length,
                       selectedTrack: selectedTrack,
                       selectedAlbum: selectedAlbum,
                       selectedAlbumDetail: selectedAlbum == null
@@ -271,15 +284,21 @@ class _SirenLibraryScreenState extends ConsumerState<SirenLibraryScreen> {
                           : _songDetails[selectedTrack.cid],
                       queuedCids: queuedCids,
                       importedCids: importedCids,
-                      importingCids: _importingCids,
-                      trackErrors: _trackErrors,
+                      importingCids: importingCids,
+                      trackErrors: trackErrors,
                       onRemoveQueued: _removeQueued,
                       onClearQueue: queuedCids.isEmpty
                           ? null
                           : ref.read(sirenImportQueueProvider.notifier).clear,
-                      onImportQueued: queuedTracks.isEmpty
+                      importQueuedTooltip: sourceImportBlocked
+                          ? '自建歌曲正在导入，完成后可导入塞壬唱片'
+                          : null,
+                      onImportQueued:
+                          queuedTracks.isEmpty || sourceImportBlocked
                           ? null
-                          : () => _importQueuedTracks(queuedTracks),
+                          : () => ref
+                                .read(sirenImportQueueProvider.notifier)
+                                .importQueuedTracks(queuedTracks),
                       onPlayTrack: selectedTrack == null
                           ? null
                           : () => _togglePlayback(selectedTrack),
@@ -390,6 +409,7 @@ class _SirenLibraryScreenState extends ConsumerState<SirenLibraryScreen> {
     List<SirenTrack> tracks,
     Set<String> importedCids, {
     required Set<String> queuedCids,
+    required Map<String, String> trackErrors,
     required Map<String, int> albumOrder,
     required Map<String, int> trackOrder,
   }) {
@@ -409,7 +429,9 @@ class _SirenLibraryScreenState extends ConsumerState<SirenLibraryScreen> {
               queuedCids.contains(track.cid) &&
                   !importedCids.contains(track.cid),
             _SirenFilter.imported => importedCids.contains(track.cid),
-            _SirenFilter.failed => _songDetails[track.cid]?.hasError == true,
+            _SirenFilter.failed =>
+              _songDetails[track.cid]?.hasError == true ||
+                  trackErrors.containsKey(track.cid),
           };
         })
         .toList(growable: false);
@@ -586,33 +608,6 @@ class _SirenLibraryScreenState extends ConsumerState<SirenLibraryScreen> {
     }
   }
 
-  Future<void> _importQueuedTracks(List<SirenTrack> tracks) async {
-    if (_queueImporting) return;
-    final batch = tracks
-        .where((track) => !_importingCids.contains(track.cid))
-        .toList(growable: false);
-    if (batch.isEmpty) return;
-    setState(() {
-      _queueImporting = true;
-      _importingCids.addAll(batch.map((track) => track.cid));
-    });
-    try {
-      for (final track in batch) {
-        if (!mounted) return;
-        await _importTrack(track, manageImportingState: false);
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _queueImporting = false;
-          for (final track in batch) {
-            _importingCids.remove(track.cid);
-          }
-        });
-      }
-    }
-  }
-
   Future<void> _cacheInBackground(
     SirenAudioCache cache,
     SirenSongDetail detail,
@@ -625,50 +620,40 @@ class _SirenLibraryScreenState extends ConsumerState<SirenLibraryScreen> {
     }
   }
 
-  Future<void> _importTrack(
-    SirenTrack track, {
-    bool manageImportingState = true,
-  }) async {
-    if (manageImportingState && _importingCids.contains(track.cid)) return;
-    setState(() {
-      _activeTrackCid = track.cid;
-      if (manageImportingState) _importingCids.add(track.cid);
-      _trackErrors.remove(track.cid);
-    });
-    try {
-      final detail = await _ensureSongDetail(track);
-      final cache = ref.read(sirenAudioCacheProvider);
-      final cached = await cache.cacheAudio(detail, track: track);
-      String? coverImagePath;
-      try {
-        coverImagePath = (await cache.cacheCover(track))?.path;
-      } on Object {
-        coverImagePath = null;
-      }
-      final imported = await ref
-          .read(studioProvider.notifier)
-          .importSirenTrack(
-            track: track,
-            detail: detail,
-            cachedAudioPath: cached.path,
-            coverImagePath: coverImagePath,
-          );
-      if (!mounted) return;
-      if (imported != null) {
-        ref.read(sirenImportQueueProvider.notifier).markImported(track.cid);
-      }
-    } on Object catch (error) {
-      _recordTrackError(track.cid, error);
-    } finally {
-      if (mounted && manageImportingState) {
-        setState(() => _importingCids.remove(track.cid));
-      }
-    }
-  }
-
   void _recordTrackError(String cid, Object error) {
     if (!mounted) return;
     setState(() => _trackErrors[cid] = '$error');
+  }
+
+  void _scheduleBatchFailureDialog(
+    Map<String, String> failures,
+    int batchTotal,
+    List<SirenTrack> tracks,
+  ) {
+    if (failures.isEmpty || _failureDialogScheduled) return;
+    _failureDialogScheduled = true;
+    final byCid = {for (final track in tracks) track.cid: track};
+    final items = [
+      for (final entry in failures.entries)
+        _SirenImportFailure(
+          cid: entry.key,
+          track: byCid[entry.key],
+          error: entry.value,
+        ),
+    ];
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (context) => _SirenImportFailureDialog(
+          items: items,
+          allFailed: batchTotal > 0 && failures.length >= batchTotal,
+        ),
+      );
+      if (!mounted) return;
+      ref.read(sirenImportQueueProvider.notifier).acknowledgeLastBatchErrors();
+      _failureDialogScheduled = false;
+    });
   }
 }
 
@@ -721,6 +706,219 @@ class _MeasureSizeState extends State<_MeasureSize> {
       _lastSize = size;
       widget.onChanged(size);
     });
+  }
+}
+
+class _SirenImportFailure {
+  const _SirenImportFailure({
+    required this.cid,
+    required this.track,
+    required this.error,
+  });
+
+  final String cid;
+  final SirenTrack? track;
+  final String error;
+
+  String get title => track?.name ?? cid;
+
+  String get subtitle {
+    final value = track;
+    if (value == null) return 'CID $cid';
+    return '${value.albumName} · ${value.artistDisplayText}';
+  }
+}
+
+class _SirenImportFailureDialog extends StatelessWidget {
+  const _SirenImportFailureDialog({
+    required this.items,
+    required this.allFailed,
+  });
+
+  final List<_SirenImportFailure> items;
+  final bool allFailed;
+
+  @override
+  Widget build(BuildContext context) {
+    final rm = context.rm;
+    final tone = allFailed ? rm.danger : rm.warn;
+    final toneBg = allFailed ? rm.dangerBg : rm.warnBg;
+    final toneIcon = allFailed ? 'danger' : 'warn';
+    final bannerKind = allFailed ? RmBannerKind.danger : RmBannerKind.warn;
+    return Dialog(
+      key: const ValueKey('siren-import-failure-dialog'),
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 36),
+      child: Container(
+        width: 600,
+        constraints: const BoxConstraints(maxHeight: 720),
+        decoration: BoxDecoration(
+          color: rm.panel,
+          border: Border.all(color: rm.borderStrong),
+          borderRadius: BorderRadius.circular(RmTokens.rXl),
+          boxShadow: RmTokens.modal,
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 22, 24, 16),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    key: ValueKey(
+                      allFailed
+                          ? 'siren-import-failure-tone-danger'
+                          : 'siren-import-failure-tone-warn',
+                    ),
+                    width: 34,
+                    height: 34,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: toneBg,
+                      border: Border.all(color: tone.withAlpha(77)),
+                      borderRadius: BorderRadius.circular(RmTokens.rMd),
+                    ),
+                    child: RmIcon(toneIcon, size: 17, color: tone),
+                  ),
+                  const SizedBox(width: 13),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'SIREN IMPORT',
+                          style: RmText.mono(
+                            11,
+                            color: tone,
+                            letterSpacing: 0.12 * 11,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          allFailed ? '塞壬曲目导入失败' : '部分塞壬曲目导入失败',
+                          style: RmText.modalH2(color: rm.fg),
+                        ),
+                      ],
+                    ),
+                  ),
+                  RmButton.icon(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const RmIcon('x', size: 13),
+                    variant: RmButtonVariant.ghost,
+                    tooltip: '关闭',
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1, color: rm.border),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(24, 18, 24, 18),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    RmBanner(
+                      kind: bannerKind,
+                      title: '已继续处理队列：',
+                      body: allFailed
+                          ? '下面这些曲目重试后仍失败，仍留在待导入清单里，稍后可以再次导入。'
+                          : '成功导入的曲目已经保留；下面这些曲目重试后仍失败，仍留在待导入清单里，稍后可以再次导入。',
+                    ),
+                    const SizedBox(height: 14),
+                    for (final item in items) ...[
+                      _SirenImportFailureRow(item: item, allFailed: allFailed),
+                      if (item != items.last) const SizedBox(height: 8),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.fromLTRB(24, 14, 24, 22),
+              decoration: BoxDecoration(
+                border: Border(top: BorderSide(color: rm.border)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  RmButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    variant: allFailed
+                        ? RmButtonVariant.dangerPrimary
+                        : RmButtonVariant.primary,
+                    label: '知道了',
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SirenImportFailureRow extends StatelessWidget {
+  const _SirenImportFailureRow({required this.item, required this.allFailed});
+
+  final _SirenImportFailure item;
+  final bool allFailed;
+
+  @override
+  Widget build(BuildContext context) {
+    final rm = context.rm;
+    final tone = allFailed ? rm.danger : rm.warn;
+    final toneIcon = allFailed ? 'danger' : 'warn';
+    return Container(
+      key: ValueKey('siren-import-failure-${item.cid}'),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      decoration: BoxDecoration(
+        color: rm.raised,
+        border: Border.all(color: rm.border),
+        borderRadius: BorderRadius.circular(RmTokens.rMd),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: RmIcon(toneIcon, size: 14, color: tone),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  item.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: RmText.sans(13, weight: FontWeight.w700, color: rm.fg),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  item.subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: RmText.mono(11, color: rm.fg3),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  item.error,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: RmText.sans(12, color: tone, height: 1.35),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -2172,6 +2370,9 @@ class _ImportSidePanel extends StatelessWidget {
     super.key,
     required this.queuedTracks,
     required this.queueImporting,
+    required this.batchTotal,
+    required this.importingCount,
+    required this.failedCount,
     required this.selectedTrack,
     required this.selectedAlbum,
     required this.selectedAlbumDetail,
@@ -2182,6 +2383,7 @@ class _ImportSidePanel extends StatelessWidget {
     required this.trackErrors,
     required this.onRemoveQueued,
     required this.onClearQueue,
+    required this.importQueuedTooltip,
     required this.onImportQueued,
     required this.onPlayTrack,
     required this.onQueueTrack,
@@ -2189,6 +2391,9 @@ class _ImportSidePanel extends StatelessWidget {
 
   final List<SirenTrack> queuedTracks;
   final bool queueImporting;
+  final int batchTotal;
+  final int importingCount;
+  final int failedCount;
   final SirenTrack? selectedTrack;
   final SirenAlbum? selectedAlbum;
   final AsyncValue<SirenAlbumDetail>? selectedAlbumDetail;
@@ -2199,6 +2404,7 @@ class _ImportSidePanel extends StatelessWidget {
   final Map<String, String> trackErrors;
   final ValueChanged<String> onRemoveQueued;
   final VoidCallback? onClearQueue;
+  final String? importQueuedTooltip;
   final VoidCallback? onImportQueued;
   final VoidCallback? onPlayTrack;
   final VoidCallback? onQueueTrack;
@@ -2212,8 +2418,12 @@ class _ImportSidePanel extends StatelessWidget {
         _QueuePanel(
           queuedTracks: queuedTracks,
           importing: queueImporting,
+          batchTotal: batchTotal,
+          importingCount: importingCount,
+          failedCount: failedCount,
           onRemoveQueued: onRemoveQueued,
           onClearQueue: onClearQueue,
+          importTooltip: importQueuedTooltip,
           onImportQueued: onImportQueued,
         ),
         const SizedBox(height: 16),
@@ -2244,15 +2454,23 @@ class _QueuePanel extends StatelessWidget {
   const _QueuePanel({
     required this.queuedTracks,
     required this.importing,
+    required this.batchTotal,
+    required this.importingCount,
+    required this.failedCount,
     required this.onRemoveQueued,
     required this.onClearQueue,
+    required this.importTooltip,
     required this.onImportQueued,
   });
 
   final List<SirenTrack> queuedTracks;
   final bool importing;
+  final int batchTotal;
+  final int importingCount;
+  final int failedCount;
   final ValueChanged<String> onRemoveQueued;
   final VoidCallback? onClearQueue;
+  final String? importTooltip;
   final VoidCallback? onImportQueued;
 
   @override
@@ -2285,6 +2503,7 @@ class _QueuePanel extends StatelessWidget {
                   variant: RmButtonVariant.primary,
                   leading: const RmIcon('import', size: 12),
                   label: importing ? '导入中' : '导入全部',
+                  tooltip: importTooltip,
                 ),
                 const SizedBox(width: 8),
                 RmButton(
@@ -2300,6 +2519,11 @@ class _QueuePanel extends StatelessWidget {
             pending: importing,
             overlayKey: const ValueKey('siren-importing-queue-overlay'),
             label: '正在导入清单',
+            detailWidget: _QueueProgressDetail(
+              batchTotal: batchTotal,
+              importingCount: importingCount,
+              failedCount: failedCount,
+            ),
             compact: true,
             borderRadius: BorderRadius.zero,
             childOpacity: 0.46,
@@ -2331,6 +2555,74 @@ class _QueuePanel extends StatelessWidget {
 }
 
 const double _queuePanelListHeight = 224;
+
+String _queueProgressText({
+  required int batchTotal,
+  required int importingCount,
+  required int failedCount,
+}) {
+  final total = math.max(1, batchTotal);
+  final completed = (batchTotal - importingCount).clamp(0, total);
+  final failed = failedCount.clamp(0, total);
+  final succeeded = math.max(0, completed - failed);
+  if (failed <= 0) return '成功 $succeeded/$total';
+  return '成功 $succeeded/$total · 失败 $failed';
+}
+
+class _QueueProgressDetail extends StatelessWidget {
+  const _QueueProgressDetail({
+    required this.batchTotal,
+    required this.importingCount,
+    required this.failedCount,
+  });
+
+  final int batchTotal;
+  final int importingCount;
+  final int failedCount;
+
+  @override
+  Widget build(BuildContext context) {
+    final rm = context.rm;
+    final total = math.max(1, batchTotal);
+    final completed = (batchTotal - importingCount).clamp(0, total);
+    final failed = failedCount.clamp(0, total);
+    final succeeded = math.max(0, completed - failed);
+    final label = _queueProgressText(
+      batchTotal: batchTotal,
+      importingCount: importingCount,
+      failedCount: failedCount,
+    );
+    final baseStyle = RmText.sans(11, color: rm.fg3, weight: FontWeight.w600);
+    final successStyle = RmText.sans(
+      11,
+      color: rm.accent.base,
+      weight: FontWeight.w700,
+    );
+    final failureStyle = RmText.sans(
+      11,
+      color: rm.warn,
+      weight: FontWeight.w700,
+    );
+    return Semantics(
+      key: const ValueKey('siren-import-queue-progress'),
+      label: label,
+      child: ExcludeSemantics(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('成功 ', style: baseStyle),
+            Text('$succeeded', style: successStyle),
+            Text('/$total', style: baseStyle),
+            if (failed > 0) ...[
+              Text(' · 失败 ', style: baseStyle),
+              Text('$failed', style: failureStyle),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _QueueItem extends StatelessWidget {
   const _QueueItem({required this.track, required this.onRemove});

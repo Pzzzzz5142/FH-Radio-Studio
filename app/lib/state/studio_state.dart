@@ -13,6 +13,7 @@ import '../core/playlist_plan.dart';
 import '../core/fh_radio_studio_cli.dart';
 import '../core/package_manifest.dart';
 import '../core/path_keys.dart';
+import '../core/siren_audio_cache.dart';
 import '../core/siren_catalog.dart';
 import '../core/siren_imports.dart';
 import '../core/track_metadata_cache.dart';
@@ -2379,7 +2380,11 @@ String _defaultGameDir() {
 
 class StudioController extends StateNotifier<StudioState> {
   StudioController(this._prefs) : super(StudioState.initial(_prefs)) {
-    if (state.hasProject) _deleteStalePendingPackage(state.projectDir);
+    unawaited(_cleanupInterruptedSirenDownloads());
+    if (state.hasProject) {
+      _deleteStalePendingPackage(state.projectDir);
+      _cleanupInterruptedProjectImports(state.projectDir);
+    }
   }
 
   final SharedPreferences _prefs;
@@ -2400,6 +2405,7 @@ class StudioController extends StateNotifier<StudioState> {
     _startupFullCheckStarted = false;
     FhRadioStudioProject.ensure(next);
     _deleteStalePendingPackage(next);
+    _cleanupInterruptedProjectImports(next);
     final recentProjectDirs = _recentProjects(
       current: next,
       stored: state.recentProjectDirs,
@@ -2478,6 +2484,21 @@ class StudioController extends StateNotifier<StudioState> {
     _prefs.setString(_StudioPrefsKeys.projectDir, next);
     _prefs.setStringList(_StudioPrefsKeys.recentProjectDirs, recentProjectDirs);
     _append('项目目录：$next');
+  }
+
+  void _cleanupInterruptedProjectImports(String projectDir) {
+    final deleted = FhRadioStudioProject.cleanupInterruptedImportFiles(
+      projectDir,
+    );
+    if (deleted > 0) {
+      _append('已清理 $deleted 个上次中断导入留下的临时文件。');
+    }
+  }
+
+  Future<void> _cleanupInterruptedSirenDownloads() async {
+    final deleted = await SirenAudioCache().cleanupPartialDownloads();
+    if (!mounted || deleted <= 0) return;
+    _append('已清理 $deleted 个上次中断下载留下的塞壬临时文件。');
   }
 
   void setProjectDirAndStartFullScan(String value) {

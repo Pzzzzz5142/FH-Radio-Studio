@@ -5,8 +5,10 @@ from .common import *
 from .loudness import LOUDNESS_ALGORITHM_VERSION, analyze_loudness_file
 from .metadata import (
     AUDIO_SUFFIXES,
+    has_import_completion_marker,
     metadata_cache_path,
     upsert_track_metadata_cache_entry,
+    write_import_completion_marker,
     write_track_metadata_tags,
 )
 
@@ -33,6 +35,7 @@ def cmd_import_audio(args: argparse.Namespace) -> int:
             artist=args.artist,
             album=args.album,
             cover_image=Path(args.cover_image).expanduser() if args.cover_image else None,
+            require_completion_marker=args.target_folder == "sources",
         )
         dst = Path(str(item["path"]))
         loudness_analysis = _try_analyze_import_loudness(dst, ffmpeg=args.ffmpeg)
@@ -97,6 +100,7 @@ def import_audio_file(
     artist: Optional[str] = None,
     album: Optional[str] = None,
     cover_image: Optional[Path] = None,
+    require_completion_marker: bool = False,
 ) -> Dict[str, object]:
     info = _audio_info(src)
     source_sample_rate = int(info.samplerate) if info is not None and info.samplerate else None
@@ -107,18 +111,26 @@ def import_audio_file(
         if src_inside_sources:
             dst = src.resolve()
             action = "kept"
+            out_info = _audio_info(dst)
+            tags_written = _write_import_tags(
+                dst,
+                title=title,
+                artist=artist,
+                album=album,
+                cover_image=cover_image,
+            )
         else:
             dst = _unique_destination(source_dir, src.name)
-            shutil.copy2(src, dst)
+            out_info, tags_written = _copy_to_project(
+                src,
+                dst,
+                require_completion_marker=require_completion_marker,
+                title=title,
+                artist=artist,
+                album=album,
+                cover_image=cover_image,
+            )
             action = "copied"
-        out_info = _audio_info(dst)
-        tags_written = _write_import_tags(
-            dst,
-            title=title,
-            artist=artist,
-            album=album,
-            cover_image=cover_image,
-        )
         return _result(src, dst, action, source_sample_rate, out_info, tags_written)
 
     dst_name = _transcoded_basename(src)
@@ -126,15 +138,16 @@ def import_audio_file(
         dst = src.resolve()
     else:
         dst = _unique_destination(source_dir, dst_name)
-    _transcode_to_48k(src, dst, ffmpeg=ffmpeg)
-    tags_written = _write_import_tags(
+    out_info, tags_written = _transcode_to_48k(
+        src,
         dst,
+        ffmpeg=ffmpeg,
+        require_completion_marker=require_completion_marker,
         title=title,
         artist=artist,
         album=album,
         cover_image=cover_image,
     )
-    out_info = _audio_info(dst)
     return _result(src, dst, "transcoded", source_sample_rate, out_info, tags_written)
 
 
@@ -182,15 +195,31 @@ def _transcoded_basename(src: Path) -> str:
     return f"{src.stem}.wav"
 
 
-def _transcode_to_48k(src: Path, dst: Path, *, ffmpeg: Optional[str]) -> None:
+def _transcode_to_48k(
+    src: Path,
+    dst: Path,
+    *,
+    ffmpeg: Optional[str],
+    require_completion_marker: bool,
+    title: Optional[str],
+    artist: Optional[str],
+    album: Optional[str],
+    cover_image: Optional[Path],
+) -> Tuple[object, bool]:
     tmp = _temp_output_path(dst)
     try:
         if ffmpeg:
             try:
                 _ffmpeg_transcode(src, tmp, ffmpeg)
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(tmp, dst)
-                return
+                return _finish_project_audio(
+                    tmp,
+                    dst,
+                    require_completion_marker=require_completion_marker,
+                    title=title,
+                    artist=artist,
+                    album=album,
+                    cover_image=cover_image,
+                )
             except CliError:
                 if tmp.exists():
                     tmp.unlink()
@@ -206,14 +235,83 @@ def _transcode_to_48k(src: Path, dst: Path, *, ffmpeg: Optional[str]) -> None:
                     f"Could not transcode {src} with libsndfile ({exc}). Pass --ffmpeg for this format."
                 )
             _ffmpeg_transcode(src, tmp, ffmpeg)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(tmp, dst)
+        return _finish_project_audio(
+            tmp,
+            dst,
+            require_completion_marker=require_completion_marker,
+            title=title,
+            artist=artist,
+            album=album,
+            cover_image=cover_image,
+        )
     finally:
         if tmp.exists():
             try:
                 tmp.unlink()
             except OSError:
                 pass
+
+
+def _copy_to_project(
+    src: Path,
+    dst: Path,
+    *,
+    require_completion_marker: bool,
+    title: Optional[str],
+    artist: Optional[str],
+    album: Optional[str],
+    cover_image: Optional[Path],
+) -> Tuple[object, bool]:
+    tmp = _temp_output_path(dst)
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if tmp.exists():
+            tmp.unlink()
+        shutil.copy2(src, tmp)
+        return _finish_project_audio(
+            tmp,
+            dst,
+            require_completion_marker=require_completion_marker,
+            title=title,
+            artist=artist,
+            album=album,
+            cover_image=cover_image,
+        )
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _finish_project_audio(
+    tmp: Path,
+    dst: Path,
+    *,
+    require_completion_marker: bool,
+    title: Optional[str],
+    artist: Optional[str],
+    album: Optional[str],
+    cover_image: Optional[Path],
+) -> Tuple[object, bool]:
+    tags_written = _write_import_tags(
+        tmp,
+        title=title,
+        artist=artist,
+        album=album,
+        cover_image=cover_image,
+    )
+    if require_completion_marker:
+        marker_written = write_import_completion_marker(tmp)
+        if not marker_written or not has_import_completion_marker(tmp):
+            die(f"Could not verify completed manual import marker for: {dst.name}")
+    out_info = _audio_info(tmp)
+    if out_info is None:
+        die(f"Imported audio became unreadable before finalizing: {dst.name}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(tmp, dst)
+    return out_info, tags_written
 
 
 def _write_project_audio(dst: Path, data: np.ndarray, suffix: str) -> None:

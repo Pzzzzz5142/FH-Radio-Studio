@@ -81,6 +81,26 @@ class FhRadioStudioProject {
     );
   }
 
+  static int cleanupInterruptedImportFiles(String projectDir) {
+    var deleted = 0;
+    for (final dirPath in [sourcesDir(projectDir), sirenDir(projectDir)]) {
+      final dir = Directory(dirPath);
+      if (!dir.existsSync()) continue;
+      for (final item in dir.listSync(followLinks: false)) {
+        if (item is! File) continue;
+        final name = p.basename(item.path);
+        if (!_isImportTempName(name)) continue;
+        try {
+          item.deleteSync();
+          deleted += 1;
+        } on FileSystemException {
+          // The next startup/open can retry this stale import temp file.
+        }
+      }
+    }
+    return deleted;
+  }
+
   static Map<String, dynamic> readSettings(String projectDir) {
     final manifest = File(manifestPath(projectDir));
     if (!manifest.existsSync()) return const {};
@@ -247,6 +267,10 @@ class FhRadioStudioProject {
       index += 1;
     }
     return candidate;
+  }
+
+  static bool _isImportTempName(String name) {
+    return name.startsWith('.') && name.contains('.fh-radio-studio-import-tmp');
   }
 
   static String _pathKey(String path) => canonicalPathKey(path);

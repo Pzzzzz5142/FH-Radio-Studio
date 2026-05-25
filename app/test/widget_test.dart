@@ -22,6 +22,7 @@ import 'package:fh_radio_studio/state/studio_state.dart';
 import 'package:fh_radio_studio/state/custom_pool_tracks.dart';
 import 'package:fh_radio_studio/state/playlist_catalog_state.dart';
 import 'package:fh_radio_studio/state/playlist_plan_state.dart';
+import 'package:fh_radio_studio/state/siren_import_queue_state.dart';
 import 'package:fh_radio_studio/theme/accents.dart';
 import 'package:fh_radio_studio/theme/app_theme.dart';
 import 'package:fh_radio_studio/widgets/package_build_notice_dialog.dart';
@@ -347,8 +348,69 @@ void main() {
     );
     expect(find.text('User Song'), findsOneWidget);
     expect(
+      tester.widget<RmButton>(find.widgetWithText(RmButton, '导入中')).onPressed,
+      isNull,
+    );
+    semantics.dispose();
+  });
+
+  testWidgets('siren import shows pool header status without page mask', (
+    tester,
+  ) async {
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'fh_radio_studio_custom_pool_siren_import_status_',
+    );
+    final semantics = tester.ensureSemantics();
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1600, 900);
+
+    final projectDir = p.join(tempRoot.path, 'project');
+    FhRadioStudioProject.ensure(projectDir);
+    SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+    final prefs = await SharedPreferences.getInstance();
+    final controller = _StaticStudioController(prefs);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+          studioProvider.overrideWith((ref) => controller),
+          sirenImportQueueProvider.overrideWith(
+            (ref) => _StaticSirenImportQueueController(ref),
+          ),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(
+            brightness: Brightness.light,
+            accent: AppAccent.lime,
+          ),
+          home: const Scaffold(body: CustomPoolScreen()),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const ValueKey('custom-pool-import-gate')), findsNothing);
+    expect(find.text('塞壬导入中'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(
+      tester.widget<RmButton>(find.widgetWithText(RmButton, '塞壬导入中')).onPressed,
+      isNotNull,
+    );
+    expect(
       tester.widget<RmButton>(find.widgetWithText(RmButton, '导入新曲目')).onPressed,
       isNull,
+    );
+    expect(
+      tester.widget<RmButton>(find.widgetWithText(RmButton, '导入新曲目')).tooltip,
+      '塞壬唱片正在导入，完成后可导入本地歌曲',
     );
     semantics.dispose();
   });
@@ -1699,6 +1761,16 @@ class _StaticStudioController extends StudioController {
       return false;
     }
     return true;
+  }
+}
+
+class _StaticSirenImportQueueController extends SirenImportQueueController {
+  _StaticSirenImportQueueController(super.ref) {
+    state = SirenImportQueueState(
+      queuedCids: const {'232251'},
+      importingCids: const {'232251'},
+      importing: true,
+    );
   }
 }
 
