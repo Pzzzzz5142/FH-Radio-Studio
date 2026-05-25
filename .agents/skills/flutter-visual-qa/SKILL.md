@@ -14,7 +14,7 @@ For screenshot-driven UI work, capture two Flutter-rendered PNGs every time:
 - `regular`: normal viewport/first-screen size, used for what the user sees immediately.
 - `full`: taller complete layout, used to catch wrapping, lower rows, scroll content, and clipped content.
 
-Prefer Flutter-owned capture paths. For readable text on Windows desktop, use the real Flutter Windows embedder plus `RepaintBoundary.toImage()` from a tool entrypoint. Use OS/window screenshots only as a fallback after Flutter capture fails.
+Prefer Flutter-owned capture paths. For readable text on Windows desktop, use the real Flutter Windows embedder plus `RepaintBoundary.toImage()` from a tool entrypoint. Use OS/window screenshots only as a fallback after Flutter capture fails. Do not use widget-test or golden screenshots as screenshot-report artifacts; test-font rendering is not representative enough for user-facing screenshots.
 
 ## Required Workflow
 
@@ -59,7 +59,7 @@ Override sizes only when the reference screenshot calls for it:
   -CapturePixelRatio 1.5
 ```
 
-Flutter test goldens are still useful for deterministic layout regression checks, but they may use test fonts. Do not use test-font golden text rendering as proof that real desktop fonts look correct.
+Flutter test goldens are useful only for deterministic layout regression checks. Do not use test-font golden text rendering as screenshot proof or as proof that real desktop fonts look correct.
 
 Before tests or runs in agent shells, make loopback bypass proxies:
 
@@ -92,7 +92,7 @@ Scan run logs for:
 
 ## Widget Test Pattern
 
-For visual/runtime regressions, pump the exact screen with realistic providers:
+For non-screenshot regression tests, pump the exact screen with realistic providers:
 
 - Set `tester.view.physicalSize` and `tester.view.devicePixelRatio`.
 - Use `tester.ensureSemantics()` when the bug mentions semantics, `parentDataDirty`, `RenderObject`, accessibility, or Windows debug rendering assertions.
@@ -112,4 +112,4 @@ For Flutter UI fixes in this repo, provide:
 
 - `flutter analyze`
 - Relevant `flutter test` or focused widget test
-- Rendered proof: for screenshot-driven work, both regular and full Flutter captures; otherwise widget render with semantics or real Windows `flutter run`/desktop launch with clean logs
+- Rendered proof: for screenshot-driven work, both regular and full Windows Flutter captures; otherwise widget render with semantics or real Windows `flutter run`/desktop launch with clean logs
