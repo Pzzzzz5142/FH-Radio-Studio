@@ -67,6 +67,7 @@ class PendingOverlay extends StatelessWidget {
   const PendingOverlay({
     super.key,
     required this.label,
+    this.labelTrailing,
     this.detail,
     this.detailWidget,
     this.progressLabel,
@@ -82,6 +83,10 @@ class PendingOverlay extends StatelessWidget {
   });
 
   final String label;
+
+  /// 标题文字右侧的小挂件（如多进程标签）。应保持比标题更矮，
+  /// 这样出现/消失时不会撑高标题行。
+  final Widget? labelTrailing;
   final String? detail;
   final Widget? detailWidget;
   final String? progressLabel;
@@ -148,6 +153,10 @@ class PendingOverlay extends StatelessWidget {
                     color: rm.fg,
                   ),
                 ),
+                if (labelTrailing != null) ...[
+                  const SizedBox(width: 8),
+                  labelTrailing!,
+                ],
               ],
             ),
             if (detail != null || detailWidget != null) ...[

@@ -668,9 +668,14 @@ class _PackageBuildBlockingOverlay extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final title = cli.busyLabel == '生成测试准备包' ? '正在生成测试准备包' : '正在准备电台包';
+    final running = cli.runningPackageBuildProgressSteps;
     final active =
         cli.activePackageBuildProgressStep ??
         cli.lastVisiblePackageBuildProgressStep;
+    final parallelLabel = active?.parallelChipLabel ?? '';
+    // ≥2 个步骤同时 running 时，必然是多个电台在并行（响度阶段先于电台阶段完成），
+    // 此时用汇总文字 + 各电台清单，避免只显示一个电台。
+    final concurrent = running.length >= 2;
     final progressValue = cli.hasPackageBuildProgress
         ? cli.packageBuildProgressPercent / 100
         : null;
@@ -681,19 +686,117 @@ class _PackageBuildBlockingOverlay extends StatelessWidget {
           PendingOverlay(
             key: const ValueKey('package-build-blocking-overlay'),
             label: title,
+            labelTrailing: parallelLabel.isEmpty
+                ? null
+                : RmChip(
+                    key: const ValueKey('package-build-parallel-summary'),
+                    label: parallelLabel,
+                    variant: RmChipVariant.accent,
+                    showDot: true,
+                    dense: true,
+                  ),
             detail: '正在转码、重建 bank 并校验包文件。这一步通常需要几十秒，完成后会弹出结果提示。',
-            progressLabel: active?.label,
-            progressDetail: active?.summary.isNotEmpty == true
-                ? active!.summary
-                : active?.detail,
+            progressLabel: concurrent
+                ? '并行处理 ${running.length} 个电台'
+                : active?.label,
+            progressDetail: concurrent
+                ? null
+                : (active?.summary.isNotEmpty == true
+                      ? active!.summary
+                      : active?.detail),
             progressValue: progressValue,
             progressCaption: cli.hasPackageBuildProgress
                 ? '${cli.packageBuildProgressPercent}%'
+                : null,
+            progressExtra: concurrent
+                ? _PackageBuildConcurrentSteps(steps: running)
                 : null,
             borderRadius: BorderRadius.zero,
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 并行阶段下，列出当前同时在跑的各电台及其步骤，
+/// 让 UI 明确体现"同时处理 N 个电台"。
+class _PackageBuildConcurrentSteps extends StatelessWidget {
+  const _PackageBuildConcurrentSteps({required this.steps});
+
+  final List<PackageBuildProgressStep> steps;
+
+  @override
+  Widget build(BuildContext context) {
+    final rm = context.rm;
+    return Container(
+      key: const ValueKey('package-build-concurrent-steps'),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: rm.panel.withAlpha(210),
+        border: Border.all(color: rm.border.withAlpha(180)),
+        borderRadius: BorderRadius.circular(RmTokens.rXs),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (var i = 0; i < steps.length; i++) ...[
+            if (i > 0) const SizedBox(height: 6),
+            _PackageBuildConcurrentStepRow(step: steps[i]),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _PackageBuildConcurrentStepRow extends StatelessWidget {
+  const _PackageBuildConcurrentStepRow({required this.step});
+
+  final PackageBuildProgressStep step;
+
+  @override
+  Widget build(BuildContext context) {
+    final rm = context.rm;
+    final detail = step.summary.isNotEmpty ? step.summary : step.detail;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 6,
+          height: 6,
+          margin: const EdgeInsets.only(top: 4),
+          decoration: BoxDecoration(
+            color: rm.accent.base,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                step.label,
+                style: RmText.sans(11.5, color: rm.fg, weight: FontWeight.w600),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (detail.isNotEmpty) ...[
+                const SizedBox(height: 2),
+                Text(
+                  detail,
+                  style: RmText.sans(10.5, color: rm.fg3, height: 1.25),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

@@ -37,6 +37,10 @@ void main() {
       endsWith(tail(['envs', 'local-heavy-$torchSuffix'])),
     );
     expect(runtime.shouldUseNoSync('local-base'), isFalse);
+    expect(
+      runtime.projectEnvironmentIsRunnableForProfile('local-base'),
+      isFalse,
+    );
     expect(runtime.shouldUseNoSync('local-heavy'), isTrue);
     expect(
       runtime.environment['UV_PROJECT_ENVIRONMENT'],
@@ -571,6 +575,63 @@ void main() {
     expect(runtime.environment['UV_LINK_MODE'], 'copy');
 
     Directory(runtime.projectEnvironment).createSync(recursive: true);
-    expect(runtime.shouldUseNoSync('local-base'), isTrue);
+    expect(
+      runtime.projectEnvironmentIsRunnableForProfile('local-base'),
+      isFalse,
+    );
+
+    final stalePythonHome =
+        '${appRoot.path}$separator${join(['old-location', 'toolchain', 'python', 'cpython-3.12'])}';
+    _writeProjectEnvironment(
+      environmentPath: runtime.projectEnvironment,
+      pythonHome: stalePythonHome,
+      cliCommand: runtime.cliCommand,
+    );
+    expect(
+      runtime.projectEnvironmentIsRunnableForProfile('local-base'),
+      isFalse,
+    );
+
+    final releasePythonHome =
+        '${runtime.pythonInstallDir!}$separator${join(['cpython-3.12'])}';
+    Directory(releasePythonHome).createSync(recursive: true);
+    _writeProjectEnvironment(
+      environmentPath: runtime.projectEnvironment,
+      pythonHome: releasePythonHome,
+      cliCommand: runtime.cliCommand,
+    );
+    expect(
+      runtime.projectEnvironmentIsRunnableForProfile('local-base'),
+      isTrue,
+    );
+    expect(runtime.shouldUseNoSync('local-base'), isFalse);
+
+    final cachedRunBase = await cli.runBase(['status', '--json']);
+    expect(cachedRunBase.commandLine, isNot(contains('--no-sync')));
   });
+}
+
+void _writeProjectEnvironment({
+  required String environmentPath,
+  required String pythonHome,
+  required String cliCommand,
+}) {
+  final scriptsDir = Directory(
+    _testJoin([environmentPath, Platform.isWindows ? 'Scripts' : 'bin']),
+  )..createSync(recursive: true);
+  File(
+    _testJoin([scriptsDir.path, Platform.isWindows ? 'python.exe' : 'python']),
+  ).writeAsStringSync('');
+  final commandName =
+      Platform.isWindows && !cliCommand.toLowerCase().endsWith('.exe')
+      ? '$cliCommand.exe'
+      : cliCommand;
+  File(_testJoin([scriptsDir.path, commandName])).writeAsStringSync('');
+  File(_testJoin([environmentPath, 'pyvenv.cfg'])).writeAsStringSync(
+    'home = $pythonHome\ninclude-system-site-packages = false\n',
+  );
+}
+
+String _testJoin(List<String> parts) {
+  return parts.join(Platform.pathSeparator);
 }

@@ -651,6 +651,7 @@ class PackageArtifactSummary {
     required this.bankName,
     required this.musicCount,
     required this.bankSlots,
+    this.replaceableSlots = const {},
     required this.playlistMode,
     required this.skipBank,
     required this.runtimeVerified,
@@ -667,6 +668,7 @@ class PackageArtifactSummary {
   final String bankName;
   final int musicCount;
   final int? bankSlots;
+  final Map<String, int> replaceableSlots;
   final String playlistMode;
   final bool skipBank;
   final bool runtimeVerified;
@@ -682,6 +684,37 @@ class PackageArtifactSummary {
     return prefix.trim().isEmpty ? '已准备电台包' : prefix;
   }
 
+  String get slotSummary {
+    final caps = <String, int>{
+      for (final entry in replaceableSlots.entries)
+        PlaylistAssignment.normalizePlaylistType(entry.key): entry.value,
+    };
+    if (caps.isNotEmpty) {
+      final ordered = <String>[
+        for (final type in const ['FreeRoam', 'Event'])
+          if (caps.containsKey(type)) type,
+        for (final type in caps.keys.where(
+          (type) => type != 'FreeRoam' && type != 'Event',
+        ))
+          type,
+      ];
+      final values = [for (final type in ordered) caps[type]!];
+      if (values.toSet().length == 1) return '${values.first} 个槽位';
+      final text = ordered
+          .map(
+            (type) => '${PlaylistAssignment.playlistLabel(type)} ${caps[type]}',
+          )
+          .join(' / ');
+      return '$text 个槽位';
+    }
+    return bankSlots == null ? '' : '$bankSlots 个槽位';
+  }
+
+  String get _slotDetail {
+    final summary = slotSummary;
+    return summary.isEmpty ? '' : ' · $summary';
+  }
+
   String get detail {
     if (baselineRestore) {
       final language = sourceLang == null || targetLang == null
@@ -694,10 +727,10 @@ class PackageArtifactSummary {
       final language = sourceLang == null || targetLang == null
           ? '语言设置'
           : '$sourceLang 显示 / $targetLang 语音';
-      final slots = bankSlots == null ? '' : ' · $bankSlots 个槽位';
+      final slots = _slotDetail;
       return '当前游戏 radio 原样打包$slots · $language';
     }
-    final slots = bankSlots == null ? '' : ' · $bankSlots 个槽位';
+    final slots = _slotDetail;
     final mode = playlistMode == 'add' ? '保留原播放列表' : '替换播放列表';
     final packageState = skipBank ? '仅生成预览' : '可写入音频包';
     final language = sourceLang == null || targetLang == null
@@ -740,6 +773,8 @@ class PackageBuildProgressStep {
     required this.weight,
     this.summary = '',
     this.runtimeMs,
+    this.processCount,
+    this.workItemCount,
   });
 
   final String id;
@@ -749,6 +784,8 @@ class PackageBuildProgressStep {
   final int weight;
   final String summary;
   final int? runtimeMs;
+  final int? processCount;
+  final int? workItemCount;
 
   bool get terminal =>
       status == 'done' ||
@@ -756,10 +793,18 @@ class PackageBuildProgressStep {
       status == 'warning' ||
       status == 'error';
 
+  String get parallelChipLabel {
+    final processes = processCount;
+    if (processes == null || processes <= 1) return '';
+    return '多进程 ×$processes';
+  }
+
   PackageBuildProgressStep copyWith({
     String? status,
     String? summary,
     int? runtimeMs,
+    int? processCount,
+    int? workItemCount,
   }) {
     return PackageBuildProgressStep(
       id: id,
@@ -769,16 +814,27 @@ class PackageBuildProgressStep {
       weight: weight,
       summary: summary ?? this.summary,
       runtimeMs: runtimeMs ?? this.runtimeMs,
+      processCount: processCount ?? this.processCount,
+      workItemCount: workItemCount ?? this.workItemCount,
     );
   }
 
   factory PackageBuildProgressStep.fromJson(Map<String, dynamic> json) {
+    final processCount =
+        _objectInt(json['processes']) ??
+        _objectInt(json['workers']) ??
+        _objectInt(json['jobs']);
     return PackageBuildProgressStep(
       id: '${json['id'] ?? ''}',
       label: '${json['label'] ?? json['id'] ?? '步骤'}',
       detail: '${json['detail'] ?? ''}',
       status: 'pending',
       weight: _objectInt(json['weight']) ?? 1,
+      processCount: processCount,
+      workItemCount:
+          _objectInt(json['work_items']) ??
+          _objectInt(json['tasks']) ??
+          _objectInt(json['total']),
     );
   }
 }
@@ -1201,6 +1257,7 @@ class StudioState {
     required this.toolInstallLog,
     required this.toolInstallFailureSummary,
     required this.statusSummary,
+    this.gameDirError,
   });
 
   factory StudioState.initial(SharedPreferences prefs) {
@@ -1403,6 +1460,7 @@ class StudioState {
   final List<String> toolInstallLog;
   final String? toolInstallFailureSummary;
   final String statusSummary;
+  final String? gameDirError;
 
   String get musicPath => musicPaths.isEmpty ? '' : musicPaths.first;
   String get sourcesDir => FhRadioStudioProject.sourcesDir(projectDir);
@@ -1486,9 +1544,15 @@ class StudioState {
   bool get toolchainRefreshing =>
       toolchainStatus.checking ||
       refreshingPanels.contains(_RefreshScope.toolchain);
-  bool get toolchainWorkflowLocked => toolchainStatus.coreBlocking;
-  String get toolchainWorkflowLockTitle => '核心工具链缺失，内容页面已锁定。';
+  bool get gameDirWorkflowLocked => gameDirError != null;
+  bool get toolchainWorkflowLocked =>
+      toolchainStatus.coreBlocking || gameDirWorkflowLocked;
+  String get toolchainWorkflowLockTitle =>
+      gameDirWorkflowLocked ? '游戏目录无法访问，内容页面已锁定。' : '核心工具链缺失，内容页面已锁定。';
   String get toolchainWorkflowLockMessage {
+    if (gameDirWorkflowLocked) {
+      return '请在概览页游戏路径设置中修改路径；修复前准备包和写入流程已锁定。塞壬唱片仍可查看。';
+    }
     final detail = toolchainStatus.coreIssueSummary.trim();
     if (detail.isEmpty) {
       return '请先在概览页修复 uv、Python 或核心音频处理组件；塞壬唱片仍可查看。';
@@ -1507,6 +1571,15 @@ class StudioState {
       if (step.status == 'running') return step;
     }
     return null;
+  }
+
+  /// 并行构建时会有多个步骤同时 running（每个 worker 各跑一个电台），
+  /// 全部返回，供 UI 体现"同时处理 N 个电台"而非只显示一个。
+  List<PackageBuildProgressStep> get runningPackageBuildProgressSteps {
+    return [
+      for (final step in packageBuildProgressSteps)
+        if (step.status == 'running') step,
+    ];
   }
 
   PackageBuildProgressStep? get lastVisiblePackageBuildProgressStep {
@@ -1654,6 +1727,7 @@ class StudioState {
     List<String>? toolInstallLog,
     Object? toolInstallFailureSummary = _sentinel,
     String? statusSummary,
+    Object? gameDirError = _sentinel,
   }) {
     return StudioState(
       hasProject: hasProject ?? this.hasProject,
@@ -1752,6 +1826,9 @@ class StudioState {
           ? this.toolInstallFailureSummary
           : toolInstallFailureSummary as String?,
       statusSummary: statusSummary ?? this.statusSummary,
+      gameDirError: identical(gameDirError, _sentinel)
+          ? this.gameDirError
+          : gameDirError as String?,
     );
   }
 }
@@ -1793,6 +1870,18 @@ List<PackageBuildProgressStep> _packageBuildStartupProgressSteps() {
   ];
 }
 
+int? _packageProgressProcessCount(Map<String, dynamic> event) {
+  return _objectInt(event['processes']) ??
+      _objectInt(event['workers']) ??
+      _objectInt(event['jobs']);
+}
+
+int? _packageProgressWorkItemCount(Map<String, dynamic> event) {
+  return _objectInt(event['work_items']) ??
+      _objectInt(event['tasks']) ??
+      _objectInt(event['total']);
+}
+
 StudioState _stateWithPackageBuildProgressEvent(
   StudioState current,
   Map<String, dynamic> event,
@@ -1812,7 +1901,11 @@ StudioState _stateWithPackageBuildProgressEvent(
   if (stepId.isEmpty) return current;
   if (type == 'step_started') {
     return _updatePackageBuildProgressStep(current, stepId, (step) {
-      return step.copyWith(status: 'running');
+      return step.copyWith(
+        status: 'running',
+        processCount: _packageProgressProcessCount(event),
+        workItemCount: _packageProgressWorkItemCount(event),
+      );
     });
   }
   if (type == 'step_completed') {
@@ -1822,6 +1915,8 @@ StudioState _stateWithPackageBuildProgressEvent(
         status: status,
         summary: '${event['summary'] ?? step.summary}',
         runtimeMs: _objectInt(event['runtime_ms']),
+        processCount: _packageProgressProcessCount(event),
+        workItemCount: _packageProgressWorkItemCount(event),
       );
     });
   }
@@ -1831,6 +1926,8 @@ StudioState _stateWithPackageBuildProgressEvent(
         status: 'error',
         summary: '${event['summary'] ?? '执行失败'}',
         runtimeMs: _objectInt(event['runtime_ms']),
+        processCount: _packageProgressProcessCount(event),
+        workItemCount: _packageProgressWorkItemCount(event),
       );
     });
   }
@@ -2080,6 +2177,7 @@ PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
   final musicKeys = <String>{};
   final assignmentKeys = <String>{};
   var visibleUnits = 0;
+  final visibleReplaceableSlots = <String, int>{};
 
   void readPackageUnit(Map<String, dynamic> unit) {
     final radio = _objectInt(unit['radio']);
@@ -2091,6 +2189,11 @@ PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
       return;
     }
     visibleUnits += 1;
+    final replaceableSlots = _objectPlaylistSlotMap(unit['replaceable_slots']);
+    for (final entry in replaceableSlots.entries) {
+      visibleReplaceableSlots[entry.key] =
+          (visibleReplaceableSlots[entry.key] ?? 0) + entry.value;
+    }
     final music = unit['music'] is List ? unit['music'] as List : const [];
     final sourceByIndex = <int, String>{};
     for (int index = 0; index < music.length; index++) {
@@ -2164,6 +2267,9 @@ PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
     bankName: _objectString(data['target_bank_name']) ?? '',
     musicCount: musicKeys.isEmpty ? previews.length : musicKeys.length,
     bankSlots: _objectInt(data['bank_slots']),
+    replaceableSlots: visibleReplaceableSlots.isNotEmpty
+        ? visibleReplaceableSlots
+        : _objectPlaylistSlotMap(data['replaceable_slots']),
     playlistMode: _objectString(data['playlist_mode']) ?? 'only',
     skipBank: _objectBool(data['skip_bank']) ?? false,
     runtimeVerified: _objectBool(data['runtime_verified']) ?? false,
@@ -2378,6 +2484,19 @@ List<String> _objectStringList(Object? value) {
   return const [];
 }
 
+Map<String, int> _objectPlaylistSlotMap(Object? value) {
+  final map = _objectMap(value);
+  if (map == null) return const {};
+  final out = <String, int>{};
+  for (final entry in map.entries) {
+    final count = _objectInt(entry.value);
+    if (count == null || count <= 0) continue;
+    final type = PlaylistAssignment.normalizePlaylistType(entry.key);
+    out[type] = count;
+  }
+  return out;
+}
+
 bool? _objectBool(Object? value) {
   if (value is bool) return value;
   if (value is String) {
@@ -2415,7 +2534,12 @@ class StudioController extends StateNotifier<StudioState> {
   bool _startupFullCheckStarted = false;
   CliCancellationToken? _activeAiEnvironmentSyncToken;
 
-  FhRadioStudioCli get _cli => FhRadioStudioCli(repoRoot: state.repoRoot);
+  FhRadioStudioCli get _cli => createCli();
+
+  @protected
+  FhRadioStudioCli createCli() {
+    return FhRadioStudioCli(repoRoot: state.repoRoot);
+  }
 
   void setRepoRoot(String value) {
     state = state.copyWith(repoRoot: value);
@@ -2973,13 +3097,34 @@ class StudioController extends StateNotifier<StudioState> {
               : '正在检查当前环境和工具链组件。',
         ),
       );
-      final result = await _run(_statusArgs(), streamOutput: false);
-      if (!result.ok) {
+      final baseEnvironmentReady =
+          await _ensureBaseEnvironmentForToolchainCheck();
+      if (!baseEnvironmentReady) {
         state = state.copyWith(
           toolsOk: false,
-          statusSummary: '状态检查失败',
-          toolchainStatus: ToolchainStatusSummary.error('当前环境状态检查失败'),
+          statusSummary: '基础 Python 环境同步失败',
+          toolchainStatus: ToolchainStatusSummary.error('基础 Python 环境同步失败'),
         );
+        return;
+      }
+      final result = await _run(_statusArgs(), streamOutput: false);
+      if (!result.ok) {
+        if (result.exitCode == 2) {
+          // CLI ran but raised a CliError (e.g. game dir not found) — toolchain
+          // itself is working; record the config failure and still refresh it.
+          state = state.copyWith(
+            toolsOk: false,
+            statusSummary: '游戏目录配置失败，请检查概览页的游戏路径设置。',
+            gameDirError: state.gameDir,
+          );
+          await _refreshToolchainStatusWithinBusy();
+        } else {
+          state = state.copyWith(
+            toolsOk: false,
+            statusSummary: '状态检查失败',
+            toolchainStatus: ToolchainStatusSummary.error('当前环境状态检查失败'),
+          );
+        }
         return;
       }
       final payload = _decodeStatus(result.stdout);
@@ -3007,6 +3152,9 @@ class StudioController extends StateNotifier<StudioState> {
   Future<void> verifyFileIntegrity() async {
     if (state.busy) return;
     await _withPanelRefresh(_RefreshScope.fileIntegrity, '刷新文件校验', () async {
+      final baseEnvironmentReady =
+          await _ensureBaseEnvironmentForToolchainCheck();
+      if (!baseEnvironmentReady) return;
       await _refreshIntegrityFromCli();
     });
   }
@@ -4754,7 +4902,23 @@ class StudioController extends StateNotifier<StudioState> {
     Map<String, String>? extraEnvironment,
     bool repairNetwork = false,
     CliCancellationToken? cancellationToken,
+    bool autoDowngrade = true,
   }) async {
+    if (autoDowngrade) {
+      final profile = UvRuntime.profileFromCliArgs(args);
+      if (UvRuntime.dependencyGroupsForProfile(profile).isNotEmpty &&
+          !_cli.uvRuntime.projectEnvironmentIsRunnableForProfile(profile)) {
+        _append('AI 环境不可用，已自动降级到中杯运行');
+        return _runBase(
+          _replaceProfileArg(args, 'local-base'),
+          streamOutput: streamOutput,
+          streamLog: streamLog,
+          extraEnvironment: extraEnvironment,
+          repairNetwork: repairNetwork,
+          cancellationToken: cancellationToken,
+        );
+      }
+    }
     final cli = _cli;
     final action = '执行：${_describeAction(args)}';
     _append(action);
@@ -4941,6 +5105,24 @@ class StudioController extends StateNotifier<StudioState> {
     return args.first;
   }
 
+  Future<bool> _ensureBaseEnvironmentForToolchainCheck() async {
+    final cli = _cli;
+    const profile = 'local-base';
+    if (cli.uvRuntime.projectEnvironmentIsRunnableForProfile(profile)) {
+      return true;
+    }
+    _append('基础 Python 环境不可用或已搬迁，正在同步后继续检查。');
+    const action = '执行：同步基础 Python 环境';
+    _append(action);
+    final result = await cli.syncEnvironment(profile: profile);
+    if (!result.ok) {
+      _appendCompact(result.stdout);
+      _appendCompact(result.stderr, prefix: 'ERR ');
+    }
+    _append(result.ok ? '退出码：0' : '退出码：${result.exitCode}');
+    return result.ok;
+  }
+
   Future<void> _refreshToolchainStatusWithinBusy({
     String? profileOverride,
     bool resolveAiProfile = true,
@@ -4950,6 +5132,14 @@ class StudioController extends StateNotifier<StudioState> {
         previous: state.toolchainStatus,
       ),
     );
+    final baseEnvironmentReady =
+        await _ensureBaseEnvironmentForToolchainCheck();
+    if (!baseEnvironmentReady) {
+      state = state.copyWith(
+        toolchainStatus: ToolchainStatusSummary.error('基础 Python 环境同步失败'),
+      );
+      return;
+    }
     final requestedProfile = profileOverride ?? state.aiProfile;
     final parsed = await loadToolchainStatusForProfile(requestedProfile);
     if (parsed == null) return;
@@ -4995,7 +5185,7 @@ class StudioController extends StateNotifier<StudioState> {
     final args = _toolchainArgsForProfile(profile);
     var result = profile == 'local-base'
         ? await _runBase(args, streamOutput: false)
-        : await _run(args, streamOutput: false);
+        : await _run(args, streamOutput: false, autoDowngrade: false);
     if (!result.ok && profile != 'local-base') {
       _append('所选杯型环境检查失败，回退到中杯环境读取缺失状态。');
       result = await _runBase(args, streamOutput: false);
@@ -5073,6 +5263,12 @@ class StudioController extends StateNotifier<StudioState> {
 
   List<String> _toolchainArgsForProfile(String profile) {
     return ['toolchain-status', '--profile', profile, '--json'];
+  }
+
+  static List<String> _replaceProfileArg(List<String> args, String profile) {
+    final index = args.indexOf('--profile');
+    if (index < 0 || index + 1 >= args.length) return args;
+    return [...args.sublist(0, index + 1), profile, ...args.sublist(index + 2)];
   }
 
   List<String> _statusArgs() {
@@ -5207,6 +5403,7 @@ class StudioController extends StateNotifier<StudioState> {
             _asString(targetBaseline?['status']) ?? 'no_baseline',
       ),
       statusSummary: _radioSummary(selected) ?? 'RadioInfo 可读取',
+      gameDirError: null,
     );
     if (state.sourceLang != previousSourceLang ||
         state.targetLang != previousTargetLang) {

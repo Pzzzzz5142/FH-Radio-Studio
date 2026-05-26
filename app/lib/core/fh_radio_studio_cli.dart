@@ -582,10 +582,85 @@ class UvRuntime {
   }
 
   bool shouldUseNoSync(String profile) {
-    if (dependencyGroupsForProfile(profile).isNotEmpty) {
-      return true;
+    return dependencyGroupsForProfile(profile).isNotEmpty;
+  }
+
+  bool projectEnvironmentIsRunnableForProfile(String profile) {
+    return _projectEnvironmentIsRunnable(projectEnvironmentForProfile(profile));
+  }
+
+  bool _projectEnvironmentIsRunnable(String environmentPath) {
+    final environment = Directory(environmentPath);
+    if (!environment.existsSync()) return false;
+    if (!_projectEnvironmentPythonIsRunnable(environmentPath)) return false;
+    if (!_projectEnvironmentCliIsRunnable(environmentPath)) return false;
+    return true;
+  }
+
+  bool _projectEnvironmentPythonIsRunnable(String environmentPath) {
+    final scriptsDir = _environmentScriptsDir(environmentPath);
+    final python = File(
+      _join(scriptsDir, Platform.isWindows ? 'python.exe' : 'python'),
+    );
+    if (!python.existsSync()) return false;
+
+    final pyvenvConfig = File(_join(environmentPath, 'pyvenv.cfg'));
+    if (!pyvenvConfig.existsSync()) return false;
+
+    final home = _pyvenvConfigValue(pyvenvConfig, 'home');
+    if (home == null || home.trim().isEmpty) return true;
+    final homePath = home.trim();
+    if (!Directory(homePath).existsSync()) return false;
+
+    final releasePythonRoot = pythonInstallDir;
+    if (mode == 'release' && releasePythonRoot != null) {
+      return _sameOrNestedPath(homePath, releasePythonRoot);
     }
-    return Directory(projectEnvironmentForProfile(profile)).existsSync();
+    return true;
+  }
+
+  bool _projectEnvironmentCliIsRunnable(String environmentPath) {
+    final scriptsDir = _environmentScriptsDir(environmentPath);
+    final command = cliCommand.trim();
+    if (command.isEmpty) return false;
+    final commandName =
+        Platform.isWindows && !command.toLowerCase().endsWith('.exe')
+        ? '$command.exe'
+        : command;
+    return File(_join(scriptsDir, commandName)).existsSync();
+  }
+
+  String? _pyvenvConfigValue(File config, String key) {
+    try {
+      for (final line in config.readAsLinesSync()) {
+        final separator = line.indexOf('=');
+        if (separator < 0) continue;
+        final name = line.substring(0, separator).trim();
+        if (name != key) continue;
+        return line.substring(separator + 1).trim();
+      }
+    } on FileSystemException {
+      return null;
+    }
+    return null;
+  }
+
+  String _environmentScriptsDir(String environmentPath) {
+    return _join(environmentPath, Platform.isWindows ? 'Scripts' : 'bin');
+  }
+
+  static bool _sameOrNestedPath(String child, String parent) {
+    var childPath = Directory(child).absolute.path;
+    var parentPath = Directory(parent).absolute.path;
+    if (Platform.isWindows) {
+      childPath = childPath.toLowerCase();
+      parentPath = parentPath.toLowerCase();
+    }
+    if (childPath == parentPath) return true;
+    final parentPrefix = parentPath.endsWith(Platform.pathSeparator)
+        ? parentPath
+        : '$parentPath${Platform.pathSeparator}';
+    return childPath.startsWith(parentPrefix);
   }
 
   Map<String, String> environmentForProfile(

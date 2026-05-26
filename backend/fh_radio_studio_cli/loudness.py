@@ -440,6 +440,11 @@ def _baseline_bank_items(manifest: Dict[str, object]) -> List[Dict[str, object]]
     ]
 
 
+def baseline_loudness_bank_count(manifest: Dict[str, object]) -> int:
+    """原始 bank 解码任务数；用于在进度计划里预估基线响度统计的并行进程数。"""
+    return len(_baseline_bank_items(manifest))
+
+
 def _decode_baseline_bank_worker(
     vgmstream: str,
     bank_path_text: str,

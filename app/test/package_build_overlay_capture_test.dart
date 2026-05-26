@@ -151,6 +151,8 @@ class _PackageBuildOverlayCaptureController extends StudioController {
           detail: '运行 fsbankcl，修正 sample 名称，再拼回 .assets.bank。',
           status: 'running',
           weight: 8,
+          processCount: 4,
+          workItemCount: 9,
         ),
         PackageBuildProgressStep(
           id: 'patch_xml',
