@@ -34,6 +34,7 @@ from .loudness import (
     analyze_loudness_file,
     build_custom_set_loudness_profile,
     ensure_baseline_loudness_envelope,
+    loudness_worker_count,
     prepare_loudness_matched_audio,
 )
 from .metadata import (
@@ -176,6 +177,13 @@ def _radio_progress_steps(
     ]
 
 
+def _is_finite_loudness_number(value: object) -> bool:
+    try:
+        return bool(np.isfinite(float(value)))
+    except (TypeError, ValueError):
+        return False
+
+
 def _baseline_loudness_cache_state(args: argparse.Namespace) -> str:
     raw = getattr(args, "baseline_manifest", None)
     if not raw:
@@ -192,6 +200,17 @@ def _baseline_loudness_cache_state(args: argparse.Namespace) -> str:
     if not isinstance(envelope, dict):
         return "initializing"
     if envelope.get("algorithm_version") != LOUDNESS_ALGORITHM_VERSION:
+        return "initializing"
+    required_numbers = (
+        "reference_min_lufs",
+        "reference_median_lufs",
+        "reference_max_lufs",
+        "safe_min_lufs",
+        "safe_max_lufs",
+        "true_peak_ceiling_dbtp",
+        "max_positive_gain_db",
+    )
+    if any(not _is_finite_loudness_number(envelope.get(key)) for key in required_numbers):
         return "initializing"
     return "cached"
 
@@ -235,7 +254,10 @@ def _ensure_package_loudness_envelope(
     step_id = "baseline_loudness"
     progress.started(step_id)
     try:
-        envelope = ensure_baseline_loudness_envelope(args.baseline_manifest)
+        envelope = ensure_baseline_loudness_envelope(
+            args.baseline_manifest,
+            loudness_jobs=getattr(args, "loudness_jobs", 0),
+        )
     except Exception as exc:
         progress.failed(step_id, f"{type(exc).__name__}: {exc}")
         raise
@@ -618,6 +640,44 @@ def first_playlist_names(station: ET.Element) -> List[str]:
     ]
 
 
+def playlist_entry_names(station: ET.Element, playlist_type: str) -> List[str]:
+    playlist = find_child_by_attr(station, "PlayList", "Type", playlist_type)
+    if playlist is None:
+        return []
+    return [
+        (entry.get("Name") or "").strip()
+        for entry in playlist.findall("Entry")
+        if entry.get("Name")
+    ]
+
+
+def playlist_entry_caps(station: ET.Element) -> Dict[str, int]:
+    return {
+        playlist_type: len(playlist_entry_names(station, playlist_type))
+        for playlist_type in PLAYLIST_TYPES
+    }
+
+
+def playlist_entry_cap(
+    station: ET.Element,
+    playlist_type: str,
+    fallback: int,
+) -> int:
+    cap = playlist_entry_caps(station).get(normalize_playlist_type(playlist_type), 0)
+    return cap if cap > 0 else fallback
+
+
+def playlist_entry_cap_for_types(
+    station: ET.Element,
+    playlist_types: Iterable[str],
+    fallback: int,
+) -> int:
+    caps = [
+        playlist_entry_cap(station, playlist_type, fallback) for playlist_type in playlist_types
+    ]
+    return min(caps) if caps else fallback
+
+
 def collect_music_inputs(inputs: List[str]) -> List[Path]:
     suffixes = {".wav", ".flac", ".ogg", ".aiff", ".aif", ".mp3", ".m4a", ".aac"}
     results: List[Path] = []
@@ -673,14 +733,7 @@ def _analyze_loudness_cache_miss_worker(
 
 
 def _loudness_worker_count(args: argparse.Namespace, task_count: int) -> int:
-    if task_count <= 1:
-        return 1
-    requested = int(getattr(args, "loudness_jobs", 0) or 0)
-    if requested > 0:
-        return max(1, min(requested, task_count))
-    cpu_count = os.cpu_count() or 1
-    auto_workers = min(4, max(1, cpu_count // 2))
-    return max(1, min(auto_workers, task_count))
+    return loudness_worker_count(getattr(args, "loudness_jobs", 0), task_count)
 
 
 def _measure_loudness_cache_misses(
@@ -823,8 +876,67 @@ def station_number_by_code(root: ET.Element) -> Dict[str, int]:
     return out
 
 
-def load_playlist_plan_groups(
+def _resolve_playlist_plan_radio(
+    raw_radio: str,
+    code_to_number: Dict[str, int],
+) -> Optional[int]:
+    radio = code_to_number.get(raw_radio)
+    if radio is None and raw_radio.startswith("R"):
+        radio = safe_int(raw_radio[1:], 0) or None
+    return radio
+
+
+def load_playlist_plan_builtin_targets(
     plan_path: Optional[str], root: ET.Element
+) -> List[Dict[str, object]]:
+    if not plan_path:
+        return []
+    path = Path(plan_path).expanduser()
+    if not path.exists():
+        die(f"Playlist plan not found: {path}")
+    data = load_manifest(path)
+    items = data.get("builtin_targets") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+
+    code_to_number = station_number_by_code(root)
+    grouped: Dict[int, set[str]] = {}
+    for item in items:
+        if isinstance(item, str):
+            parts = item.split("|")
+            raw_radio = parts[0].strip().upper() if parts else ""
+            raw_type = parts[1] if len(parts) > 1 else "FreeRoam"
+        elif isinstance(item, dict):
+            raw_radio = str(item.get("radio_code") or item.get("radioCode") or "").strip().upper()
+            raw_type = item.get("playlist_type") or item.get("playlistType") or "FreeRoam"
+        else:
+            continue
+        if not raw_radio:
+            continue
+        radio = _resolve_playlist_plan_radio(raw_radio, code_to_number)
+        if radio is None:
+            die(f"Playlist plan references unknown radio code: {raw_radio}")
+        grouped.setdefault(radio, set()).add(normalize_playlist_type(raw_type))
+
+    result: List[Dict[str, object]] = []
+    for radio, playlist_types in sorted(grouped.items()):
+        result.append(
+            {
+                "radio": radio,
+                "playlist_types": sorted(
+                    playlist_types,
+                    key=lambda value: 0 if value == "FreeRoam" else 1,
+                ),
+            }
+        )
+    return result
+
+
+def load_playlist_plan_groups(
+    plan_path: Optional[str],
+    root: ET.Element,
+    *,
+    skip_radios: Optional[set[int]] = None,
 ) -> List[Dict[str, object]]:
     if not plan_path:
         return []
@@ -837,6 +949,7 @@ def load_playlist_plan_groups(
         return []
 
     code_to_number = station_number_by_code(root)
+    skip_radios = skip_radios or set()
     grouped: Dict[int, Dict[str, object]] = {}
     seen: set[Tuple[int, str, str]] = set()
     for item in items:
@@ -846,11 +959,11 @@ def load_playlist_plan_groups(
         raw_radio = str(item.get("radio_code") or item.get("radioCode") or "").strip().upper()
         if not raw_source or not raw_radio:
             continue
-        radio = code_to_number.get(raw_radio)
-        if radio is None and raw_radio.startswith("R"):
-            radio = safe_int(raw_radio[1:], 0) or None
+        radio = _resolve_playlist_plan_radio(raw_radio, code_to_number)
         if radio is None:
             die(f"Playlist plan references unknown radio code: {raw_radio}")
+        if radio in skip_radios:
+            continue
         source = Path(raw_source).expanduser()
         if not source.is_file():
             die(f"Playlist plan music source not found: {source}")
@@ -1033,7 +1146,10 @@ def prepare_music_tracks(
     loudness_envelope: Optional[Dict[str, object]] = None,
 ) -> List[Dict[str, object]]:
     prepared_dir.mkdir(parents=True, exist_ok=True)
-    envelope = loudness_envelope or ensure_baseline_loudness_envelope(args.baseline_manifest)
+    envelope = loudness_envelope or ensure_baseline_loudness_envelope(
+        args.baseline_manifest,
+        loudness_jobs=getattr(args, "loudness_jobs", 0),
+    )
     loudness_analyses: List[Dict[str, object]] = []
     loudness_by_source: Dict[str, Dict[str, object]] = {}
     metadata_cache = _metadata_cache_path_for_args(args)
@@ -1288,6 +1404,21 @@ def build_radio_package_unit(
     }
 
 
+def _playlist_type_counts_for_group(group: Dict[str, object]) -> Dict[str, int]:
+    counts = {playlist_type: 0 for playlist_type in PLAYLIST_TYPES}
+    playlist_types_by_source = group.get("playlist_types_by_source")
+    if not isinstance(playlist_types_by_source, dict):
+        playlist_types_by_source = {}
+    for source in list(group["sources"]):
+        key = source_key(Path(str(source)))
+        raw_types = playlist_types_by_source.get(key, list(PLAYLIST_TYPES))
+        playlist_types = raw_types if isinstance(raw_types, list) else list(PLAYLIST_TYPES)
+        for raw_type in playlist_types:
+            playlist_type = normalize_playlist_type(raw_type)
+            counts[playlist_type] = counts.get(playlist_type, 0) + 1
+    return counts
+
+
 def preflight_build_package_from_plan(
     args: argparse.Namespace,
     game_dir: Path,
@@ -1302,6 +1433,7 @@ def preflight_build_package_from_plan(
         target_bank = resolve_target_bank_for_station(audio_dir, station, radio, args.bank)
         bank_info = parse_fsb5(target_bank)
         target_names_for_bank(station, bank_info, target_bank, args.baseline_manifest)
+        playlist_caps = playlist_entry_caps(station)
         music_files = list(group["sources"])
         if len(music_files) > bank_info.num_samples and not args.allow_truncate:
             die(
@@ -1310,6 +1442,14 @@ def preflight_build_package_from_plan(
             )
         if not music_files:
             die(f"No music files assigned for R{radio}")
+        playlist_counts = _playlist_type_counts_for_group(group)
+        for playlist_type, count in playlist_counts.items():
+            cap = playlist_caps.get(playlist_type, 0) or bank_info.num_samples
+            if count > cap:
+                die(
+                    f"{count} music files were assigned to R{radio} {playlist_type}, "
+                    f"but the baseline playlist has only {cap} entries."
+                )
         slots_by_source = group.get("playlist_slots_by_source")
         if not isinstance(slots_by_source, dict):
             continue
@@ -1321,10 +1461,14 @@ def preflight_build_package_from_plan(
                     slot_num = int(slot)
                 except (TypeError, ValueError):
                     continue
-                if slot_num > bank_info.num_samples:
+                cap = (
+                    playlist_caps.get(normalize_playlist_type(playlist_type), 0)
+                    or bank_info.num_samples
+                )
+                if slot_num > cap:
                     die(
                         f"Playlist plan assigns R{radio} {playlist_type} slot {slot_num}, "
-                        f"but {target_bank.name} has only {bank_info.num_samples} slots."
+                        f"but the baseline playlist has only {cap} entries."
                     )
 
 
@@ -1503,6 +1647,170 @@ def cmd_build_current_radio_package(
     return 0
 
 
+def _baseline_audio_dir_from_manifest(baseline_manifest: Optional[str]) -> Optional[Path]:
+    if not baseline_manifest:
+        return None
+    manifest_path = Path(baseline_manifest).expanduser()
+    audio_dir = manifest_path.parent / "media" / "audio"
+    return audio_dir if audio_dir.is_dir() else None
+
+
+def cmd_build_baseline_restore_package(
+    args: argparse.Namespace,
+    game_dir: Path,
+    audio_dir: Path,
+    root: ET.Element,
+    restore_targets: List[Dict[str, object]],
+    progress: Optional[_PackageProgressReporter] = None,
+) -> int:
+    progress = progress or _PackageProgressReporter(False)
+    if not getattr(args, "baseline_manifest", None):
+        die("A pristine baseline manifest is required when restoring builtin playlist targets.")
+    if args.bank and len(restore_targets) > 1:
+        die("--bank can only be used with a single restored radio")
+
+    baseline_audio = _baseline_audio_dir_from_manifest(args.baseline_manifest) or audio_dir
+    radio_counts = [
+        (
+            int(target["radio"]),
+            0,
+            find_station(root, int(target["radio"])).get("Name"),
+        )
+        for target in restore_targets
+    ]
+    progress.plan(
+        _package_progress_plan(
+            args,
+            radio_counts,
+            current_radio_passthrough=True,
+        )
+    )
+
+    out_dir = Path(args.out_dir).expanduser()
+    package_root = out_dir / "package"
+    package_audio = package_root / "media" / "audio"
+    package_bank_dir = package_audio / "FMODBanks"
+    package_string_dir = package_root / "media" / "Stripped" / "StringTables"
+    restored_units: List[Dict[str, object]] = []
+
+    with progress.stage("inspect_inputs"):
+        for path in (package_audio, package_bank_dir):
+            path.mkdir(parents=True, exist_ok=True)
+        for target in restore_targets:
+            radio = int(target["radio"])
+            station = find_station(root, radio)
+            target_bank = resolve_target_bank_for_station(
+                baseline_audio,
+                station,
+                radio,
+                args.bank,
+            )
+            bank_info = parse_fsb5(target_bank)
+            restored_units.append(
+                {
+                    "radio": radio,
+                    "radio_code": radio_code_for_station(radio, station.get("Name", "")),
+                    "station": station.get("Name"),
+                    "source_bank": str(target_bank),
+                    "target_bank_name": target_bank.name,
+                    "bank_slots": bank_info.num_samples,
+                    "restored_playlist_types": list(target.get("playlist_types") or []),
+                    "pack_order": None,
+                    "splice": None,
+                    "loudness_profile": None,
+                    "music": [],
+                    "assignments": [],
+                }
+            )
+
+    with progress.stage("package_language"):
+        language_manifest = package_language_settings(args, game_dir, package_string_dir)
+
+    with progress.stage("copy_current_radio", summary=f"{len(restored_units)} radio(s)"):
+        copied_radio_info: List[str] = []
+        for source_xml in radio_info_files(baseline_audio):
+            target_xml = package_audio / source_xml.name
+            shutil.copy2(source_xml, target_xml)
+            parse_xml(target_xml)
+            copied_radio_info.append(source_xml.name)
+            print(f"  copied baseline {source_xml.name}")
+        for unit in restored_units:
+            source_bank = Path(str(unit["source_bank"]))
+            target_bank = package_bank_dir / source_bank.name
+            if not target_bank.exists():
+                shutil.copy2(source_bank, target_bank)
+                print(f"  copied baseline {source_bank.name}")
+
+    package_manifest: Dict[str, object] = {
+        "schema_version": 2,
+        "baseline_restore": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "game": "FH6",
+        "game_dir": str(game_dir),
+        **_package_game_version_fields(game_dir),
+        "source_audio_dir": str(baseline_audio.resolve()),
+        "source_radio_info": str(default_radio_info(baseline_audio)),
+        "playlist_plan": (
+            str(Path(args.playlist_plan).expanduser().resolve()) if args.playlist_plan else None
+        ),
+        "radio": restored_units[0]["radio"] if len(restored_units) == 1 else None,
+        "station": (
+            restored_units[0]["station"]
+            if len(restored_units) == 1
+            else f"{len(restored_units)} restored radios"
+        ),
+        "target_bank_name": ", ".join(str(item["target_bank_name"]) for item in restored_units),
+        "bank_slots": sum(int(item["bank_slots"]) for item in restored_units),
+        "playlist_mode": args.playlist_mode,
+        "quality": args.quality,
+        "skip_bank": False,
+        "timing_manifest": None,
+        "runtime_verified": True,
+        "runtime_warning": None,
+        "radios": restored_units,
+        "restored_radios": [
+            {
+                "radio": item["radio"],
+                "radio_code": item["radio_code"],
+                "station": item["station"],
+                "playlist_types": item.get("restored_playlist_types") or [],
+            }
+            for item in restored_units
+        ],
+        "xml_patch_totals": {
+            "samples_patched": 0,
+            "missing_samples": 0,
+            "playlist_entries_added": 0,
+            "playlist_entries_removed": 0,
+        },
+    }
+    if language_manifest is not None:
+        package_manifest["language"] = language_manifest
+
+    with progress.stage("complete_package", summary="manifest + MD5"):
+        apply_baseline_completion(package_manifest, package_root, args)
+        package_manifest["package_files"] = package_file_fingerprints(package_root)
+        manifest_path = package_root / "fh_radio_studio_package_manifest.json"
+        write_json(manifest_path, package_manifest)
+        instructions = [
+            "FH Radio Studio builtin restore package",
+            "=" * 39,
+            f"Radios: {', '.join('R' + str(item['radio']) + ' ' + str(item['station']) for item in restored_units)}",
+            "",
+            "RadioInfo and restored banks are copied from the pristine baseline.",
+            "Deploy through FH Radio Studio to write the package into the game directory.",
+            "",
+            "Package files:",
+            f"  {package_audio}",
+            f"  {manifest_path}",
+        ]
+        write_text(package_root / "INSTALL_README.txt", "\n".join(instructions) + "\n")
+
+    print(f"Package manifest: {manifest_path}")
+    print(f"Builtin restore package built with {len(restored_units)} restored radio(s).")
+    return 0
+
+
 def cmd_build_package_from_plan(
     args: argparse.Namespace,
     game_dir: Path,
@@ -1510,9 +1818,11 @@ def cmd_build_package_from_plan(
     radio_info: Path,
     root: ET.Element,
     groups: List[Dict[str, object]],
+    restore_targets: Optional[List[Dict[str, object]]] = None,
     progress: Optional[_PackageProgressReporter] = None,
 ) -> int:
     progress = progress or _PackageProgressReporter(False)
+    restore_targets = restore_targets or []
     radio_counts = [
         (
             int(group["radio"]),
@@ -1527,8 +1837,16 @@ def cmd_build_package_from_plan(
             radio_counts,
         )
     )
-    if args.bank and len(groups) > 1:
+    if args.bank and len(groups) + len(restore_targets) > 1:
         die("--bank can only be used with a single target radio")
+    if restore_targets:
+        if not getattr(args, "baseline_manifest", None):
+            die("A pristine baseline manifest is required when restoring builtin playlist targets.")
+        if not getattr(args, "source_audio_dir", None):
+            die(
+                "Restoring builtin playlist targets requires --source-audio-dir "
+                "pointing at the pristine baseline media/audio directory."
+            )
     with progress.stage("inspect_inputs"):
         preflight_build_package_from_plan(args, game_dir, audio_dir, root, groups)
 
@@ -1623,6 +1941,19 @@ def cmd_build_package_from_plan(
         ),
         "radios": radio_packages,
     }
+    if restore_targets:
+        package_manifest["restored_radios"] = [
+            {
+                "radio": int(target["radio"]),
+                "radio_code": radio_code_for_station(
+                    int(target["radio"]),
+                    find_station(root, int(target["radio"])).get("Name", ""),
+                ),
+                "station": find_station(root, int(target["radio"])).get("Name"),
+                "playlist_types": list(target.get("playlist_types") or []),
+            }
+            for target in restore_targets
+        ]
     if language_manifest is not None:
         package_manifest["language"] = language_manifest
 
@@ -1691,7 +2022,13 @@ def cmd_build_package(args: argparse.Namespace) -> int:
         die(f"Source audio directory not found: {audio_dir}")
     radio_info = default_radio_info(audio_dir)
     root = parse_xml(radio_info).getroot()
-    playlist_groups = load_playlist_plan_groups(args.playlist_plan, root)
+    restore_targets = load_playlist_plan_builtin_targets(args.playlist_plan, root)
+    restore_radios = {int(target["radio"]) for target in restore_targets}
+    playlist_groups = load_playlist_plan_groups(
+        args.playlist_plan,
+        root,
+        skip_radios=restore_radios,
+    )
     if not playlist_groups and getattr(args, "playlist_from_package", None):
         playlist_groups = load_playlist_groups_from_package(args.playlist_from_package, root)
     if playlist_groups:
@@ -1702,6 +2039,16 @@ def cmd_build_package(args: argparse.Namespace) -> int:
             radio_info,
             root,
             playlist_groups,
+            restore_targets,
+            progress,
+        )
+    if restore_targets:
+        return cmd_build_baseline_restore_package(
+            args,
+            game_dir,
+            audio_dir,
+            root,
+            restore_targets,
             progress,
         )
     if not args.music:
@@ -1717,17 +2064,24 @@ def cmd_build_package(args: argparse.Namespace) -> int:
     target_bank = resolve_target_bank_for_station(audio_dir, station, args.radio, args.bank)
     bank_info = parse_fsb5(target_bank)
     target_names = target_names_for_bank(station, bank_info, target_bank, args.baseline_manifest)
+    playlist_cap = playlist_entry_cap_for_types(
+        station,
+        PLAYLIST_TYPES,
+        bank_info.num_samples,
+    )
+    input_cap = min(bank_info.num_samples, playlist_cap)
 
     music_files = collect_music_inputs(args.music)
     progress.plan(
         _package_progress_plan(args, [(args.radio, len(music_files), station.get("Name"))])
     )
-    if len(music_files) > bank_info.num_samples and not args.allow_truncate:
+    if len(music_files) > input_cap and not args.allow_truncate:
         die(
             f"{len(music_files)} music files were provided, but {target_bank.name} has "
-            f"{bank_info.num_samples} slots. Use --allow-truncate to keep the first {bank_info.num_samples}."
+            f"{bank_info.num_samples} bank slots and the baseline playlist has "
+            f"{playlist_cap} entries. Use --allow-truncate to keep the first {input_cap}."
         )
-    music_files = music_files[: bank_info.num_samples]
+    music_files = music_files[:input_cap]
     with progress.stage("inspect_inputs"):
         timing_overrides = load_timing_overrides(args.timing_manifest)
 

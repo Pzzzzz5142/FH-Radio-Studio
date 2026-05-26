@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
+import '../domain/radio_library.dart';
 import 'path_keys.dart';
 import 'project_workspace.dart';
 
@@ -520,11 +521,17 @@ class PlaylistPlanStore {
   static PlaylistPlan projectSourcesOnly(String projectDir, PlaylistPlan plan) {
     final out = <String, PlaylistAssignment>{};
     for (final assignment in plan.assignments.values) {
+      if (!isUiSupportedRadio(code: assignment.radioCode)) continue;
       final normalized = _normalizeProjectSource(projectDir, assignment);
       if (normalized == null) continue;
       out[normalized.assignmentKey] = normalized;
     }
-    return PlaylistPlan(assignments: out, builtinTargets: plan.builtinTargets);
+    final builtinTargets = {
+      for (final target in plan.builtinTargets)
+        if (isUiSupportedRadio(code: PlaylistPlan._targetRadioCode(target)))
+          target,
+    };
+    return PlaylistPlan(assignments: out, builtinTargets: builtinTargets);
   }
 
   static PlaylistAssignment? _normalizeProjectSource(

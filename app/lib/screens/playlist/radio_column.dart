@@ -32,6 +32,7 @@ class PlaylistColumn extends StatefulWidget {
     required RadioStation radio,
     required bool isCustom,
     required int count,
+    int? capacity,
     required bool isDragOver,
     required List<Widget> children,
     VoidCallback? onRestoreBuiltin,
@@ -43,6 +44,7 @@ class PlaylistColumn extends StatefulWidget {
         radio: radio,
         isCustom: isCustom,
         count: count,
+        capacity: capacity ?? radio.slot,
         onRestoreBuiltin: onRestoreBuiltin,
       ),
       emptyText: isCustom ? '空 · 拖入池中曲目' : '无原版数据',
@@ -190,7 +192,7 @@ class _PlaylistColumnState extends State<PlaylistColumn> {
   Widget _meta(BuildContext context) {
     return widget.header is _RadioHeader
         ? Text(
-            '${(widget.header as _RadioHeader).count} / ${(widget.header as _RadioHeader).radio.slot}',
+            '${(widget.header as _RadioHeader).count} / ${(widget.header as _RadioHeader).capacity}',
             style: RmText.mono(10.5, color: context.rm.fg3),
           )
         : Text(
@@ -219,12 +221,14 @@ class _RadioHeader extends StatelessWidget {
     required this.radio,
     required this.isCustom,
     required this.count,
+    required this.capacity,
     this.onRestoreBuiltin,
   });
 
   final RadioStation radio;
   final bool isCustom;
   final int count;
+  final int capacity;
   final VoidCallback? onRestoreBuiltin;
 
   @override

@@ -128,8 +128,44 @@ final gamePlaylistCatalogProvider = Provider<PlaylistCatalog>((ref) {
   return ref.watch(playlistCatalogForViewProvider(PlaylistCatalogView.game));
 });
 
+final baselinePlaylistCatalogProvider = Provider<PlaylistCatalog?>((ref) {
+  final state = ref.watch(
+    studioProvider.select(
+      (state) => (
+        baselineDir: state.fileIntegrity.hasCurrentBaseline
+            ? state.currentBaselineDir
+            : null,
+        sourceLang: state.sourceLang,
+        targetLang: state.targetLang,
+      ),
+    ),
+  );
+  final baselineDir = state.baselineDir;
+  if (baselineDir == null || baselineDir.trim().isEmpty) return null;
+  final catalog = loadPlaylistCatalog(
+    view: PlaylistCatalogView.game,
+    packageDir: null,
+    gameDir: baselineDir,
+    sourceLang: state.sourceLang,
+    targetLang: state.targetLang,
+  );
+  return catalog.failed ? null : catalog;
+});
+
+final baselineBankSlotOverridesProvider = Provider<Map<String, int>>((ref) {
+  final catalog = ref.watch(baselinePlaylistCatalogProvider);
+  if (catalog == null || catalog.radios.isEmpty) return const {};
+  return {
+    for (final radio in catalog.radios)
+      if (radio.slot > 0) radio.code: radio.slot,
+  };
+});
+
 final playlistCatalogForViewProvider =
     Provider.family<PlaylistCatalog, PlaylistCatalogView>((ref, view) {
+      final baselineBankSlotOverrides = ref.watch(
+        baselineBankSlotOverridesProvider,
+      );
       final state = ref.watch(
         studioProvider.select(
           (state) => (
@@ -151,6 +187,9 @@ final playlistCatalogForViewProvider =
           ),
         ),
       );
+      final bankSlotOverrides = baselineBankSlotOverrides.isNotEmpty
+          ? baselineBankSlotOverrides
+          : state.bankSlotOverrides;
       return loadPlaylistCatalog(
         view: view,
         packageDir: state.packageDir,
@@ -158,7 +197,7 @@ final playlistCatalogForViewProvider =
         sourceLang: state.sourceLang,
         targetLang: state.targetLang,
         detectionPackageDirs: [state.pendingPackageDir, state.lastPackageDir],
-        bankSlotOverrides: state.bankSlotOverrides,
+        bankSlotOverrides: bankSlotOverrides,
       );
     });
 
@@ -267,6 +306,9 @@ PlaylistCatalog? _readXmlCatalog(
       final number = _objectInt(station.getAttribute('Number'));
       final name = station.getAttribute('Name')?.trim() ?? '';
       final code = _radioCodeFor(number, name);
+      if (!isUiSupportedRadio(number: number, code: code, name: name)) {
+        continue;
+      }
       final samples = _samplesBySoundName(station, code, packageSounds);
       final freeRoam = _playlistTracks(station, 'FreeRoam', samples, code);
       final event = _playlistTracks(station, 'Event', samples, code);

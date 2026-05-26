@@ -14,6 +14,7 @@ import 'package:fh_radio_studio/core/track_timing_config.dart';
 import 'package:fh_radio_studio/domain/radio_library.dart';
 import 'package:fh_radio_studio/screens/custom_pool.dart';
 import 'package:fh_radio_studio/screens/playlist.dart';
+import 'package:fh_radio_studio/screens/playlist/radio_column.dart';
 import 'package:fh_radio_studio/screens/playlist/track_card.dart';
 import 'package:fh_radio_studio/shell/app_shell.dart';
 import 'package:fh_radio_studio/shell/title_bar.dart';
@@ -67,6 +68,45 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('MSR'), findsOneWidget);
     expect(find.text('0/4'), findsOneWidget);
+  });
+
+  testWidgets('builtin playlist header uses visible original track count', (
+    tester,
+  ) async {
+    const radio = RadioStation(
+      code: 'R5',
+      name: 'Hospital Records',
+      hue: 'cyan',
+      genre: 'R5',
+      slot: 25,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildAppTheme(
+          brightness: Brightness.light,
+          accent: AppAccent.lime,
+        ),
+        home: Scaffold(
+          body: SizedBox(
+            width: 360,
+            height: 560,
+            child: PlaylistColumn.radio(
+              radio: radio,
+              isCustom: false,
+              count: 24,
+              capacity: 24,
+              isDragOver: false,
+              children: [Text('baseline track')],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('24 / 24'), findsOneWidget);
+    expect(find.text('24 / 25'), findsNothing);
   });
 
   testWidgets('RmPanel keeps compact header actions right aligned', (
@@ -1143,6 +1183,195 @@ void main() {
     expect(find.text('custom'), findsWidgets);
     expect(find.byTooltip('恢复当前列表为 builtin'), findsOneWidget);
   });
+
+  testWidgets(
+    'playlist builtin restore uses baseline list count as header total',
+    (tester) async {
+      final tempRoot = Directory.systemTemp.createTempSync(
+        'fh_radio_studio_playlist_builtin_count_widget_',
+      );
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+        if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+      });
+
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1280, 900);
+
+      const radio = RadioStation(
+        code: 'R5',
+        name: 'Hospital Records',
+        hue: 'cyan',
+        genre: 'R5',
+        slot: 25,
+      );
+      final packageTracks = [
+        for (var index = 0; index < 25; index += 1)
+          TrackRef(
+            id: 'r5-custom-$index',
+            title: 'Custom $index',
+            artist: 'User',
+            durationSec: 180,
+            modded: true,
+          ),
+      ];
+      final baselineTracks = [
+        for (var index = 0; index < 24; index += 1)
+          TrackRef(
+            id: 'r5-original-$index',
+            title: 'Original $index',
+            artist: 'Forza',
+            durationSec: 180,
+          ),
+      ];
+      final packageCatalog = PlaylistCatalog(
+        origin: PlaylistCatalogOrigin.package,
+        sourcePath: null,
+        radios: const [radio],
+        modes: const {'R5': StationMode.custom},
+        freeRoamTracks: {'R5': packageTracks},
+        eventTracks: {'R5': packageTracks},
+      );
+      final baselineCatalog = PlaylistCatalog(
+        view: PlaylistCatalogView.game,
+        origin: PlaylistCatalogOrigin.game,
+        sourcePath: null,
+        radios: const [radio],
+        modes: const {'R5': StationMode.builtin},
+        freeRoamTracks: {'R5': baselineTracks},
+        eventTracks: {'R5': baselineTracks},
+      );
+      const plan = PlaylistPlan(
+        assignments: {},
+        builtinTargets: {'R5|FreeRoam', 'R5|Event'},
+      );
+
+      final projectDir = p.join(tempRoot.path, 'project');
+      _writeIntegrityFixture(projectDir, gameBytes: 'original');
+      SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+      final prefs = await SharedPreferences.getInstance();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            sharedPreferencesProvider.overrideWithValue(prefs),
+            playlistCatalogProvider.overrideWithValue(packageCatalog),
+            baselinePlaylistCatalogProvider.overrideWithValue(baselineCatalog),
+            realPoolTracksProvider.overrideWithValue(const []),
+            effectivePlaylistPlanProvider.overrideWithValue(plan),
+          ],
+          child: MaterialApp(
+            theme: buildAppTheme(
+              brightness: Brightness.light,
+              accent: AppAccent.lime,
+            ),
+            home: const Scaffold(body: PlaylistScreen()),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Original 0'), findsOneWidget);
+      expect(find.text('Custom 0'), findsNothing);
+      expect(find.text('24 / 24'), findsOneWidget);
+      expect(find.text('24 / 25'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'playlist custom column uses baseline playlist count as hard cap',
+    (tester) async {
+      final tempRoot = Directory.systemTemp.createTempSync(
+        'fh_radio_studio_playlist_custom_cap_widget_',
+      );
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+        if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+      });
+
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1280, 900);
+
+      const radio = RadioStation(
+        code: 'R5',
+        name: 'Hospital Records',
+        hue: 'cyan',
+        genre: 'R5',
+        slot: 25,
+      );
+      final customTracks = [
+        for (var index = 0; index < 5; index += 1)
+          TrackRef(
+            id: 'r5-custom-$index',
+            title: 'Custom $index',
+            artist: 'User',
+            durationSec: 180,
+            modded: true,
+          ),
+      ];
+      final baselineTracks = [
+        for (var index = 0; index < 24; index += 1)
+          TrackRef(
+            id: 'r5-original-$index',
+            title: 'Original $index',
+            artist: 'Forza',
+            durationSec: 180,
+          ),
+      ];
+      final packageCatalog = PlaylistCatalog(
+        origin: PlaylistCatalogOrigin.package,
+        sourcePath: null,
+        radios: const [radio],
+        modes: const {'R5': StationMode.custom},
+        freeRoamTracks: {'R5': customTracks},
+        eventTracks: {'R5': customTracks},
+      );
+      final baselineCatalog = PlaylistCatalog(
+        view: PlaylistCatalogView.game,
+        origin: PlaylistCatalogOrigin.game,
+        sourcePath: null,
+        radios: const [radio],
+        modes: const {'R5': StationMode.builtin},
+        freeRoamTracks: {'R5': baselineTracks},
+        eventTracks: {'R5': baselineTracks},
+      );
+
+      final projectDir = p.join(tempRoot.path, 'project');
+      _writeIntegrityFixture(projectDir, gameBytes: 'original');
+      SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+      final prefs = await SharedPreferences.getInstance();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            sharedPreferencesProvider.overrideWithValue(prefs),
+            playlistCatalogProvider.overrideWithValue(packageCatalog),
+            baselinePlaylistCatalogProvider.overrideWithValue(baselineCatalog),
+            realPoolTracksProvider.overrideWithValue(const []),
+            effectivePlaylistPlanProvider.overrideWithValue(
+              const PlaylistPlan.empty(),
+            ),
+          ],
+          child: MaterialApp(
+            theme: buildAppTheme(
+              brightness: Brightness.light,
+              accent: AppAccent.lime,
+            ),
+            home: const Scaffold(body: PlaylistScreen()),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Custom 0'), findsOneWidget);
+      expect(find.text('5 / 24'), findsOneWidget);
+      expect(find.text('5 / 25'), findsNothing);
+    },
+  );
 
   testWidgets('playlist editing is locked when baseline is incomplete', (
     tester,

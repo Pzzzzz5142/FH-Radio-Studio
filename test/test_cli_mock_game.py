@@ -1383,6 +1383,226 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
     assert playlist_names(by_number["5"], "Event") == ["HZ6_R5_MOCK_REFERENCE"]
 
 
+def test_build_package_restores_builtin_targets_from_baseline(mock_game, tmp_path) -> None:
+    baseline_dir = tmp_path / "backups" / "baseline-current"
+    package_dir = tmp_path / "packages" / "restore-xs"
+    plan_path = tmp_path / ".fh-radio-studio" / "playlist_plan.json"
+
+    baseline = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--yes",
+    )
+    assert_cli_ok(baseline)
+    baseline_manifest = baseline_dir / "baseline_manifest.json"
+
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "assignments": [
+                    {
+                        "source": str(tmp_path / "sources" / "old-custom-track.wav"),
+                        "radio_code": "XS",
+                        "playlist_type": "FreeRoam",
+                        "slot": 1,
+                    }
+                ],
+                "builtin_targets": [
+                    {"radio_code": "XS", "playlist_type": "FreeRoam"},
+                    {"radio_code": "XS", "playlist_type": "Event"},
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    build = run_cli(
+        "build-package",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--source-audio-dir",
+        str(baseline_dir / "media" / "audio"),
+        "--source-string-tables-dir",
+        str(baseline_dir / "media" / "Stripped" / "StringTables"),
+        "--baseline-manifest",
+        str(baseline_manifest),
+        "--radio",
+        "4",
+        "--playlist-plan",
+        str(plan_path),
+        "--playlist-mode",
+        "only",
+        "--source",
+        "CHS",
+        "--target",
+        "EN",
+        "--out-dir",
+        str(package_dir),
+    )
+    assert_cli_ok(build)
+
+    payload = json.loads(
+        (package_dir / "package" / "fh_radio_studio_package_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["baseline_restore"] is True
+    assert payload["radios"][0]["radio"] == 4
+    assert payload["radios"][0]["assignments"] == []
+    assert payload["restored_radios"][0]["playlist_types"] == ["FreeRoam", "Event"]
+    assert md5_file(package_dir / "package" / "media" / "audio" / "RadioInfo_CN.xml") == md5_file(
+        baseline_dir / "media" / "audio" / "RadioInfo_CN.xml"
+    )
+    assert md5_file(
+        package_dir / "package" / "media" / "audio" / "FMODBanks" / "R4_Tracks_CU1.assets.bank"
+    ) == md5_file(baseline_dir / "media" / "audio" / "FMODBanks" / "R4_Tracks_CU1.assets.bank")
+
+
+def test_build_package_combines_custom_radios_and_builtin_restores(mock_game, tmp_path) -> None:
+    source_xs = tmp_path / "sources" / "FH Radio Studio Dev - XS Draft.wav"
+    package_dir = tmp_path / "packages" / "custom-plus-restore"
+    baseline_dir = tmp_path / "backups" / "baseline-current"
+    plan_path = tmp_path / ".fh-radio-studio" / "playlist_plan.json"
+    write_test_tone(source_xs)
+
+    bank_dir = mock_game.game_dir / "media" / "audio" / "FMODBanks"
+    r5_bank = bank_dir / "R5_Tracks_Disk.assets.bank"
+    r5_bank.write_bytes(b"MOCKFH6BANK\x00" + build_mock_fsb5(("HZ6_R5_MOCK_REFERENCE",)))
+
+    baseline = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--yes",
+    )
+    assert_cli_ok(baseline)
+    baseline_manifest = baseline_dir / "baseline_manifest.json"
+
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "assignments": [
+                    {
+                        "source": str(source_xs),
+                        "radio_code": "XS",
+                        "playlist_type": "FreeRoam",
+                        "slot": 1,
+                    },
+                    {
+                        "source": str(tmp_path / "sources" / "old-r5-custom.wav"),
+                        "radio_code": "R5",
+                        "playlist_type": "FreeRoam",
+                        "slot": 1,
+                    },
+                ],
+                "builtin_targets": [
+                    {"radio_code": "R5", "playlist_type": "FreeRoam"},
+                    {"radio_code": "R5", "playlist_type": "Event"},
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    build = run_cli(
+        "build-package",
+        str(source_xs),
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--source-audio-dir",
+        str(baseline_dir / "media" / "audio"),
+        "--source-string-tables-dir",
+        str(baseline_dir / "media" / "Stripped" / "StringTables"),
+        "--baseline-manifest",
+        str(baseline_manifest),
+        "--radio",
+        "4",
+        "--playlist-plan",
+        str(plan_path),
+        "--playlist-mode",
+        "only",
+        "--source",
+        "CHS",
+        "--target",
+        "EN",
+        "--out-dir",
+        str(package_dir),
+        "--skip-bank",
+    )
+    assert_cli_ok(build)
+
+    payload = json.loads(
+        (package_dir / "package" / "fh_radio_studio_package_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload.get("baseline_restore") is not True
+    assert [item["radio"] for item in payload["radios"]] == [4]
+    assert payload["restored_radios"][0]["radio"] == 5
+    assert payload["radios"][0]["assignments"][0]["source"] == str(source_xs.resolve())
+    assert md5_file(
+        package_dir / "package" / "media" / "audio" / "FMODBanks" / "R5_Tracks_Disk.assets.bank"
+    ) == md5_file(baseline_dir / "media" / "audio" / "FMODBanks" / "R5_Tracks_Disk.assets.bank")
+
+
+def test_build_package_enforces_baseline_playlist_entry_cap(mock_game, tmp_path) -> None:
+    first = tmp_path / "sources" / "FH Radio Studio Dev - Hospital One.wav"
+    second = tmp_path / "sources" / "FH Radio Studio Dev - Hospital Two.wav"
+    package_dir = tmp_path / "packages" / "hospital-over-cap"
+    write_test_tone(first)
+    write_test_tone(second)
+
+    bank_dir = mock_game.game_dir / "media" / "audio" / "FMODBanks"
+    hospital_bank = bank_dir / "R6_Tracks_Disk.assets.bank"
+    hospital_bank.write_bytes(
+        b"MOCKFH6BANK\x00"
+        + build_mock_fsb5(
+            (
+                "HZ6_R6_MOCK_REFERENCE",
+                "HZ6_R6_MOCK_EXTRA_01",
+                "HZ6_R6_MOCK_EXTRA_02",
+            )
+        )
+    )
+
+    build = run_cli(
+        "build-package",
+        str(first),
+        str(second),
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--radio",
+        "6",
+        "--playlist-mode",
+        "only",
+        "--out-dir",
+        str(package_dir),
+        "--skip-bank",
+    )
+
+    assert build.returncode != 0
+    assert "baseline playlist has 1 entries" in (build.stdout + build.stderr)
+
+
 def test_build_package_reuses_package_playlist_without_music_args(mock_game, tmp_path) -> None:
     source_xs = tmp_path / "sources" / "FH Radio Studio Dev - XS Current.wav"
     source_r5 = tmp_path / "sources" / "FH Radio Studio Dev - R5 Current.wav"

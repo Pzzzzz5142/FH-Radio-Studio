@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/playlist_plan.dart';
+import '../domain/radio_library.dart';
 import 'studio_state.dart';
 
 class PlaylistPlanController extends StateNotifier<PlaylistPlan> {
@@ -130,6 +131,7 @@ PlaylistPlan playlistPlanFromPackageSummaries({
   final assignments = <String, PlaylistAssignment>{};
   for (final item in package.assignments) {
     if (item.source.trim().isEmpty || item.slot <= 0) continue;
+    if (!isUiSupportedRadio(code: item.radioLabel)) continue;
     final playlistTypes = item.normalizedPlaylistTypes;
     for (final playlistType in playlistTypes) {
       final assignment = PlaylistAssignment(

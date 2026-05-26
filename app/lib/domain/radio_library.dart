@@ -20,6 +20,16 @@ class RadioStation {
 
 enum StationMode { builtin, custom }
 
+bool isUiSupportedRadio({int? number, String? code, String? name}) {
+  final radioCode = code?.trim().toUpperCase();
+  final stationName = name?.trim().toLowerCase() ?? '';
+  if (number == 10 || radioCode == 'R10') return false;
+  if (stationName == 'streamer mode' || stationName.contains('streamer mode')) {
+    return false;
+  }
+  return true;
+}
+
 class TrackRef {
   const TrackRef({
     required this.id,

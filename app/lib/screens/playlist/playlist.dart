@@ -55,9 +55,10 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
   Future<void> _assign(
     _PlaylistDragData data,
     RadioStation radio,
-    PlaylistCatalog catalog,
     String playlistType,
     bool isCustom,
+    int maxSlots,
+    List<TrackRef> originalTracks,
   ) async {
     bool assignTrack() {
       final assigned = ref
@@ -66,13 +67,13 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
             data.track.id,
             radio.code,
             playlistType,
-            maxSlots: radio.slot,
+            maxSlots: maxSlots,
             originRadioCode: data.originRadioCode,
             originPlaylistType: data.originPlaylistType,
           );
       if (!assigned && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${radio.name} 已达到 ${radio.slot} 首上限。')),
+          SnackBar(content: Text('${radio.name} 已达到 $maxSlots 首上限。')),
         );
       }
       return assigned;
@@ -83,7 +84,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
         context,
         radio: radio,
         track: data.track,
-        originalTracks: catalog.tracksOfRadio(radio.code, playlistType),
+        originalTracks: originalTracks,
         onConfirm: assignTrack,
       );
       return;
@@ -517,6 +518,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     final cli = ref.watch(studioProvider);
     final view = ref.watch(playlistCatalogViewProvider);
     final catalog = ref.watch(playlistCatalogProvider);
+    final baselineCatalog = ref.watch(baselinePlaylistCatalogProvider);
     final plan = ref.watch(effectivePlaylistPlanProvider);
     final pool = s.poolForDisplay(plan).where((t) => _matches(s, t)).toList();
 
@@ -549,7 +551,16 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
                 _toolbar(context, s, catalog, view, plan, cli),
                 const SizedBox(height: 18),
                 Expanded(
-                  child: _board(context, s, pool, catalog, plan, view, cli),
+                  child: _board(
+                    context,
+                    s,
+                    pool,
+                    catalog,
+                    baselineCatalog,
+                    plan,
+                    view,
+                    cli,
+                  ),
                 ),
               ],
             ],
@@ -591,7 +602,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
                 : () => unawaited(_preparePackageFromUi(context)),
             variant: RmButtonVariant.primary,
             leading: const RmIcon('music', size: 12),
-            label: '写入准备包',
+            label: '构建准备包',
             tooltip: cli.projectEditingLocked
                 ? cli.projectEditingLockMessage
                 : null,
@@ -775,7 +786,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
                       : () => unawaited(_preparePackageFromUi(context)),
                   variant: RmButtonVariant.primary,
                   leading: const RmIcon('music', size: 12),
-                  label: '写入准备包',
+                  label: '构建准备包',
                   tooltip: cli.projectEditingLocked
                       ? cli.projectEditingLockMessage
                       : null,
@@ -792,6 +803,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     PlaylistState s,
     List<PoolTrack> pool,
     PlaylistCatalog catalog,
+    PlaylistCatalog? baselineCatalog,
     PlaylistPlan plan,
     PlaylistCatalogView view,
     StudioState cli,
@@ -802,7 +814,15 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
 
         if (view != PlaylistCatalogView.package) {
           return SingleChildScrollView(
-            child: _radioBoard(context, s, catalog, plan, view, cli),
+            child: _radioBoard(
+              context,
+              s,
+              catalog,
+              baselineCatalog,
+              plan,
+              view,
+              cli,
+            ),
           );
         }
 
@@ -826,7 +846,15 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
                   child: SizedBox(
                     width: radioCanvasWidth,
                     child: SingleChildScrollView(
-                      child: _radioBoard(context, s, catalog, plan, view, cli),
+                      child: _radioBoard(
+                        context,
+                        s,
+                        catalog,
+                        baselineCatalog,
+                        plan,
+                        view,
+                        cli,
+                      ),
                     ),
                   ),
                 ),
@@ -846,7 +874,15 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
           children: [
             Expanded(
               child: SingleChildScrollView(
-                child: _radioBoard(context, s, catalog, plan, view, cli),
+                child: _radioBoard(
+                  context,
+                  s,
+                  catalog,
+                  baselineCatalog,
+                  plan,
+                  view,
+                  cli,
+                ),
               ),
             ),
             const SizedBox(width: gap),
@@ -865,6 +901,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     BuildContext context,
     PlaylistState s,
     PlaylistCatalog catalog,
+    PlaylistCatalog? baselineCatalog,
     PlaylistPlan plan,
     PlaylistCatalogView view,
     StudioState cli,
@@ -888,7 +925,16 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
                 key: ValueKey('playlist-radio-column-${r.code}'),
                 width: columnWidth,
                 height: columnHeight,
-                child: _radioColumn(context, s, r, catalog, plan, view, cli),
+                child: _radioColumn(
+                  context,
+                  s,
+                  r,
+                  catalog,
+                  baselineCatalog,
+                  plan,
+                  view,
+                  cli,
+                ),
               ),
           ],
         );
@@ -901,6 +947,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     PlaylistState s,
     RadioStation r,
     PlaylistCatalog catalog,
+    PlaylistCatalog? baselineCatalog,
     PlaylistPlan plan,
     PlaylistCatalogView view,
     StudioState cli,
@@ -921,13 +968,26 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
         : draftCustom || (!draftBuiltin && catalogCustom);
     final customTracks = s.tracksOfRadio(r.code, playlistType, plan);
     final assignedTracks = customTracks.where((t) => _matches(s, t)).toList();
-    final originalTracks = catalog
-        .tracksOfRadio(r.code, playlistType)
+    final originalCatalog = draftBuiltin
+        ? (baselineCatalog ?? catalog)
+        : catalog;
+    final baselineTrackRefs = baselineCatalog?.tracksOfRadio(
+      r.code,
+      playlistType,
+    );
+    final originalTrackRefs = originalCatalog.tracksOfRadio(
+      r.code,
+      playlistType,
+    );
+    final originalTracks = originalTrackRefs
         .where((t) => _matchesRef(s, t))
         .toList();
+    final originalTrackCount = originalTrackRefs.length;
     final count = isCustom && (customTracks.isNotEmpty || draftCustom)
         ? customTracks.length
-        : originalTracks.length;
+        : originalTrackCount;
+    final replaceableCapacity = baselineTrackRefs?.length ?? r.slot;
+    final capacity = isCustom ? replaceableCapacity : originalTrackCount;
 
     Widget buildColumn() {
       final children = <Widget>[];
@@ -973,6 +1033,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
         radio: r,
         isCustom: isCustom,
         count: count,
+        capacity: capacity,
         isDragOver: _dragOverRadio == r.code,
         onRestoreBuiltin: !readOnly && !editingLocked && isCustom
             ? () => unawaited(_restoreBuiltin(r, playlistType, customTracks))
@@ -985,14 +1046,27 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
 
     return DragTarget<_PlaylistDragData>(
       onWillAcceptWithDetails: (details) {
-        final canAccept = _canAcceptTrack(details.data, r, plan, playlistType);
+        final canAccept = _canAcceptTrack(
+          details.data,
+          r,
+          plan,
+          playlistType,
+          replaceableCapacity,
+        );
         if (canAccept) setState(() => _dragOverRadio = r.code);
         return canAccept;
       },
       onLeave: (_) => setState(() => _dragOverRadio = null),
       onAcceptWithDetails: (details) {
         setState(() => _dragOverRadio = null);
-        _assign(details.data, r, catalog, playlistType, isCustom);
+        _assign(
+          details.data,
+          r,
+          playlistType,
+          isCustom,
+          replaceableCapacity,
+          originalTrackRefs,
+        );
       },
       builder: (context, candidate, rejected) {
         return buildColumn();
@@ -1005,6 +1079,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     RadioStation radio,
     PlaylistPlan plan,
     String playlistType,
+    int maxSlots,
   ) {
     if (plan.assignmentFor(
           source: data.track.source,
@@ -1024,8 +1099,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
             null) {
       return true;
     }
-    return plan.assignmentsForRadio(radio.code, playlistType).length <
-        radio.slot;
+    return plan.assignmentsForRadio(radio.code, playlistType).length < maxSlots;
   }
 
   String _otherPlaylistType(String playlistType) {

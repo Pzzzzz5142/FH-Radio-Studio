@@ -18,6 +18,7 @@ import '../core/siren_catalog.dart';
 import '../core/siren_imports.dart';
 import '../core/track_metadata_cache.dart';
 import '../core/track_timing_config.dart';
+import '../domain/radio_library.dart';
 import 'app_state.dart';
 
 class _StudioPrefsKeys {
@@ -654,6 +655,7 @@ class PackageArtifactSummary {
     required this.skipBank,
     required this.runtimeVerified,
     this.currentRadioPassthrough = false,
+    this.baselineRestore = false,
     required this.sourceLang,
     required this.targetLang,
     required this.previewTracks,
@@ -669,6 +671,7 @@ class PackageArtifactSummary {
   final bool skipBank;
   final bool runtimeVerified;
   final bool currentRadioPassthrough;
+  final bool baselineRestore;
   final String? sourceLang;
   final String? targetLang;
   final List<String> previewTracks;
@@ -680,6 +683,13 @@ class PackageArtifactSummary {
   }
 
   String get detail {
+    if (baselineRestore) {
+      final language = sourceLang == null || targetLang == null
+          ? ''
+          : ' · $sourceLang 显示 / $targetLang 语音';
+      final radios = radio == null ? station : 'R$radio · $station';
+      return '恢复 builtin · $radios 从原始备份原样打包$language';
+    }
     if (currentRadioPassthrough) {
       final language = sourceLang == null || targetLang == null
           ? '语言设置'
@@ -697,6 +707,9 @@ class PackageArtifactSummary {
   }
 
   String get trackPreview {
+    if (baselineRestore) {
+      return 'RadioInfo 与 bank 来自原始备份';
+    }
     if (currentRadioPassthrough && previewTracks.isEmpty) {
       return 'RadioInfo 与 bank 保持当前游戏内容';
     }
@@ -2062,8 +2075,18 @@ PackageArtifactSummary? _readPackageSummary(String? packageDir) {
   final previewKeys = <String>{};
   final musicKeys = <String>{};
   final assignmentKeys = <String>{};
+  var visibleUnits = 0;
 
   void readPackageUnit(Map<String, dynamic> unit) {
+    final radio = _objectInt(unit['radio']);
+    final station = _objectString(unit['station']) ?? '';
+    final radioLabel =
+        _objectString(unit['radio_code']) ??
+        _radioAssignmentLabel(radio, station);
+    if (!isUiSupportedRadio(number: radio, code: radioLabel, name: station)) {
+      return;
+    }
+    visibleUnits += 1;
     final music = unit['music'] is List ? unit['music'] as List : const [];
     final sourceByIndex = <int, String>{};
     for (int index = 0; index < music.length; index++) {
@@ -2086,11 +2109,6 @@ PackageArtifactSummary? _readPackageSummary(String? packageDir) {
       if (previewKeys.add(key)) previews.add(preview);
     }
 
-    final radio = _objectInt(unit['radio']);
-    final station = _objectString(unit['station']) ?? '';
-    final radioLabel =
-        _objectString(unit['radio_code']) ??
-        _radioAssignmentLabel(radio, station);
     final assignmentItems = unit['assignments'] is List
         ? unit['assignments'] as List
         : const [];
@@ -2132,6 +2150,7 @@ PackageArtifactSummary? _readPackageSummary(String? packageDir) {
     final unit = _objectMap(item);
     if (unit != null) readPackageUnit(unit);
   }
+  if (radios.isNotEmpty && visibleUnits == 0) return null;
 
   final radio = _objectInt(data['radio']);
   final station = _objectString(data['station']) ?? '';
@@ -2146,6 +2165,7 @@ PackageArtifactSummary? _readPackageSummary(String? packageDir) {
     runtimeVerified: _objectBool(data['runtime_verified']) ?? false,
     currentRadioPassthrough:
         _objectBool(data['current_radio_passthrough']) ?? false,
+    baselineRestore: _objectBool(data['baseline_restore']) ?? false,
     sourceLang: _objectString(language?['source_lang']),
     targetLang: _objectString(language?['target_lang']),
     previewTracks: previews,
@@ -2418,7 +2438,8 @@ class StudioController extends StateNotifier<StudioState> {
         _objectString(projectSettings['game_dir']) ?? _defaultGameDir();
     final preferredPath =
         _objectString(projectSettings['preferred_path']) ?? '';
-    final radio = _objectInt(projectSettings['radio']) ?? state.radio;
+    final storedRadio = _objectInt(projectSettings['radio']) ?? state.radio;
+    final radio = isUiSupportedRadio(number: storedRadio) ? storedRadio : 4;
     final sourceLang =
         _objectString(projectSettings['source_lang'])?.toUpperCase() ??
         state.sourceLang;
@@ -2834,6 +2855,7 @@ class StudioController extends StateNotifier<StudioState> {
   }
 
   void setRadioNumber(int next) {
+    if (!isUiSupportedRadio(number: next)) return;
     state = state.copyWith(radio: next);
     FhRadioStudioProject.writeSettings(
       state.projectDir,
@@ -3612,13 +3634,14 @@ class StudioController extends StateNotifier<StudioState> {
       return false;
     }
     final draft = _playlistDraftForBuild();
+    final restoresBuiltin = draft.restoresBuiltin;
     final canBuildLanguageChange = !state.languageSelectionMatchesGame;
     if (!draft.hasPlan && !canBuildLanguageChange) {
       _append('播放列表还没有分配曲目。请先在“播放列表”里把自建歌曲拖到目标电台。');
       return false;
     }
     final musicInputs = draft.inputs;
-    if (musicInputs.isEmpty && !canBuildLanguageChange) {
+    if (musicInputs.isEmpty && !canBuildLanguageChange && !restoresBuiltin) {
       _append('播放列表草稿为空。请先在“播放列表”里分配至少一首自建歌曲。');
       return false;
     }
@@ -3642,7 +3665,7 @@ class StudioController extends StateNotifier<StudioState> {
       _deletePackageDir(
         FhRadioStudioProject.pendingPackageDir(state.projectDir),
       );
-      if (canBuildLanguageChange && musicInputs.isEmpty) {
+      if (canBuildLanguageChange && musicInputs.isEmpty && !restoresBuiltin) {
         _append('播放列表草稿为空；将把当前 radio 原样准备进包，并加入语言设置。');
       }
       final result = await _run([
@@ -3666,7 +3689,8 @@ class StudioController extends StateNotifier<StudioState> {
         ],
         '--playlist-mode',
         'only',
-        if (draft.playlistPlanPath != null && musicInputs.isNotEmpty) ...[
+        if (draft.playlistPlanPath != null &&
+            (musicInputs.isNotEmpty || restoresBuiltin)) ...[
           '--playlist-plan',
           draft.playlistPlanPath!,
         ],
@@ -3831,11 +3855,21 @@ class StudioController extends StateNotifier<StudioState> {
     return created;
   }
 
-  ({List<String> inputs, String? playlistPlanPath, bool hasPlan})
+  ({
+    List<String> inputs,
+    String? playlistPlanPath,
+    bool hasPlan,
+    bool restoresBuiltin,
+  })
   _playlistDraftForBuild() {
     final plan = PlaylistPlanStore.read(state.projectDir);
     if (!plan.hasDraft) {
-      return (inputs: const [], playlistPlanPath: null, hasPlan: false);
+      return (
+        inputs: const [],
+        playlistPlanPath: null,
+        hasPlan: false,
+        restoresBuiltin: false,
+      );
     }
     final ordered = plan.assignments.values.toList()
       ..sort((a, b) {
@@ -3857,6 +3891,7 @@ class StudioController extends StateNotifier<StudioState> {
       inputs: inputs,
       playlistPlanPath: PlaylistPlanStore.configPath(state.projectDir),
       hasPlan: true,
+      restoresBuiltin: plan.builtinTargets.isNotEmpty,
     );
   }
 
@@ -5124,6 +5159,7 @@ class StudioController extends StateNotifier<StudioState> {
       final number = _asInt(map['number']);
       final name = _asString(map['name']);
       if (number == null || name == null || name.isEmpty) continue;
+      if (!isUiSupportedRadio(number: number, name: name)) continue;
       final playlists = _asMap(map['playlists']);
       options.add(
         RadioStatusOption(

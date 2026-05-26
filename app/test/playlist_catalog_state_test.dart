@@ -114,6 +114,31 @@ void main() {
     );
   });
 
+  test('playlist catalog hides Streamer Mode from the UI', () {
+    final repoRoot = p.dirname(p.current);
+    final catalog = loadPlaylistCatalog(
+      packageDir: null,
+      gameDir: p.join(
+        repoRoot,
+        'test',
+        'fixtures',
+        'mock-game',
+        'fh6-steam-b99000001',
+        'steamapps',
+        'common',
+        'ForzaHorizon6',
+      ),
+      sourceLang: 'CN',
+      targetLang: 'EN',
+    );
+
+    expect(catalog.radios.map((radio) => radio.code), isNot(contains('R10')));
+    expect(
+      catalog.radios.map((radio) => radio.name.toLowerCase()),
+      isNot(contains('streamer mode')),
+    );
+  });
+
   test('uses bank slots instead of extra XML track samples', () {
     final temp = Directory.systemTemp.createTempSync(
       'fh-radio-studio-playlist-bank-slots-',
@@ -181,6 +206,79 @@ void main() {
     expect(catalog.origin, PlaylistCatalogOrigin.package);
     expect(catalog.radios.single.slot, 3);
   });
+
+  test(
+    'playlist catalog prefers baseline bank slots over current status slots',
+    () async {
+      final temp = Directory.systemTemp.createTempSync(
+        'fh-radio-studio-playlist-baseline-slots-',
+      );
+      addTearDown(() {
+        if (temp.existsSync()) temp.deleteSync(recursive: true);
+      });
+      final projectDir = p.join(temp.path, 'project');
+      final gameDir = p.join(temp.path, 'ForzaHorizon6');
+      final gameAudio = Directory(p.join(gameDir, 'media', 'audio'))
+        ..createSync(recursive: true);
+      final baselineAudio = Directory(
+        p.join(projectDir, 'backups', 'baseline-current', 'media', 'audio'),
+      )..createSync(recursive: true);
+      Directory(p.join(gameAudio.path, 'FMODBanks')).createSync();
+      Directory(p.join(baselineAudio.path, 'FMODBanks')).createSync();
+      _writeFsb5Bank(
+        File(p.join(gameAudio.path, 'FMODBanks', 'R1_Tracks_CU1.assets.bank')),
+        samples: 5,
+      );
+      _writeFsb5Bank(
+        File(
+          p.join(baselineAudio.path, 'FMODBanks', 'R1_Tracks_CU1.assets.bank'),
+        ),
+        samples: 3,
+      );
+      File(
+        p.join(gameAudio.path, 'RadioInfo_CN.xml'),
+      ).writeAsStringSync(_bankSlotRadioInfoXml(), encoding: utf8);
+      File(
+        p.join(baselineAudio.path, 'RadioInfo_CN.xml'),
+      ).writeAsStringSync(_bankSlotRadioInfoXml(), encoding: utf8);
+
+      SharedPreferences.setMockInitialValues({
+        'rm.studio.projectDir': projectDir,
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final controller = _EditableStudioController(prefs);
+      controller.state = controller.state.copyWith(
+        projectDir: projectDir,
+        gameDir: gameDir,
+        sourceLang: 'CN',
+        targetLang: 'EN',
+        radioOptions: const [
+          RadioStatusOption(
+            number: 1,
+            name: 'Horizon Pulse',
+            tracks: 4,
+            bankSlots: 5,
+            freeRoam: 3,
+            event: 3,
+          ),
+        ],
+      );
+      final container = ProviderContainer(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+          studioProvider.overrideWith((ref) => controller),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      expect(container.read(baselineBankSlotOverridesProvider)['HOR'], 3);
+      final catalog = container.read(
+        playlistCatalogForViewProvider(PlaylistCatalogView.game),
+      );
+
+      expect(catalog.radios.single.slot, 3);
+    },
+  );
 
   test('game view marks deployed custom lists and seeds a draft plan', () {
     final repoRoot = p.dirname(p.current);
@@ -273,6 +371,31 @@ void main() {
     expect(assignment, isNotNull);
     expect(assignment!.radioCode, 'XS');
     expect(assignment.slot, 1);
+  });
+
+  test('seeding a draft plan skips Streamer Mode package assignments', () {
+    final source = p.join(Directory.current.path, 'test-fixtures', 'song.wav');
+    final plan = playlistPlanFromPackageSummaries(
+      pending: PackageArtifactSummary(
+        radio: 10,
+        station: 'Streamer Mode',
+        bankName: 'R10_Tracks_Disk.assets.bank',
+        musicCount: 1,
+        bankSlots: 1,
+        playlistMode: 'only',
+        skipBank: true,
+        runtimeVerified: false,
+        sourceLang: 'CN',
+        targetLang: 'EN',
+        previewTracks: const ['Streamer Track'],
+        assignments: [
+          PackageTrackAssignment(source: source, radioLabel: 'R10', slot: 1),
+        ],
+      ),
+      last: null,
+    );
+
+    expect(plan.assignments, isEmpty);
   });
 
   test(
