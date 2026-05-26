@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, as_completed, wait
-from contextlib import contextmanager
 import multiprocessing as mp
 import os
 import queue
 import threading
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, as_completed, wait
+from contextlib import contextmanager
 from time import perf_counter
 from typing import Any, Iterable, Iterator
 
@@ -98,9 +98,7 @@ class _PackageProgressReporter:
             started = self._started.pop(step_id, None)
             if runtime_ms is None:
                 runtime_ms = (
-                    int(round((perf_counter() - started) * 1000))
-                    if started is not None
-                    else 0
+                    int(round((perf_counter() - started) * 1000)) if started is not None else 0
                 )
             payload: Dict[str, object] = {
                 "event": "step_completed",
@@ -115,9 +113,7 @@ class _PackageProgressReporter:
     def failed(self, step_id: str, message: str) -> None:
         with self._lock:
             started = self._started.pop(step_id, None)
-            runtime_ms = (
-                int(round((perf_counter() - started) * 1000)) if started is not None else 0
-            )
+            runtime_ms = int(round((perf_counter() - started) * 1000)) if started is not None else 0
             self.emit(
                 {
                     "event": "step_failed",
@@ -2055,8 +2051,7 @@ def _build_radio_package_units_from_plan(
         ]
 
     print(
-        f"Radio package build: building {len(groups)} radio(s) with "
-        f"{worker_count} process(es)."
+        f"Radio package build: building {len(groups)} radio(s) with " f"{worker_count} process(es)."
     )
     root_xml = ET.tostring(root, encoding="unicode")
     results: List[Optional[Dict[str, object]]] = [None] * len(groups)

@@ -1351,8 +1351,7 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
     loudness_done_index = next(
         index
         for index, event in enumerate(events)
-        if event.get("event") == "step_completed"
-        and event.get("step_id") == "song_loudness_cache"
+        if event.get("event") == "step_completed" and event.get("step_id") == "song_loudness_cache"
     )
     first_radio_prepare_index = min(
         index
