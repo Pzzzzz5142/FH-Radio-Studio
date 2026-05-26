@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 
+import '../core/system_audio_output.dart';
 import '../core/siren_audio_cache.dart';
 import '../core/siren_catalog.dart';
 import '../core/siren_imports.dart';
@@ -59,6 +60,7 @@ class _SirenLibraryScreenState extends ConsumerState<SirenLibraryScreen> {
   final _autoFetchingAlbumCids = <String>{};
 
   Player? _player;
+  SystemAudioOutputFollower? _audioOutputFollower;
   StreamSubscription<bool>? _playingSub;
 
   var _query = '';
@@ -75,12 +77,18 @@ class _SirenLibraryScreenState extends ConsumerState<SirenLibraryScreen> {
   void dispose() {
     _searchController.dispose();
     _playingSub?.cancel();
+    _audioOutputFollower?.dispose();
     _player?.dispose();
     super.dispose();
   }
 
   Player get _audioPlayer {
-    final player = _player ??= Player();
+    final existing = _player;
+    final player = existing ?? Player();
+    if (existing == null) {
+      _player = player;
+      _audioOutputFollower = followSystemAudioOutput(player);
+    }
     _playingSub ??= player.stream.playing.listen((playing) {
       if (!mounted) return;
       setState(() => _playing = playing);

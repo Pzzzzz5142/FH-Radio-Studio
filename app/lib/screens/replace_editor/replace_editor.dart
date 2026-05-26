@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 
+import '../../core/system_audio_output.dart';
 import '../../core/track_timing_config.dart';
 import '../../domain/replacement_models.dart';
 import '../../state/audio_analysis_state.dart';
@@ -97,6 +98,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     debugLabel: 'replace-editor-hotkeys',
   );
   Player? _player;
+  SystemAudioOutputFollower? _audioOutputFollower;
   StreamSubscription<Duration>? _positionSub;
   StreamSubscription<bool>? _playingSub;
   StreamSubscription<bool>? _completedSub;
@@ -174,6 +176,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     _playingSub?.cancel();
     _completedSub?.cancel();
     _errorSub?.cancel();
+    _audioOutputFollower?.dispose();
     final player = _player;
     if (player != null) {
       unawaited(player.dispose());
@@ -188,7 +191,11 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     if (!widget.enableAudio) {
       throw StateError('Audio playback is disabled for this editor instance.');
     }
-    return _player ??= Player();
+    final player = _player;
+    if (player != null) return player;
+    final next = Player();
+    _audioOutputFollower = followSystemAudioOutput(next);
+    return _player = next;
   }
 
   void _onKey(KeyEvent e) {
