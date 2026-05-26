@@ -651,6 +651,7 @@ class PackageArtifactSummary {
     required this.bankName,
     required this.musicCount,
     required this.bankSlots,
+    this.replaceableSlots = const {},
     required this.playlistMode,
     required this.skipBank,
     required this.runtimeVerified,
@@ -667,6 +668,7 @@ class PackageArtifactSummary {
   final String bankName;
   final int musicCount;
   final int? bankSlots;
+  final Map<String, int> replaceableSlots;
   final String playlistMode;
   final bool skipBank;
   final bool runtimeVerified;
@@ -682,6 +684,37 @@ class PackageArtifactSummary {
     return prefix.trim().isEmpty ? '已准备电台包' : prefix;
   }
 
+  String get slotSummary {
+    final caps = <String, int>{
+      for (final entry in replaceableSlots.entries)
+        PlaylistAssignment.normalizePlaylistType(entry.key): entry.value,
+    };
+    if (caps.isNotEmpty) {
+      final ordered = <String>[
+        for (final type in const ['FreeRoam', 'Event'])
+          if (caps.containsKey(type)) type,
+        for (final type in caps.keys.where(
+          (type) => type != 'FreeRoam' && type != 'Event',
+        ))
+          type,
+      ];
+      final values = [for (final type in ordered) caps[type]!];
+      if (values.toSet().length == 1) return '${values.first} 个槽位';
+      final text = ordered
+          .map(
+            (type) => '${PlaylistAssignment.playlistLabel(type)} ${caps[type]}',
+          )
+          .join(' / ');
+      return '$text 个槽位';
+    }
+    return bankSlots == null ? '' : '$bankSlots 个槽位';
+  }
+
+  String get _slotDetail {
+    final summary = slotSummary;
+    return summary.isEmpty ? '' : ' · $summary';
+  }
+
   String get detail {
     if (baselineRestore) {
       final language = sourceLang == null || targetLang == null
@@ -694,10 +727,10 @@ class PackageArtifactSummary {
       final language = sourceLang == null || targetLang == null
           ? '语言设置'
           : '$sourceLang 显示 / $targetLang 语音';
-      final slots = bankSlots == null ? '' : ' · $bankSlots 个槽位';
+      final slots = _slotDetail;
       return '当前游戏 radio 原样打包$slots · $language';
     }
-    final slots = bankSlots == null ? '' : ' · $bankSlots 个槽位';
+    final slots = _slotDetail;
     final mode = playlistMode == 'add' ? '保留原播放列表' : '替换播放列表';
     final packageState = skipBank ? '仅生成预览' : '可写入音频包';
     final language = sourceLang == null || targetLang == null
@@ -2080,6 +2113,7 @@ PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
   final musicKeys = <String>{};
   final assignmentKeys = <String>{};
   var visibleUnits = 0;
+  final visibleReplaceableSlots = <String, int>{};
 
   void readPackageUnit(Map<String, dynamic> unit) {
     final radio = _objectInt(unit['radio']);
@@ -2091,6 +2125,11 @@ PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
       return;
     }
     visibleUnits += 1;
+    final replaceableSlots = _objectPlaylistSlotMap(unit['replaceable_slots']);
+    for (final entry in replaceableSlots.entries) {
+      visibleReplaceableSlots[entry.key] =
+          (visibleReplaceableSlots[entry.key] ?? 0) + entry.value;
+    }
     final music = unit['music'] is List ? unit['music'] as List : const [];
     final sourceByIndex = <int, String>{};
     for (int index = 0; index < music.length; index++) {
@@ -2164,6 +2203,9 @@ PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
     bankName: _objectString(data['target_bank_name']) ?? '',
     musicCount: musicKeys.isEmpty ? previews.length : musicKeys.length,
     bankSlots: _objectInt(data['bank_slots']),
+    replaceableSlots: visibleReplaceableSlots.isNotEmpty
+        ? visibleReplaceableSlots
+        : _objectPlaylistSlotMap(data['replaceable_slots']),
     playlistMode: _objectString(data['playlist_mode']) ?? 'only',
     skipBank: _objectBool(data['skip_bank']) ?? false,
     runtimeVerified: _objectBool(data['runtime_verified']) ?? false,
@@ -2376,6 +2418,19 @@ List<String> _objectStringList(Object? value) {
   }
   if (value is String && value.trim().isNotEmpty) return [value];
   return const [];
+}
+
+Map<String, int> _objectPlaylistSlotMap(Object? value) {
+  final map = _objectMap(value);
+  if (map == null) return const {};
+  final out = <String, int>{};
+  for (final entry in map.entries) {
+    final count = _objectInt(entry.value);
+    if (count == null || count <= 0) continue;
+    final type = PlaylistAssignment.normalizePlaylistType(entry.key);
+    out[type] = count;
+  }
+  return out;
 }
 
 bool? _objectBool(Object? value) {

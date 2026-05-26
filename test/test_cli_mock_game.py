@@ -1615,6 +1615,39 @@ def test_build_package_enforces_baseline_playlist_entry_cap(mock_game, tmp_path)
     assert build.returncode != 0
     assert "baseline playlist has 1 entries" in (build.stdout + build.stderr)
 
+    capped_package_dir = tmp_path / "packages" / "hospital-capped"
+    capped = run_cli(
+        "build-package",
+        str(first),
+        str(second),
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--radio",
+        "6",
+        "--playlist-mode",
+        "only",
+        "--out-dir",
+        str(capped_package_dir),
+        "--skip-bank",
+        "--allow-truncate",
+    )
+    assert_cli_ok(capped)
+    payload = json.loads(
+        (capped_package_dir / "package" / "fh_radio_studio_package_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["bank_slots"] == 3
+    assert payload["replaceable_slots"] == {"FreeRoam": 1, "Event": 1}
+    assert payload["radios"][0]["bank_slots"] == 3
+    assert payload["radios"][0]["replaceable_slots"] == {"FreeRoam": 1, "Event": 1}
+    assert len(payload["radios"][0]["music"]) == 1
+    assert [item["playlist_entry"] for item in payload["radios"][0]["assignments"]] == [
+        True,
+        False,
+        False,
+    ]
+
 
 def test_build_package_reuses_package_playlist_without_music_args(mock_game, tmp_path) -> None:
     source_xs = tmp_path / "sources" / "FH Radio Studio Dev - XS Current.wav"

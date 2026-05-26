@@ -718,6 +718,56 @@ def playlist_entry_cap_for_types(
     return min(caps) if caps else fallback
 
 
+def playlist_entry_caps_for_types(
+    station: ET.Element,
+    playlist_types: Iterable[str],
+    fallback: int,
+) -> Dict[str, int]:
+    result: Dict[str, int] = {}
+    for raw_type in playlist_types:
+        playlist_type = normalize_playlist_type(raw_type)
+        result[playlist_type] = playlist_entry_cap(station, playlist_type, fallback)
+    return result
+
+
+def playlist_entry_caps_for_sources(
+    station: ET.Element,
+    sources: Iterable[Path],
+    playlist_types_by_source: Optional[Dict[str, List[str]]],
+    fallback: int,
+) -> Dict[str, int]:
+    active_types: List[str] = []
+    if isinstance(playlist_types_by_source, dict):
+        for source in sources:
+            raw_types = playlist_types_by_source.get(source_key(Path(str(source))))
+            values: Iterable[object]
+            if isinstance(raw_types, list):
+                values = raw_types
+            elif isinstance(raw_types, str):
+                values = [raw_types]
+            else:
+                values = PLAYLIST_TYPES
+            for value in values:
+                active_types.append(normalize_playlist_type(str(value)))
+    if not active_types:
+        active_types = list(PLAYLIST_TYPES)
+    return playlist_entry_caps_for_types(station, active_types, fallback)
+
+
+def aggregate_replaceable_slots(units: Iterable[Dict[str, object]]) -> Dict[str, int]:
+    totals: Dict[str, int] = {}
+    for unit in units:
+        caps = unit.get("replaceable_slots")
+        if not isinstance(caps, dict):
+            continue
+        for raw_type, value in caps.items():
+            playlist_type = normalize_playlist_type(str(raw_type))
+            slot_count = safe_int(str(value), 0)
+            if slot_count > 0:
+                totals[playlist_type] = totals.get(playlist_type, 0) + slot_count
+    return totals
+
+
 def collect_music_inputs(inputs: List[str]) -> List[Path]:
     suffixes = {".wav", ".flac", ".ogg", ".aiff", ".aif", ".mp3", ".m4a", ".aac"}
     results: List[Path] = []
@@ -1445,6 +1495,12 @@ def build_radio_package_unit(
     target_bank = resolve_target_bank_for_station(audio_dir, station, radio, args.bank)
     bank_info = parse_fsb5(target_bank)
     target_names = target_names_for_bank(station, bank_info, target_bank, args.baseline_manifest)
+    replaceable_slots = playlist_entry_caps_for_sources(
+        station,
+        music_files,
+        playlist_types_by_source,
+        bank_info.num_samples,
+    )
 
     if len(music_files) > bank_info.num_samples and not args.allow_truncate:
         die(
@@ -1561,6 +1617,7 @@ def build_radio_package_unit(
         "source_bank": str(target_bank),
         "target_bank_name": target_bank.name,
         "bank_slots": bank_info.num_samples,
+        "replaceable_slots": replaceable_slots,
         "pack_order": pack_order,
         "splice": splice_stats,
         "loudness_profile": prepared_tracks[0].get("loudness_profile") if prepared_tracks else None,
@@ -1748,6 +1805,11 @@ def cmd_build_current_radio_package(
             path.mkdir(parents=True, exist_ok=True)
         target_bank = resolve_target_bank_for_station(audio_dir, station, args.radio, args.bank)
         bank_info = parse_fsb5(target_bank)
+        replaceable_slots = playlist_entry_caps_for_types(
+            station,
+            PLAYLIST_TYPES,
+            bank_info.num_samples,
+        )
 
     with progress.stage("package_language"):
         language_manifest = package_language_settings(args, game_dir, package_string_dir)
@@ -1786,6 +1848,7 @@ def cmd_build_current_radio_package(
         "source_bank": str(target_bank),
         "target_bank_name": target_bank.name,
         "bank_slots": bank_info.num_samples,
+        "replaceable_slots": replaceable_slots,
         "playlist_mode": args.playlist_mode,
         "quality": args.quality,
         "skip_bank": False,
@@ -1800,6 +1863,7 @@ def cmd_build_current_radio_package(
                 "source_bank": str(target_bank),
                 "target_bank_name": target_bank.name,
                 "bank_slots": bank_info.num_samples,
+                "replaceable_slots": replaceable_slots,
                 "pack_order": None,
                 "splice": None,
                 "loudness_profile": None,
@@ -1902,6 +1966,12 @@ def cmd_build_baseline_restore_package(
                 args.bank,
             )
             bank_info = parse_fsb5(target_bank)
+            restored_playlist_types = list(target.get("playlist_types") or [])
+            replaceable_slots = playlist_entry_caps_for_types(
+                station,
+                restored_playlist_types or PLAYLIST_TYPES,
+                bank_info.num_samples,
+            )
             restored_units.append(
                 {
                     "radio": radio,
@@ -1910,7 +1980,8 @@ def cmd_build_baseline_restore_package(
                     "source_bank": str(target_bank),
                     "target_bank_name": target_bank.name,
                     "bank_slots": bank_info.num_samples,
-                    "restored_playlist_types": list(target.get("playlist_types") or []),
+                    "replaceable_slots": replaceable_slots,
+                    "restored_playlist_types": restored_playlist_types,
                     "pack_order": None,
                     "splice": None,
                     "loudness_profile": None,
@@ -1957,6 +2028,7 @@ def cmd_build_baseline_restore_package(
         ),
         "target_bank_name": ", ".join(str(item["target_bank_name"]) for item in restored_units),
         "bank_slots": sum(int(item["bank_slots"]) for item in restored_units),
+        "replaceable_slots": aggregate_replaceable_slots(restored_units),
         "playlist_mode": args.playlist_mode,
         "quality": args.quality,
         "skip_bank": False,
@@ -2227,6 +2299,7 @@ def cmd_build_package_from_plan(
         ),
         "target_bank_name": ", ".join(str(item["target_bank_name"]) for item in radio_packages),
         "bank_slots": sum(int(item["bank_slots"]) for item in radio_packages),
+        "replaceable_slots": aggregate_replaceable_slots(radio_packages),
         "playlist_mode": args.playlist_mode,
         "quality": args.quality,
         "loudness_mode": "custom-set",
@@ -2369,12 +2442,14 @@ def cmd_build_package(args: argparse.Namespace) -> int:
         PLAYLIST_TYPES,
         bank_info.num_samples,
     )
+    replaceable_slots = playlist_entry_caps_for_types(
+        station,
+        PLAYLIST_TYPES,
+        bank_info.num_samples,
+    )
     input_cap = min(bank_info.num_samples, playlist_cap)
 
     music_files = collect_music_inputs(args.music)
-    progress.plan(
-        _package_progress_plan(args, [(args.radio, len(music_files), station.get("Name"))])
-    )
     if len(music_files) > input_cap and not args.allow_truncate:
         die(
             f"{len(music_files)} music files were provided, but {target_bank.name} has "
@@ -2382,6 +2457,9 @@ def cmd_build_package(args: argparse.Namespace) -> int:
             f"{playlist_cap} entries. Use --allow-truncate to keep the first {input_cap}."
         )
     music_files = music_files[:input_cap]
+    progress.plan(
+        _package_progress_plan(args, [(args.radio, len(music_files), station.get("Name"))])
+    )
     with progress.stage("inspect_inputs"):
         timing_overrides = load_timing_overrides(args.timing_manifest)
 
@@ -2506,6 +2584,7 @@ def cmd_build_package(args: argparse.Namespace) -> int:
         "source_bank": str(target_bank),
         "target_bank_name": target_bank.name,
         "bank_slots": bank_info.num_samples,
+        "replaceable_slots": replaceable_slots,
         "pack_order": pack_order,
         "splice": splice_stats,
         "loudness_profile": prepared_tracks[0].get("loudness_profile") if prepared_tracks else None,
@@ -2526,6 +2605,7 @@ def cmd_build_package(args: argparse.Namespace) -> int:
         "source_bank": str(target_bank),
         "target_bank_name": target_bank.name,
         "bank_slots": bank_info.num_samples,
+        "replaceable_slots": replaceable_slots,
         "playlist_mode": args.playlist_mode,
         "quality": args.quality,
         "loudness_mode": "custom-set",

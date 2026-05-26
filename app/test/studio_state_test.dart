@@ -1070,6 +1070,75 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
       expect(plan.assignmentsForRadio('XS', 'Event'), isEmpty);
       expect(plan.assignmentsForRadio('R5', 'Event'), hasLength(1));
     });
+
+    test('package summary displays capped replaceable slots', () async {
+      final projectDir = p.join(tempRoot.path, 'project-capped-summary');
+      FhRadioStudioProject.ensure(projectDir);
+      FhRadioStudioProject.writeSettings(
+        projectDir,
+        gameDir: p.join(projectDir, 'game'),
+      );
+      final packageDir = FhRadioStudioProject.currentPackageDir(projectDir);
+      final source = p.join(projectDir, 'sources', 'xs.wav');
+      File(source).createSync(recursive: true);
+      File(
+          p.join(
+            packageDir,
+            'package',
+            'fh_radio_studio_package_manifest.json',
+          ),
+        )
+        ..createSync(recursive: true)
+        ..writeAsStringSync('''
+{
+  "schema_version": 2,
+  "radio": 4,
+  "station": "Horizon XS",
+  "target_bank_name": "R4_Tracks_CU1.assets.bank",
+  "bank_slots": 3,
+  "replaceable_slots": {"FreeRoam": 1, "Event": 1},
+  "playlist_mode": "only",
+  "skip_bank": true,
+  "radios": [
+    {
+      "radio": 4,
+      "radio_code": "XS",
+      "station": "Horizon XS",
+      "bank_slots": 3,
+      "replaceable_slots": {"FreeRoam": 1, "Event": 1},
+      "music": [
+        {
+          "source": "${_jsonPath(source)}",
+          "display_name": "XS Capped",
+          "artist": "FH Radio Studio Dev"
+        }
+      ],
+      "assignments": [
+        {
+          "slot_index": 0,
+          "source_index": 0,
+          "source": "${_jsonPath(source)}",
+          "target_sound_name": "HZ6_R4_MOCK_SLOT_01",
+          "playlist_entry": true,
+          "playlist_types": ["FreeRoam", "Event"]
+        }
+      ]
+    }
+  ]
+}
+''', encoding: utf8);
+      SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+
+      final prefs = await SharedPreferences.getInstance();
+      final controller = StudioController(prefs);
+      final summary = controller.state.lastPackageSummary;
+
+      expect(summary, isNotNull);
+      expect(summary!.bankSlots, 3);
+      expect(summary.replaceableSlots, {'FreeRoam': 1, 'Event': 1});
+      expect(summary.detail, contains('1 个槽位'));
+      expect(summary.detail, isNot(contains('3 个槽位')));
+    });
   });
 }
 
