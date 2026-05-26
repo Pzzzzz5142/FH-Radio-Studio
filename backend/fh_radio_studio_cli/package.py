@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, as_completed, wait
 from contextlib import contextmanager
+import multiprocessing as mp
+import os
+import queue
+import threading
 from time import perf_counter
-from typing import Iterable, Iterator
+from typing import Any, Iterable, Iterator
 
 from .ai_timepoints.providers.baseline_mir import estimate_timing
 from .audio import (
@@ -45,6 +49,8 @@ from .metadata import (
 from .radio_xml import patch_package_xml_tree
 
 PROGRESS_PREFIX = "FH_RADIO_STUDIO_PROGRESS "
+_METADATA_CACHE_LOCK: Any = threading.Lock()
+_RADIO_PROGRESS_QUEUE: Any = None
 CORE_TIMING_MARKERS = (
     "TrackDrop",
     "PostDrop",
@@ -59,6 +65,7 @@ class _PackageProgressReporter:
     def __init__(self, enabled: bool) -> None:
         self.enabled = enabled
         self._started: Dict[str, float] = {}
+        self._lock = threading.RLock()
 
     def plan(self, steps: List[Dict[str, object]]) -> None:
         self.emit({"event": "plan", "steps": steps})
@@ -75,8 +82,9 @@ class _PackageProgressReporter:
             self.completed(step_id, summary=summary)
 
     def started(self, step_id: str) -> None:
-        self._started[step_id] = perf_counter()
-        self.emit({"event": "step_started", "step_id": step_id})
+        with self._lock:
+            self._started[step_id] = perf_counter()
+            self.emit({"event": "step_started", "step_id": step_id})
 
     def completed(
         self,
@@ -86,40 +94,66 @@ class _PackageProgressReporter:
         summary: str = "",
         runtime_ms: Optional[int] = None,
     ) -> None:
-        started = self._started.pop(step_id, None)
-        if runtime_ms is None:
-            runtime_ms = int(round((perf_counter() - started) * 1000)) if started is not None else 0
-        payload: Dict[str, object] = {
-            "event": "step_completed",
-            "step_id": step_id,
-            "status": status,
-            "runtime_ms": runtime_ms,
-        }
-        if summary:
-            payload["summary"] = summary
-        self.emit(payload)
+        with self._lock:
+            started = self._started.pop(step_id, None)
+            if runtime_ms is None:
+                runtime_ms = (
+                    int(round((perf_counter() - started) * 1000))
+                    if started is not None
+                    else 0
+                )
+            payload: Dict[str, object] = {
+                "event": "step_completed",
+                "step_id": step_id,
+                "status": status,
+                "runtime_ms": runtime_ms,
+            }
+            if summary:
+                payload["summary"] = summary
+            self.emit(payload)
 
     def failed(self, step_id: str, message: str) -> None:
-        started = self._started.pop(step_id, None)
-        runtime_ms = int(round((perf_counter() - started) * 1000)) if started is not None else 0
-        self.emit(
-            {
-                "event": "step_failed",
-                "step_id": step_id,
-                "status": "error",
-                "runtime_ms": runtime_ms,
-                "summary": message,
-            }
-        )
+        with self._lock:
+            started = self._started.pop(step_id, None)
+            runtime_ms = (
+                int(round((perf_counter() - started) * 1000)) if started is not None else 0
+            )
+            self.emit(
+                {
+                    "event": "step_failed",
+                    "step_id": step_id,
+                    "status": "error",
+                    "runtime_ms": runtime_ms,
+                    "summary": message,
+                }
+            )
 
     def emit(self, payload: Dict[str, object]) -> None:
         if not self.enabled:
             return
-        print(
-            f"{PROGRESS_PREFIX}{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}",
-            file=sys.stderr,
-            flush=True,
-        )
+        with self._lock:
+            print(
+                f"{PROGRESS_PREFIX}{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+
+class _QueuePackageProgressReporter(_PackageProgressReporter):
+    def __init__(self, progress_queue: Any) -> None:
+        super().__init__(True)
+        self._progress_queue = progress_queue
+
+    def emit(self, payload: Dict[str, object]) -> None:
+        if not self.enabled:
+            return
+        with self._lock:
+            self._progress_queue.put(payload)
+
+
+def _init_radio_package_worker(progress_queue: Any) -> None:
+    global _RADIO_PROGRESS_QUEUE
+    _RADIO_PROGRESS_QUEUE = progress_queue
 
 
 def _progress_step(
@@ -289,6 +323,7 @@ def _package_progress_plan(
     radio_counts: List[Tuple[int, int, Optional[str]]],
     *,
     current_radio_passthrough: bool = False,
+    song_loudness_count: int = 0,
 ) -> List[Dict[str, object]]:
     steps = [
         _progress_step(
@@ -311,6 +346,15 @@ def _package_progress_plan(
         baseline_step = _baseline_loudness_progress_step(args)
         if baseline_step is not None:
             steps.append(baseline_step)
+        if song_loudness_count > 0:
+            steps.append(
+                _progress_step(
+                    "song_loudness_cache",
+                    "全局歌曲响度缓存",
+                    "先不区分电台，并行测量本次准备包用到的自建歌曲响度；后续电台构建直接复用结果。",
+                    weight=max(2, song_loudness_count * 2),
+                )
+            )
         for radio, music_count, station_name in radio_counts:
             steps.extend(
                 _radio_progress_steps(
@@ -736,18 +780,37 @@ def _loudness_worker_count(args: argparse.Namespace, task_count: int) -> int:
     return loudness_worker_count(getattr(args, "loudness_jobs", 0), task_count)
 
 
+def _radio_package_worker_count(radio_count: int) -> int:
+    if radio_count <= 1:
+        return 1
+    cpu_count = os.cpu_count() or 1
+    return max(1, min(max(2, cpu_count // 2), radio_count))
+
+
+def _drain_radio_progress_queue(progress_queue: Any, progress: _PackageProgressReporter) -> None:
+    while True:
+        try:
+            payload = progress_queue.get_nowait()
+        except queue.Empty:
+            return
+        if isinstance(payload, dict):
+            progress.emit(payload)
+
+
 def _measure_loudness_cache_misses(
     paths: List[Path],
     args: argparse.Namespace,
     ffmpeg: Optional[str],
     *,
     has_cache: bool,
+    allow_parallel: bool = True,
 ) -> Dict[str, Dict[str, object]]:
     if not paths:
         return {}
-    worker_count = _loudness_worker_count(args, len(paths))
+    worker_count = _loudness_worker_count(args, len(paths)) if allow_parallel else 1
     label = "Loudness cache miss" if has_cache else "Loudness analysis"
-    print(f"  {label}: measuring {len(paths)} song(s) with {worker_count} process(es).")
+    worker_label = f"{worker_count} process(es)" if allow_parallel else "current radio process"
+    print(f"  {label}: measuring {len(paths)} song(s) with {worker_label}.")
 
     results: Dict[str, Dict[str, object]] = {}
 
@@ -778,6 +841,103 @@ def _measure_loudness_cache_misses(
                 die(f"Could not measure loudness for {path}: {type(exc).__name__}: {exc}")
             record(path, analysis)
     return results
+
+
+def _unique_music_sources(groups: List[Dict[str, object]]) -> List[Path]:
+    sources: List[Path] = []
+    seen: set[str] = set()
+    for group in groups:
+        for raw_source in list(group["sources"]):
+            source = Path(str(raw_source)).expanduser()
+            key = source_key(source)
+            if key in seen:
+                continue
+            seen.add(key)
+            sources.append(source)
+    return sources
+
+
+def _read_loudness_cache_entry(
+    metadata_cache: Optional[Path],
+    music: Path,
+) -> Optional[Dict[str, object]]:
+    if metadata_cache is None:
+        return None
+    with _METADATA_CACHE_LOCK:
+        return cached_loudness_analysis_for_path(
+            metadata_cache,
+            music,
+            algorithm_version=LOUDNESS_ALGORITHM_VERSION,
+        )
+
+
+def _write_loudness_cache_entry(
+    metadata_cache: Optional[Path],
+    music: Path,
+    analysis: Dict[str, object],
+) -> None:
+    if metadata_cache is None:
+        return
+    with _METADATA_CACHE_LOCK:
+        upsert_track_metadata_cache_entry(
+            metadata_cache,
+            music,
+            loudness_analysis=analysis,
+        )
+
+
+def _build_package_song_loudness_cache(
+    sources: List[Path],
+    args: argparse.Namespace,
+    ffmpeg: Optional[str],
+    progress: _PackageProgressReporter,
+) -> Dict[str, Dict[str, object]]:
+    if not sources:
+        return {}
+
+    metadata_cache = _metadata_cache_path_for_args(args)
+    analyses: Dict[str, Dict[str, object]] = {}
+    cache_misses: List[Path] = []
+    cache_hits = 0
+
+    step_id = "song_loudness_cache"
+    progress.started(step_id)
+    try:
+        for music in sources:
+            analysis = _read_loudness_cache_entry(metadata_cache, music)
+            if analysis is None:
+                cache_misses.append(music)
+                continue
+            if analysis.get("status") != "ok":
+                die(f"Could not measure loudness for {music}: {analysis.get('error')}")
+            cache_hits += 1
+            analyses[source_key(music)] = analysis
+
+        measured_analyses = _measure_loudness_cache_misses(
+            cache_misses,
+            args,
+            ffmpeg,
+            has_cache=metadata_cache is not None,
+            allow_parallel=True,
+        )
+        for music in cache_misses:
+            analysis = measured_analyses[source_key(music)]
+            _write_loudness_cache_entry(metadata_cache, music, analysis)
+            analyses[source_key(music)] = analysis
+    except Exception as exc:
+        progress.failed(step_id, f"{type(exc).__name__}: {exc}")
+        raise
+    else:
+        progress.completed(
+            step_id,
+            summary=f"{cache_hits} hit(s), {len(cache_misses)} measured",
+        )
+
+    print(
+        "  Global loudness cache: "
+        f"{cache_hits} hit(s), {len(cache_misses)} measured for {len(sources)} unique song(s)."
+    )
+    return analyses
 
 
 def target_names_for_bank(
@@ -1144,6 +1304,8 @@ def prepare_music_tracks(
     *,
     radio: Optional[int] = None,
     loudness_envelope: Optional[Dict[str, object]] = None,
+    parallel_loudness: bool = True,
+    precomputed_loudness_by_source: Optional[Dict[str, Dict[str, object]]] = None,
 ) -> List[Dict[str, object]]:
     prepared_dir.mkdir(parents=True, exist_ok=True)
     envelope = loudness_envelope or ensure_baseline_loudness_envelope(
@@ -1154,37 +1316,39 @@ def prepare_music_tracks(
     loudness_by_source: Dict[str, Dict[str, object]] = {}
     metadata_cache = _metadata_cache_path_for_args(args)
     cache_hits = 0
+    precomputed_hits = 0
     cache_misses: List[Path] = []
     for music in music_files:
-        analysis = cached_loudness_analysis_for_path(
-            metadata_cache,
-            music,
-            algorithm_version=LOUDNESS_ALGORITHM_VERSION,
+        key = source_key(music)
+        analysis = (
+            precomputed_loudness_by_source.get(key)
+            if precomputed_loudness_by_source is not None
+            else None
         )
+        if analysis is not None:
+            precomputed_hits += 1
+        else:
+            analysis = _read_loudness_cache_entry(metadata_cache, music)
+            if analysis is not None:
+                cache_hits += 1
         if analysis is None:
             cache_misses.append(music)
-        else:
-            cache_hits += 1
 
         if analysis is not None:
             if analysis.get("status") != "ok":
                 die(f"Could not measure loudness for {music}: {analysis.get('error')}")
-            loudness_by_source[source_key(music)] = analysis
+            loudness_by_source[key] = analysis
 
     measured_analyses = _measure_loudness_cache_misses(
         cache_misses,
         args,
         ffmpeg,
         has_cache=metadata_cache is not None,
+        allow_parallel=parallel_loudness,
     )
     for music in cache_misses:
         analysis = measured_analyses[source_key(music)]
-        if metadata_cache is not None:
-            upsert_track_metadata_cache_entry(
-                metadata_cache,
-                music,
-                loudness_analysis=analysis,
-            )
+        _write_loudness_cache_entry(metadata_cache, music, analysis)
         loudness_by_source[source_key(music)] = analysis
 
     for music in music_files:
@@ -1195,7 +1359,9 @@ def prepare_music_tracks(
         radio=radio,
     )
     print("  Loudness matching: custom set profile ready.")
-    if metadata_cache is not None:
+    if precomputed_loudness_by_source is not None:
+        print(f"  Loudness cache: {precomputed_hits} precomputed hit(s).")
+    if metadata_cache is not None and (cache_hits > 0 or cache_misses):
         print(f"  Loudness cache: {cache_hits} hit(s), {len(cache_misses)} measured + cached.")
 
     prepared_tracks: List[Dict[str, object]] = []
@@ -1276,6 +1442,7 @@ def build_radio_package_unit(
     timing_overrides: Dict[str, object],
     loudness_envelope: Optional[Dict[str, object]] = None,
     progress: Optional[_PackageProgressReporter] = None,
+    precomputed_loudness_by_source: Optional[Dict[str, Dict[str, object]]] = None,
 ) -> Dict[str, object]:
     progress = progress or _PackageProgressReporter(False)
     station = find_station(root, radio)
@@ -1309,6 +1476,8 @@ def build_radio_package_unit(
             ffmpeg,
             radio=radio,
             loudness_envelope=loudness_envelope,
+            parallel_loudness=precomputed_loudness_by_source is None,
+            precomputed_loudness_by_source=precomputed_loudness_by_source,
         )
 
     bank_name = bank_name_from_path(target_bank)
@@ -1402,6 +1571,37 @@ def build_radio_package_unit(
         "music": prepared_tracks,
         "assignments": assignments,
     }
+
+
+def _build_radio_package_unit_worker(payload: Dict[str, object]) -> Dict[str, object]:
+    raw_args = payload["args"]
+    args = argparse.Namespace(**vars(raw_args))
+    root = ET.fromstring(str(payload["root_xml"]))
+    progress = (
+        _QueuePackageProgressReporter(_RADIO_PROGRESS_QUEUE)
+        if _RADIO_PROGRESS_QUEUE is not None
+        else _PackageProgressReporter(False)
+    )
+    return build_radio_package_unit(
+        args,
+        Path(str(payload["game_dir"])),
+        Path(str(payload["audio_dir"])),
+        root,
+        int(payload["radio"]),
+        [Path(str(path)) for path in payload["sources"]],
+        payload.get("playlist_types_by_source"),
+        payload.get("playlist_slots_by_source"),
+        Path(str(payload["prepared_dir"])),
+        Path(str(payload["stage_root"])),
+        Path(str(payload["fsbank_out"])),
+        Path(str(payload["package_bank_dir"])),
+        payload.get("ffmpeg"),
+        payload.get("fsbankcl"),
+        payload["timing_overrides"],
+        payload.get("loudness_envelope"),
+        progress,
+        payload.get("precomputed_loudness_by_source"),
+    )
 
 
 def _playlist_type_counts_for_group(group: Dict[str, object]) -> Dict[str, int]:
@@ -1811,6 +2011,109 @@ def cmd_build_baseline_restore_package(
     return 0
 
 
+def _build_radio_package_units_from_plan(
+    args: argparse.Namespace,
+    game_dir: Path,
+    audio_dir: Path,
+    root: ET.Element,
+    groups: List[Dict[str, object]],
+    prepared_dir: Path,
+    stage_root: Path,
+    fsbank_out: Path,
+    package_bank_dir: Path,
+    ffmpeg: Optional[str],
+    fsbankcl: Optional[str],
+    timing_overrides: Dict[str, object],
+    loudness_envelope: Dict[str, object],
+    precomputed_loudness_by_source: Dict[str, Dict[str, object]],
+    progress: _PackageProgressReporter,
+) -> List[Dict[str, object]]:
+    worker_count = _radio_package_worker_count(len(groups))
+    if worker_count <= 1:
+        return [
+            build_radio_package_unit(
+                args,
+                game_dir,
+                audio_dir,
+                root,
+                int(group["radio"]),
+                list(group["sources"]),
+                group.get("playlist_types_by_source"),
+                group.get("playlist_slots_by_source"),
+                prepared_dir,
+                stage_root,
+                fsbank_out,
+                package_bank_dir,
+                ffmpeg,
+                fsbankcl,
+                timing_overrides,
+                loudness_envelope,
+                progress,
+                precomputed_loudness_by_source,
+            )
+            for group in groups
+        ]
+
+    print(
+        f"Radio package build: building {len(groups)} radio(s) with "
+        f"{worker_count} process(es)."
+    )
+    root_xml = ET.tostring(root, encoding="unicode")
+    results: List[Optional[Dict[str, object]]] = [None] * len(groups)
+    first_error: Optional[Exception] = None
+
+    with mp.Manager() as manager:
+        progress_queue = manager.Queue()
+        with ProcessPoolExecutor(
+            max_workers=worker_count,
+            initializer=_init_radio_package_worker,
+            initargs=(progress_queue,),
+        ) as pool:
+            futures = {}
+            for index, group in enumerate(groups):
+                radio = int(group["radio"])
+                payload: Dict[str, object] = {
+                    "args": argparse.Namespace(
+                        **{key: value for key, value in vars(args).items() if key != "func"}
+                    ),
+                    "game_dir": str(game_dir),
+                    "audio_dir": str(audio_dir),
+                    "root_xml": root_xml,
+                    "radio": radio,
+                    "sources": [str(path) for path in list(group["sources"])],
+                    "playlist_types_by_source": group.get("playlist_types_by_source"),
+                    "playlist_slots_by_source": group.get("playlist_slots_by_source"),
+                    "prepared_dir": str(prepared_dir),
+                    "stage_root": str(stage_root),
+                    "fsbank_out": str(fsbank_out / f"R{radio}"),
+                    "package_bank_dir": str(package_bank_dir),
+                    "ffmpeg": ffmpeg,
+                    "fsbankcl": fsbankcl,
+                    "timing_overrides": timing_overrides,
+                    "loudness_envelope": loudness_envelope,
+                    "precomputed_loudness_by_source": precomputed_loudness_by_source,
+                }
+                futures[pool.submit(_build_radio_package_unit_worker, payload)] = index
+
+            pending = set(futures)
+            while pending:
+                done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+                _drain_radio_progress_queue(progress_queue, progress)
+                for future in done:
+                    index = futures[future]
+                    try:
+                        results[index] = future.result()
+                    except Exception as exc:
+                        if first_error is None:
+                            first_error = exc
+
+            _drain_radio_progress_queue(progress_queue, progress)
+
+    if first_error is not None:
+        raise first_error
+    return [item for item in results if item is not None]
+
+
 def cmd_build_package_from_plan(
     args: argparse.Namespace,
     game_dir: Path,
@@ -1823,6 +2126,7 @@ def cmd_build_package_from_plan(
 ) -> int:
     progress = progress or _PackageProgressReporter(False)
     restore_targets = restore_targets or []
+    song_loudness_sources = _unique_music_sources(groups)
     radio_counts = [
         (
             int(group["radio"]),
@@ -1835,6 +2139,7 @@ def cmd_build_package_from_plan(
         _package_progress_plan(
             args,
             radio_counts,
+            song_loudness_count=len(song_loudness_sources),
         )
     )
     if args.bank and len(groups) + len(restore_targets) > 1:
@@ -1880,29 +2185,29 @@ def cmd_build_package_from_plan(
     print(f"Out dir     : {out_dir}")
 
     loudness_envelope = _ensure_package_loudness_envelope(args, progress)
-    radio_packages: List[Dict[str, object]] = []
-    for group in groups:
-        radio_packages.append(
-            build_radio_package_unit(
-                args,
-                game_dir,
-                audio_dir,
-                root,
-                int(group["radio"]),
-                list(group["sources"]),
-                group.get("playlist_types_by_source"),
-                group.get("playlist_slots_by_source"),
-                prepared_dir,
-                stage_root,
-                fsbank_out,
-                package_bank_dir,
-                ffmpeg,
-                fsbankcl,
-                timing_overrides,
-                loudness_envelope,
-                progress,
-            )
-        )
+    precomputed_loudness_by_source = _build_package_song_loudness_cache(
+        song_loudness_sources,
+        args,
+        ffmpeg,
+        progress,
+    )
+    radio_packages = _build_radio_package_units_from_plan(
+        args,
+        game_dir,
+        audio_dir,
+        root,
+        groups,
+        prepared_dir,
+        stage_root,
+        fsbank_out,
+        package_bank_dir,
+        ffmpeg,
+        fsbankcl,
+        timing_overrides,
+        loudness_envelope,
+        precomputed_loudness_by_source,
+        progress,
+    )
 
     if args.source or args.target:
         with progress.stage("package_language"):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from statistics import median
 
 from .audio import linear_resample
@@ -7,14 +8,20 @@ from .common import *
 from .external_tools import find_executable
 from .fsb5 import extract_embedded_fsb
 
-LOUDNESS_ALGORITHM_VERSION = "fh-radio-studio-loudness-v1"
+LOUDNESS_ALGORITHM_VERSION = "fh-radio-studio-loudness-v2"
 HEURISTIC_SAFE_MIN_LUFS = -28.0
 HEURISTIC_SAFE_MAX_LUFS = -16.0
+HEURISTIC_REFERENCE_MEDIAN_LUFS = -24.0
 DEFAULT_TRUE_PEAK_CEILING_DBTP = -1.5
+DEFAULT_MAX_POSITIVE_GAIN_DB = 8.0
 MIN_ACTIVE_DURATION_SEC = 1.0
 
 
-def ensure_baseline_loudness_envelope(baseline_manifest: Optional[str]) -> Dict[str, object]:
+def ensure_baseline_loudness_envelope(
+    baseline_manifest: Optional[str],
+    *,
+    loudness_jobs: int = 0,
+) -> Dict[str, object]:
     if not baseline_manifest:
         return _heuristic_envelope(["no_baseline_manifest"])
 
@@ -29,10 +36,16 @@ def ensure_baseline_loudness_envelope(baseline_manifest: Optional[str]) -> Dict[
         existing
         and existing.get("algorithm_version") == LOUDNESS_ALGORITHM_VERSION
         and existing.get("source_fingerprint") == fingerprint
+        and _complete_loudness_envelope(existing)
     ):
         return existing
 
-    measured, warnings = _try_measure_baseline_envelope(manifest_path, manifest, fingerprint)
+    measured, warnings = _try_measure_baseline_envelope(
+        manifest_path,
+        manifest,
+        fingerprint,
+        loudness_jobs=loudness_jobs,
+    )
     envelope = measured if measured is not None else _heuristic_envelope(warnings)
     if measured is None:
         envelope["source_fingerprint"] = fingerprint
@@ -44,6 +57,17 @@ def ensure_baseline_loudness_envelope(baseline_manifest: Optional[str]) -> Dict[
     manifest["derived_values"] = derived_values
     write_json(manifest_path, manifest)
     return envelope
+
+
+def loudness_worker_count(requested_jobs: object, task_count: int) -> int:
+    if task_count <= 1:
+        return 1
+    requested = int(requested_jobs or 0)
+    if requested > 0:
+        return max(1, min(requested, task_count))
+    cpu_count = os.cpu_count() or 1
+    auto_workers = max(2, cpu_count // 2)
+    return max(1, min(auto_workers, task_count))
 
 
 def analyze_loudness_file(src: Path, *, ffmpeg: Optional[str] = None) -> Dict[str, object]:
@@ -126,15 +150,29 @@ def build_custom_set_loudness_profile(
         robust_values = ordered
 
     raw_target = float(median(robust_values))
-    safe_min = float(envelope.get("safe_min_lufs", HEURISTIC_SAFE_MIN_LUFS))
-    safe_max = float(envelope.get("safe_max_lufs", HEURISTIC_SAFE_MAX_LUFS))
-    target = min(max(raw_target, safe_min), safe_max)
-    if target == raw_target:
-        reason = "custom_set_center"
-    elif target == safe_max:
-        reason = "custom_set_center_clamped_by_game_safe_max"
+    safe_min = _finite_float(envelope.get("safe_min_lufs"), HEURISTIC_SAFE_MIN_LUFS)
+    safe_max = _finite_float(envelope.get("safe_max_lufs"), HEURISTIC_SAFE_MAX_LUFS)
+    if safe_max < safe_min:
+        safe_min, safe_max = HEURISTIC_SAFE_MIN_LUFS, HEURISTIC_SAFE_MAX_LUFS
+    reference_median = _finite_float(envelope.get("reference_median_lufs"), None)
+    warnings: List[str] = []
+    if reference_median is None:
+        reference_target = raw_target
+        reason_prefix = "custom_set_center"
+        target_basis = "custom-set-center"
+        warnings.append("reference_median_lufs_missing")
     else:
-        reason = "custom_set_center_clamped_by_game_safe_min"
+        reference_target = reference_median
+        reason_prefix = "baseline_reference_median"
+        target_basis = "baseline-reference-median"
+
+    target = min(max(reference_target, safe_min), safe_max)
+    if target == reference_target:
+        reason = reason_prefix
+    elif target == safe_max:
+        reason = f"{reason_prefix}_clamped_by_game_safe_max"
+    else:
+        reason = f"{reason_prefix}_clamped_by_game_safe_min"
 
     return {
         "schema_version": 1,
@@ -145,14 +183,21 @@ def build_custom_set_loudness_profile(
         "track_count": len(analyses),
         "valid_track_count": len(valid),
         "raw_set_center_lufs": round(raw_target, 3),
+        "reference_median_lufs": (
+            round(reference_median, 3) if reference_median is not None else None
+        ),
         "target_lufs": round(target, 3),
+        "target_basis": target_basis,
         "target_reason": reason,
         "game_safe_range_lufs": [safe_min, safe_max],
         "true_peak_ceiling_dbtp": float(
             envelope.get("true_peak_ceiling_dbtp", DEFAULT_TRUE_PEAK_CEILING_DBTP)
         ),
+        "max_positive_gain_db": _finite_float(
+            envelope.get("max_positive_gain_db"), DEFAULT_MAX_POSITIVE_GAIN_DB
+        ),
         "envelope_source": envelope.get("source", "unknown"),
-        "warnings": [],
+        "warnings": warnings,
     }
 
 
@@ -189,9 +234,14 @@ def prepare_loudness_matched_audio(
     input_lufs = float(input_analysis["integrated_lufs"])
     input_true_peak = float(input_analysis["true_peak_dbtp"])
     requested_gain = target_lufs - input_lufs
-    predicted_true_peak = input_true_peak + requested_gain
+    max_positive_gain = _finite_float(
+        profile.get("max_positive_gain_db"), DEFAULT_MAX_POSITIVE_GAIN_DB
+    )
+    positive_gain_trim = min(0.0, max_positive_gain - requested_gain)
+    gain_after_boost_cap = requested_gain + positive_gain_trim
+    predicted_true_peak = input_true_peak + gain_after_boost_cap
     peak_trim = min(0.0, ceiling - predicted_true_peak)
-    applied_gain = requested_gain + peak_trim
+    applied_gain = gain_after_boost_cap + peak_trim
 
     out_data = np.clip(data * db_to_linear(applied_gain), -1.0, 1.0).astype(np.float32)
     if verify_output:
@@ -230,17 +280,23 @@ def prepare_loudness_matched_audio(
         "algorithm_version": LOUDNESS_ALGORITHM_VERSION,
         "target_lufs": round(target_lufs, 3),
         "true_peak_ceiling_dbtp": round(ceiling, 3),
+        "max_positive_gain_db": round(max_positive_gain, 3),
         "input_integrated_lufs": round(input_lufs, 3),
         "input_true_peak_dbtp": round(input_true_peak, 3),
         "requested_gain_db": round(requested_gain, 3),
+        "positive_gain_trim_db": round(positive_gain_trim, 3),
         "true_peak_trim_db": round(peak_trim, 3),
         "applied_gain_db": round(applied_gain, 3),
         "output_integrated_lufs": round(float(output_analysis["integrated_lufs"]), 3),
         "output_true_peak_dbtp": round(output_true_peak, 3),
         "target_delta_lu": round(float(output_analysis["integrated_lufs"]) - target_lufs, 3),
         "output_verified": bool(verify_output),
+        "limited_by_max_positive_gain": positive_gain_trim < -0.001,
         "limited_by_true_peak": peak_trim < -0.001,
-        "warnings": ["true_peak_ceiling_limited_gain"] if peak_trim < -0.001 else [],
+        "warnings": (
+            (["max_positive_gain_limited_boost"] if positive_gain_trim < -0.001 else [])
+            + (["true_peak_ceiling_limited_gain"] if peak_trim < -0.001 else [])
+        ),
     }
     return before, after, loudness
 
@@ -330,9 +386,13 @@ def _heuristic_envelope(warnings: List[str]) -> Dict[str, object]:
         "algorithm_version": LOUDNESS_ALGORITHM_VERSION,
         "source": "heuristic",
         "reference_track_count": 0,
+        "reference_min_lufs": HEURISTIC_SAFE_MIN_LUFS,
+        "reference_median_lufs": HEURISTIC_REFERENCE_MEDIAN_LUFS,
+        "reference_max_lufs": HEURISTIC_SAFE_MAX_LUFS,
         "safe_min_lufs": HEURISTIC_SAFE_MIN_LUFS,
         "safe_max_lufs": HEURISTIC_SAFE_MAX_LUFS,
         "true_peak_ceiling_dbtp": DEFAULT_TRUE_PEAK_CEILING_DBTP,
+        "max_positive_gain_db": DEFAULT_MAX_POSITIVE_GAIN_DB,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "warnings": warnings,
     }
@@ -344,6 +404,19 @@ def _existing_envelope(manifest: Dict[str, object]) -> Optional[Dict[str, object
         return None
     envelope = derived_values.get("loudness_envelope")
     return envelope if isinstance(envelope, dict) else None
+
+
+def _complete_loudness_envelope(envelope: Dict[str, object]) -> bool:
+    required_numbers = (
+        "reference_min_lufs",
+        "reference_median_lufs",
+        "reference_max_lufs",
+        "safe_min_lufs",
+        "safe_max_lufs",
+        "true_peak_ceiling_dbtp",
+        "max_positive_gain_db",
+    )
+    return all(_is_finite_number(envelope.get(key)) for key in required_numbers)
 
 
 def _baseline_loudness_fingerprint(manifest: Dict[str, object]) -> str:
@@ -367,10 +440,156 @@ def _baseline_bank_items(manifest: Dict[str, object]) -> List[Dict[str, object]]
     ]
 
 
+def _decode_baseline_bank_worker(
+    vgmstream: str,
+    bank_path_text: str,
+    bank_name: str,
+    bank_index: int,
+    out_root_text: str,
+) -> Tuple[str, List[Tuple[str, int, str]], List[str]]:
+    decoded: List[Tuple[str, int, str]] = []
+    warnings: List[str] = []
+    out_root = Path(out_root_text)
+    bank_path = Path(bank_path_text)
+    bank_dir = out_root / f"{bank_index:04d}_{sanitize_token(bank_path.stem, 'bank')}"
+    bank_dir.mkdir(parents=True, exist_ok=True)
+    fsb_path = bank_dir / f"{bank_path.stem}.fsb"
+    try:
+        info = extract_embedded_fsb(bank_path, fsb_path)
+    except Exception as exc:
+        return bank_name, [], [f"extract_failed:{bank_name}:{type(exc).__name__}"]
+
+    for subsong in range(1, int(info.num_samples) + 1):
+        wav_path = bank_dir / f"{bank_path.stem}_{subsong:04d}.wav"
+        cmd = [
+            vgmstream,
+            "-i",
+            "-s",
+            str(subsong),
+            "-o",
+            str(wav_path),
+            str(fsb_path),
+        ]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if result.returncode != 0 or not wav_path.exists():
+            warnings.append(f"decode_failed:{bank_name}:subsong{subsong}")
+            continue
+        decoded.append((bank_name, subsong, str(wav_path)))
+    return bank_name, decoded, warnings
+
+
+def _analyze_baseline_wav_worker(
+    bank_name: str,
+    subsong: int,
+    wav_path_text: str,
+) -> Tuple[str, int, Optional[Dict[str, object]], Optional[str]]:
+    analysis = analyze_loudness_file(Path(wav_path_text))
+    if analysis.get("status") != "ok":
+        return bank_name, subsong, None, f"analysis_failed:{bank_name}:subsong{subsong}"
+    return bank_name, subsong, analysis, None
+
+
+def _measure_baseline_banks(
+    tasks: List[Tuple[str, str, str, int, str]],
+    *,
+    loudness_jobs: int,
+) -> Tuple[List[Dict[str, object]], List[str]]:
+    if not tasks:
+        return [], []
+
+    worker_count = loudness_worker_count(loudness_jobs, len(tasks))
+    print(
+        "  Baseline loudness pipeline: "
+        f"decoding/analyzing {len(tasks)} bank(s) with {worker_count} process(es)."
+    )
+
+    analyses: List[Dict[str, object]] = []
+    warnings: List[str] = []
+
+    def record_analysis(
+        bank_name: str,
+        subsong: int,
+        analysis: Optional[Dict[str, object]],
+        warning: Optional[str],
+    ) -> None:
+        if warning:
+            warnings.append(warning)
+            return
+        if analysis is None:
+            warnings.append(f"analysis_failed:{bank_name}:subsong{subsong}")
+            return
+        analyses.append(analysis)
+
+    if worker_count <= 1:
+        decoded: List[Tuple[str, int, str]] = []
+        for task in tasks:
+            try:
+                _bank_name, bank_decoded, bank_warnings = _decode_baseline_bank_worker(*task)
+            except Exception as exc:
+                warnings.append(f"bank_decode_failed:{task[2]}:{type(exc).__name__}")
+                continue
+            decoded.extend(bank_decoded)
+            warnings.extend(bank_warnings)
+        for wav_task in decoded:
+            try:
+                bank_name, subsong, analysis, warning = _analyze_baseline_wav_worker(*wav_task)
+            except Exception as exc:
+                bank_name, subsong = wav_task[0], wav_task[1]
+                warnings.append(
+                    f"analysis_failed:{bank_name}:subsong{subsong}:{type(exc).__name__}"
+                )
+                continue
+            record_analysis(bank_name, subsong, analysis, warning)
+        return analyses, warnings
+
+    with ProcessPoolExecutor(max_workers=worker_count) as pool:
+        pending: Dict[object, Tuple[str, object]] = {}
+        for task in tasks:
+            pending[pool.submit(_decode_baseline_bank_worker, *task)] = ("decode", task[2])
+
+        while pending:
+            done, _pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                kind, meta = pending.pop(future)
+                if kind == "decode":
+                    bank_name = str(meta)
+                    try:
+                        _result_bank, bank_decoded, bank_warnings = future.result()
+                    except Exception as exc:
+                        warnings.append(f"bank_decode_failed:{bank_name}:{type(exc).__name__}")
+                        bank_decoded = []
+                        bank_warnings = []
+                    warnings.extend(bank_warnings)
+                    for wav_task in bank_decoded:
+                        pending[pool.submit(_analyze_baseline_wav_worker, *wav_task)] = (
+                            "analyze",
+                            (wav_task[0], wav_task[1]),
+                        )
+                else:
+                    bank_name, subsong = meta  # type: ignore[misc]
+                    try:
+                        result_bank, result_subsong, analysis, warning = future.result()
+                    except Exception as exc:
+                        warnings.append(
+                            f"analysis_failed:{bank_name}:subsong{subsong}:{type(exc).__name__}"
+                        )
+                        continue
+                    record_analysis(result_bank, result_subsong, analysis, warning)
+    return analyses, warnings
+
+
 def _try_measure_baseline_envelope(
     manifest_path: Path,
     manifest: Dict[str, object],
     fingerprint: str,
+    *,
+    loudness_jobs: int = 0,
 ) -> Tuple[Optional[Dict[str, object]], List[str]]:
     warnings: List[str] = []
     try:
@@ -382,50 +601,19 @@ def _try_measure_baseline_envelope(
         warnings.append("vgmstream_missing")
         return None, warnings
 
-    analyses: List[Dict[str, object]] = []
     with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_root = Path(tmp_dir)
-        for item in _baseline_bank_items(manifest):
+        tasks: List[Tuple[str, str, str, int, str]] = []
+        for bank_index, item in enumerate(_baseline_bank_items(manifest)):
             bank_path = _resolve_baseline_bank_path(manifest_path, item)
             if not bank_path or not bank_path.exists():
                 warnings.append(f"baseline_bank_missing:{item.get('install_relative_path')}")
                 continue
-            try:
-                fsb_path = tmp_root / f"{bank_path.stem}.fsb"
-                info = extract_embedded_fsb(bank_path, fsb_path)
-            except Exception as exc:
-                warnings.append(f"extract_failed:{bank_path.name}:{type(exc).__name__}")
-                continue
-            for subsong in range(1, int(info.num_samples) + 1):
-                wav_path = tmp_root / f"{bank_path.stem}_{subsong:04d}.wav"
-                cmd = [
-                    vgmstream,
-                    "-i",
-                    "-s",
-                    str(subsong),
-                    "-o",
-                    str(wav_path),
-                    str(fsb_path),
-                ]
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-                if result.returncode != 0 or not wav_path.exists():
-                    warnings.append(f"decode_failed:{bank_path.name}:subsong{subsong}")
-                    continue
-                analysis = analyze_loudness_file(wav_path)
-                if analysis.get("status") == "ok":
-                    analyses.append(analysis)
-                else:
-                    warnings.append(f"analysis_failed:{bank_path.name}:subsong{subsong}")
-                try:
-                    wav_path.unlink()
-                except OSError:
-                    pass
+            tasks.append((vgmstream, str(bank_path), bank_path.name, bank_index, tmp_dir))
+        analyses, task_warnings = _measure_baseline_banks(
+            tasks,
+            loudness_jobs=loudness_jobs,
+        )
+        warnings.extend(task_warnings)
 
     lufs_values = sorted(
         float(item["integrated_lufs"])
@@ -438,12 +626,12 @@ def _try_measure_baseline_envelope(
 
     p10 = _percentile(lufs_values, 10)
     p90 = _percentile(lufs_values, 90)
+    reference_median = float(median(lufs_values))
     safe_min = max(-34.0, min(HEURISTIC_SAFE_MIN_LUFS, p10 - 4.0))
     safe_max = min(-14.0, max(HEURISTIC_SAFE_MAX_LUFS, p90 + 2.0))
     if safe_max - safe_min < 8.0:
-        center = float(median(lufs_values))
-        safe_min = center - 6.0
-        safe_max = center + 2.0
+        safe_min = reference_median - 6.0
+        safe_max = reference_median + 2.0
     return (
         {
             "schema_version": 1,
@@ -452,9 +640,15 @@ def _try_measure_baseline_envelope(
             "source": "measured",
             "source_fingerprint": fingerprint,
             "reference_track_count": len(lufs_values),
+            "reference_min_lufs": round(float(lufs_values[0]), 3),
+            "reference_p10_lufs": round(float(p10), 3),
+            "reference_median_lufs": round(reference_median, 3),
+            "reference_p90_lufs": round(float(p90), 3),
+            "reference_max_lufs": round(float(lufs_values[-1]), 3),
             "safe_min_lufs": round(float(safe_min), 3),
             "safe_max_lufs": round(float(safe_max), 3),
             "true_peak_ceiling_dbtp": DEFAULT_TRUE_PEAK_CEILING_DBTP,
+            "max_positive_gain_db": DEFAULT_MAX_POSITIVE_GAIN_DB,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "warnings": warnings,
         },
@@ -495,6 +689,14 @@ def _is_finite_number(value: object) -> bool:
         return bool(np.isfinite(float(value)))
     except (TypeError, ValueError):
         return False
+
+
+def _finite_float(value: object, fallback: Optional[float]) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return number if np.isfinite(number) else fallback
 
 
 def _usable_loudness_analysis(analysis: Optional[Dict[str, object]]) -> bool:

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from backend.fh_radio_studio_cli.cli import main
 from backend.fh_radio_studio_cli.common import guess_metadata
+from backend.fh_radio_studio_cli.loudness import LOUDNESS_ALGORITHM_VERSION
 from backend.fh_radio_studio_cli.metadata import read_track_metadata, write_track_metadata_tags
 
 _PNG_BYTES = (
@@ -196,7 +197,7 @@ def test_scan_metadata_preserves_fresh_loudness_cache(tmp_path: Path, capsys) ->
                         "title": "Old",
                         "loudness_analysis": {
                             "status": "ok",
-                            "algorithm_version": "fh-radio-studio-loudness-v1",
+                            "algorithm_version": LOUDNESS_ALGORITHM_VERSION,
                             "integrated_lufs": -18.0,
                             "true_peak_dbtp": -2.0,
                             "source_size": stat.st_size,

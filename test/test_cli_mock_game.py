@@ -1343,10 +1343,24 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
     ]
     plan_event = next(event for event in events if event.get("event") == "plan")
     labels = [step.get("label") for step in plan_event["steps"]]
+    assert "全局歌曲响度缓存" in labels
     assert "Horizon XS 重建 FMOD bank" in labels
     assert "Radio Eterna 重建 FMOD bank" in labels
     assert "R4 重建 FMOD bank" not in labels
     assert "R5 重建 FMOD bank" not in labels
+    loudness_done_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.get("event") == "step_completed"
+        and event.get("step_id") == "song_loudness_cache"
+    )
+    first_radio_prepare_index = min(
+        index
+        for index, event in enumerate(events)
+        if event.get("event") == "step_started"
+        and str(event.get("step_id", "")).endswith(".prepare_audio")
+    )
+    assert loudness_done_index < first_radio_prepare_index
 
     manifest_path = package_dir / "package" / "fh_radio_studio_package_manifest.json"
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
