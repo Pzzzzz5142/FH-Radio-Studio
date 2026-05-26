@@ -1257,6 +1257,7 @@ class StudioState {
     required this.toolInstallLog,
     required this.toolInstallFailureSummary,
     required this.statusSummary,
+    this.gameDirError,
   });
 
   factory StudioState.initial(SharedPreferences prefs) {
@@ -1459,6 +1460,7 @@ class StudioState {
   final List<String> toolInstallLog;
   final String? toolInstallFailureSummary;
   final String statusSummary;
+  final String? gameDirError;
 
   String get musicPath => musicPaths.isEmpty ? '' : musicPaths.first;
   String get sourcesDir => FhRadioStudioProject.sourcesDir(projectDir);
@@ -1542,9 +1544,15 @@ class StudioState {
   bool get toolchainRefreshing =>
       toolchainStatus.checking ||
       refreshingPanels.contains(_RefreshScope.toolchain);
-  bool get toolchainWorkflowLocked => toolchainStatus.coreBlocking;
-  String get toolchainWorkflowLockTitle => '核心工具链缺失，内容页面已锁定。';
+  bool get gameDirWorkflowLocked => gameDirError != null;
+  bool get toolchainWorkflowLocked =>
+      toolchainStatus.coreBlocking || gameDirWorkflowLocked;
+  String get toolchainWorkflowLockTitle =>
+      gameDirWorkflowLocked ? '游戏目录无法访问，内容页面已锁定。' : '核心工具链缺失，内容页面已锁定。';
   String get toolchainWorkflowLockMessage {
+    if (gameDirWorkflowLocked) {
+      return '请在概览页游戏路径设置中修改路径；修复前准备包和写入流程已锁定。塞壬唱片仍可查看。';
+    }
     final detail = toolchainStatus.coreIssueSummary.trim();
     if (detail.isEmpty) {
       return '请先在概览页修复 uv、Python 或核心音频处理组件；塞壬唱片仍可查看。';
@@ -1719,6 +1727,7 @@ class StudioState {
     List<String>? toolInstallLog,
     Object? toolInstallFailureSummary = _sentinel,
     String? statusSummary,
+    Object? gameDirError = _sentinel,
   }) {
     return StudioState(
       hasProject: hasProject ?? this.hasProject,
@@ -1817,6 +1826,9 @@ class StudioState {
           ? this.toolInstallFailureSummary
           : toolInstallFailureSummary as String?,
       statusSummary: statusSummary ?? this.statusSummary,
+      gameDirError: identical(gameDirError, _sentinel)
+          ? this.gameDirError
+          : gameDirError as String?,
     );
   }
 }
@@ -3097,11 +3109,22 @@ class StudioController extends StateNotifier<StudioState> {
       }
       final result = await _run(_statusArgs(), streamOutput: false);
       if (!result.ok) {
-        state = state.copyWith(
-          toolsOk: false,
-          statusSummary: '状态检查失败',
-          toolchainStatus: ToolchainStatusSummary.error('当前环境状态检查失败'),
-        );
+        if (result.exitCode == 2) {
+          // CLI ran but raised a CliError (e.g. game dir not found) — toolchain
+          // itself is working; record the config failure and still refresh it.
+          state = state.copyWith(
+            toolsOk: false,
+            statusSummary: '游戏目录配置失败，请检查概览页的游戏路径设置。',
+            gameDirError: state.gameDir,
+          );
+          await _refreshToolchainStatusWithinBusy();
+        } else {
+          state = state.copyWith(
+            toolsOk: false,
+            statusSummary: '状态检查失败',
+            toolchainStatus: ToolchainStatusSummary.error('当前环境状态检查失败'),
+          );
+        }
         return;
       }
       final payload = _decodeStatus(result.stdout);
@@ -5380,6 +5403,7 @@ class StudioController extends StateNotifier<StudioState> {
             _asString(targetBaseline?['status']) ?? 'no_baseline',
       ),
       statusSummary: _radioSummary(selected) ?? 'RadioInfo 可读取',
+      gameDirError: null,
     );
     if (state.sourceLang != previousSourceLang ||
         state.targetLang != previousTargetLang) {

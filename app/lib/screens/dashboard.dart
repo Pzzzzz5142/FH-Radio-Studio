@@ -216,6 +216,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         await c.verifyFileIntegrity();
       case _DashboardScenario.blocking:
         await _installToolsFromUi(context, c);
+      case _DashboardScenario.gameDirMissing:
+        _openAndScroll(_DetailTarget.settings);
       case _DashboardScenario.noBaseline:
         await _confirmCreatePristineBaseline(context, c);
       case _DashboardScenario.baselineBroken:
@@ -255,6 +257,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         _openAndScroll(_DetailTarget.file);
       case _DashboardScenario.blocking:
         await c.refreshToolchainStatus();
+      case _DashboardScenario.gameDirMissing:
+        await c.refreshStatus();
       case _DashboardScenario.noBaseline:
       case _DashboardScenario.baselineBroken:
         _openAndScroll(_DetailTarget.file);
@@ -301,6 +305,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         _openAndScroll(_DetailTarget.file);
       case _DashboardScenario.blocking:
         _openAndScroll(_DetailTarget.tool);
+      case _DashboardScenario.gameDirMissing:
+        _openAndScroll(_DetailTarget.settings);
       case _DashboardScenario.gameUpdate:
       case _DashboardScenario.conflict:
       case _DashboardScenario.pending:
@@ -719,6 +725,7 @@ enum _DashboardScenario {
   pending,
   confirmation,
   blocking,
+  gameDirMissing,
   noBaseline,
   baselineBroken,
   buildBump,
@@ -795,6 +802,12 @@ class _DashboardModel {
         tone: _Tone.danger,
         kbd: 'Ctrl+F',
         helper: '先修复 uv / Python / 核心音频工具；AI Provider 只会降级，不锁主流程。',
+      ),
+      _DashboardScenario.gameDirMissing => const _HeroAction(
+        label: '修改游戏路径',
+        icon: 'settings',
+        tone: _Tone.danger,
+        helper: '在概览页游戏路径设置中填入正确的 FH6 安装目录，然后重新扫描。',
       ),
       _DashboardScenario.noBaseline => const _HeroAction(
         label: '创建原始备份',
@@ -892,6 +905,11 @@ class _DashboardModel {
         icon: 'search',
         tone: _Tone.muted,
       ),
+      _DashboardScenario.gameDirMissing => const _HeroAction(
+        label: '重新扫描目录',
+        icon: 'refresh',
+        tone: _Tone.muted,
+      ),
       _DashboardScenario.noBaseline ||
       _DashboardScenario.baselineBroken ||
       _DashboardScenario.buildBump => const _HeroAction(
@@ -959,6 +977,7 @@ class _DashboardModel {
       _DashboardScenario.scanning => '正在验证完整性 · 请稍等',
       _DashboardScenario.fileCheckPending => '文件校验待刷新 · 先确认再写入',
       _DashboardScenario.blocking => '核心工具链缺失 · 准备和写入已锁',
+      _DashboardScenario.gameDirMissing => '游戏目录无法访问 · 准备和写入已锁',
       _DashboardScenario.noBaseline => '缺少原始备份 · 先保护官方文件',
       _DashboardScenario.baselineBroken => '原始备份不完整 · 写入已锁',
       _DashboardScenario.gameUpdate => '疑似游戏更新 · $changedCount 个文件待确认',
@@ -973,39 +992,70 @@ class _DashboardModel {
       _DashboardScenario.deployed => '已写入 · 一切同步',
     };
 
+    final rm = context.rm;
     final description = switch (scenario) {
-      _DashboardScenario.scanning =>
-        '正在扫描工具链、语言状态和 FH6 受保护文件。此过程只读取状态，不会写入游戏目录。',
-      _DashboardScenario.fileCheckPending =>
-        '已有原始备份或准备包记录，但当前 FH6 文件还没有完成校验。工具链刷新通过后仍需要单独扫描文件，才能判断是否可写入。',
-      _DashboardScenario.blocking =>
-        '${aiProfileUserText(s.toolchainStatus.summary)} Dashboard 和塞壬唱片仍可浏览；准备包和写入流程暂时锁定。',
-      _DashboardScenario.noBaseline =>
-        'FH Radio Studio 需要先记录原始 FH6 文件，后续才能判断“官方文件 / 准备包 / 新游戏文件”。创建原始备份不会修改游戏。',
-      _DashboardScenario.baselineBroken =>
-        '${s.baselineWorkflowLockMessage} 在修复前，写入和强制恢复都会保持锁定。',
-      _DashboardScenario.gameUpdate =>
-        gameUpdateDescription ??
+      _DashboardScenario.scanning => TextSpan(
+        text: '正在扫描工具链、语言状态和 FH6 受保护文件。此过程只读取状态，不会写入游戏目录。',
+      ),
+      _DashboardScenario.fileCheckPending => TextSpan(
+        text: '已有原始备份或准备包记录，但当前 FH6 文件还没有完成校验。工具链刷新通过后仍需要单独扫描文件，才能判断是否可写入。',
+      ),
+      _DashboardScenario.blocking => TextSpan(
+        text:
+            '${aiProfileUserText(s.toolchainStatus.summary)} Dashboard 和塞壬唱片仍可浏览；准备包和写入流程暂时锁定。',
+      ),
+      _DashboardScenario.gameDirMissing => TextSpan(
+        children: [
+          const TextSpan(text: 'FH6 游戏目录不存在：'),
+          TextSpan(
+            text: s.gameDir,
+            style: RmText.mono(13.5, color: rm.danger, height: 1.55),
+          ),
+          const TextSpan(
+            text: '。请在”游戏路径”设置中更新路径；修复前准备包和写入流程已锁定。Dashboard 和塞壬唱片仍可浏览。',
+          ),
+        ],
+      ),
+      _DashboardScenario.noBaseline => TextSpan(
+        text:
+            'FH Radio Studio 需要先记录原始 FH6 文件，后续才能判断”官方文件 / 准备包 / 新游戏文件”。创建原始备份不会修改游戏。',
+      ),
+      _DashboardScenario.baselineBroken => TextSpan(
+        text: '${s.baselineWorkflowLockMessage} 在修复前，写入和强制恢复都会保持锁定。',
+      ),
+      _DashboardScenario.gameUpdate => TextSpan(
+        text:
+            gameUpdateDescription ??
             'Steam build 已变化，且受保护文件和已有记录不一致。先保存当前游戏文件，再决定是否基于它生成测试准备包。',
-      _DashboardScenario.conflict =>
-        '文件扫描显示当前游戏文件不属于原始备份、准备包或上次写入包。FH Radio Studio 不会自动覆盖，先查看路线再决定。',
-      _DashboardScenario.pending =>
-        s.pendingPackageBuildFailed
+      ),
+      _DashboardScenario.conflict => TextSpan(
+        text: '文件扫描显示当前游戏文件不属于原始备份、准备包或上次写入包。FH Radio Studio 不会自动覆盖，先查看路线再决定。',
+      ),
+      _DashboardScenario.pending => TextSpan(
+        text: s.pendingPackageBuildFailed
             ? '测试准备包生成失败，当前仍停留在新文件流程。请手动选择写回旧的基线、接受新游戏文件、写入旧准备包、放弃新文件，或修复后重新生成测试准备包。'
             : '已有新游戏文件记录。进游戏测试后可以确认新版本；失败时可放弃新文件或写回旧的基线。',
-      _DashboardScenario.confirmation =>
-        s.pendingPackageBuildFailed
+      ),
+      _DashboardScenario.confirmation => TextSpan(
+        text: s.pendingPackageBuildFailed
             ? '当前游戏文件已进入确认状态；测试准备包记录存在，但上次生成失败，没有可写入的测试准备包。可以只确认新游戏文件，或修复后重建测试准备包。'
             : _confirmationDescription(confirmationTarget),
-      _DashboardScenario.buildBump =>
-        'Steam build id 已变化，但受保护文件仍等于原始备份。可以更新兼容记录，不需要重建原始备份。',
-      _DashboardScenario.readyToWrite =>
-        '工具链通过分层检查，准备包已生成，游戏文件当前处于可写入的安全状态。没有任何自动写入。',
-      _DashboardScenario.readyToPrepare =>
-        '工具链和语言状态可用。你可以继续编辑播放列表，或在需要发布时准备电台包。',
-      _DashboardScenario.previousDeployed =>
-        'FH6 目录文件等于上次成功写入的包。当前工作区还没有新的准备包，可以继续编辑播放列表或重新准备电台包。',
-      _DashboardScenario.deployed => 'FH6 目录文件与准备包一致。写入指纹已更新，启动游戏即可验证。',
+      ),
+      _DashboardScenario.buildBump => TextSpan(
+        text: 'Steam build id 已变化，但受保护文件仍等于原始备份。可以更新兼容记录，不需要重建原始备份。',
+      ),
+      _DashboardScenario.readyToWrite => TextSpan(
+        text: '工具链通过分层检查，准备包已生成，游戏文件当前处于可写入的安全状态。没有任何自动写入。',
+      ),
+      _DashboardScenario.readyToPrepare => TextSpan(
+        text: '工具链和语言状态可用。你可以继续编辑播放列表，或在需要发布时准备电台包。',
+      ),
+      _DashboardScenario.previousDeployed => TextSpan(
+        text: 'FH6 目录文件等于上次成功写入的包。当前工作区还没有新的准备包，可以继续编辑播放列表或重新准备电台包。',
+      ),
+      _DashboardScenario.deployed => TextSpan(
+        text: 'FH6 目录文件与准备包一致。写入指纹已更新，启动游戏即可验证。',
+      ),
     };
 
     final note = switch (scenario) {
@@ -1024,6 +1074,8 @@ class _DashboardModel {
         '这是确认状态，不是重新构建：当前命中的版本已明确，下一步只是在确认或回退之间选择。',
       _DashboardScenario.blocking =>
         'AI Provider 降级不会触发阻塞；只有 uv / Python / 核心音频工具缺失才锁主流程。',
+      _DashboardScenario.gameDirMissing =>
+        '只要游戏目录不存在，FH Radio Studio 就无法读取游戏文件状态；游戏路径填错或游戏未安装均会触发此锁。工具链本身不受影响。',
       _ => null,
     };
 
@@ -1040,6 +1092,7 @@ class _DashboardModel {
           _DashboardScenario.scanning => '展开高级诊断',
           _DashboardScenario.fileCheckPending => '展开文件校验',
           _DashboardScenario.blocking => '展开工具链详情',
+          _DashboardScenario.gameDirMissing => '展开游戏路径设置',
           _DashboardScenario.previousDeployed => '展开文件校验',
           _DashboardScenario.deployed => '展开文件校验',
           _DashboardScenario.gameUpdate ||
@@ -1055,6 +1108,7 @@ class _DashboardModel {
           _DashboardScenario.scanning => 'settings',
           _DashboardScenario.fileCheckPending => 'file',
           _DashboardScenario.blocking => 'settings',
+          _DashboardScenario.gameDirMissing => 'settings',
           _DashboardScenario.previousDeployed => 'shield',
           _DashboardScenario.deployed => 'shield',
           _DashboardScenario.gameUpdate ||
@@ -1130,7 +1184,7 @@ class _DashboardModel {
   final _Tone tone;
   final String pillText;
   final String title;
-  final String description;
+  final InlineSpan description;
   final _HeroAction primary;
   final _HeroAction secondary;
   final _HeroAction tertiary;
@@ -1631,7 +1685,7 @@ class _HeroMain extends StatelessWidget {
                   alignment: Alignment.topLeft,
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 620),
-                    child: Text(
+                    child: Text.rich(
                       model.description,
                       maxLines: compact ? 3 : 2,
                       overflow: TextOverflow.ellipsis,
@@ -2500,27 +2554,40 @@ class _GameDirSetting extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final rm = context.rm;
+    final gameDirInvalid = state.gameDirError != null;
     return _SettingColumn(
       label: 'FH6 安装目录',
-      footer: Wrap(
-        spacing: 6,
-        runSpacing: 4,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          _InlineIconText(
-            icon: 'check',
-            text: state.gameSteamBuildLabel,
-            tone: state.effectiveGameVersionId == null ? _Tone.muted : _Tone.ok,
-          ),
-          _DotSep(),
-          Text('项目记录已保存', style: RmText.sans(10.5, color: rm.fg3)),
-        ],
-      ),
+      footer: gameDirInvalid
+          ? _InlineIconText(
+              icon: 'danger',
+              text: '游戏目录不存在，请更新路径',
+              tone: _Tone.danger,
+            )
+          : Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                _InlineIconText(
+                  icon: 'check',
+                  text: state.gameSteamBuildLabel,
+                  tone: state.effectiveGameVersionId == null
+                      ? _Tone.muted
+                      : _Tone.ok,
+                ),
+                _DotSep(),
+                Text('项目记录已保存', style: RmText.sans(10.5, color: rm.fg3)),
+              ],
+            ),
       child: Container(
         height: 34,
         decoration: BoxDecoration(
           color: rm.bg,
-          border: Border.all(color: rm.border2),
+          border: Border.all(
+            color: gameDirInvalid
+                ? _toneColor(context, _Tone.danger).withAlpha(150)
+                : rm.border2,
+          ),
           borderRadius: BorderRadius.circular(RmTokens.rSm),
         ),
         clipBehavior: Clip.antiAlias,
@@ -5543,6 +5610,7 @@ String _heroScanLine(StudioState s) {
 _DashboardScenario _scenarioFor(StudioState s) {
   if (_dashboardScanning(s)) return _DashboardScenario.scanning;
   if (s.toolchainStatus.coreBlocking) return _DashboardScenario.blocking;
+  if (s.gameDirWorkflowLocked) return _DashboardScenario.gameDirMissing;
   if (!s.fileIntegrity.hasCurrentBaseline) return _DashboardScenario.noBaseline;
   if (s.baselineIntegrityBroken) return _DashboardScenario.baselineBroken;
   if (_confirmationTargetFor(s) != null) {
@@ -5583,6 +5651,7 @@ _Tone _toneForScenario(_DashboardScenario scenario) {
     _DashboardScenario.noBaseline ||
     _DashboardScenario.buildBump => _Tone.warn,
     _DashboardScenario.blocking ||
+    _DashboardScenario.gameDirMissing ||
     _DashboardScenario.baselineBroken => _Tone.danger,
   };
 }
@@ -5600,6 +5669,7 @@ String _pillTextForScenario(_DashboardScenario scenario) {
     _DashboardScenario.pending => '待验证',
     _DashboardScenario.confirmation => '待确认',
     _DashboardScenario.blocking => '工具链缺失',
+    _DashboardScenario.gameDirMissing => '目录无效',
     _DashboardScenario.noBaseline => '缺备份',
     _DashboardScenario.baselineBroken => '备份异常',
     _DashboardScenario.buildBump => 'build 更新',
@@ -5635,6 +5705,12 @@ List<_ActivityItem> _activityForState(
       time: '刚刚',
       event: '工具链检查未通过',
       meta: s.toolchainStatus.label,
+      tone: _Tone.danger,
+    ),
+    _DashboardScenario.gameDirMissing => _ActivityItem(
+      time: '刚刚',
+      event: '游戏目录无法访问',
+      meta: s.gameDir,
       tone: _Tone.danger,
     ),
     _DashboardScenario.noBaseline => const _ActivityItem(
