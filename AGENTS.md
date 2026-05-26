@@ -17,7 +17,9 @@
 - Use one of these types: `feat`, `fix`, `perf`, `refactor`, `build`, `ci`, `test`, `docs`, `style`, `chore`, or `revert`.
 - Preferred scopes include `app`, `backend`, `audio`, `analysis`, `runtime`, `release`, `windows`, `tools`, `deps`, `docs`, and `ci`.
 - Mark breaking changes on the type with `!`, for example `[feat!][runtime] remove global uv fallback`, and include a `BREAKING CHANGE:` footer.
-- Add a body only when it explains the why, impact, migration notes, or test coverage.
+- For `fix` commits, keep the header summary focused on the user-visible bug, failure, or regression that was fixed; put the underlying cause and implementation details in the body.
+- For `fix` commits, always include a body with `Root cause:` and `Fix:` paragraphs. `Root cause:` should explain why the bug happened, and `Fix:` should explain the concrete change that prevents it.
+- For non-`fix` commits, add a body only when it explains the why, impact, migration notes, or test coverage.
 
 Examples:
 
@@ -29,6 +31,16 @@ Examples:
 [test][analysis] cover local-heavy point selection rules
 [refactor][app] centralize cli process creation in UvRuntime
 [chore] update project metadata
+```
+
+Fix commit body example:
+
+```text
+[fix][runtime] launch release uv from bundled toolchain
+
+Root cause: Release startup still resolved uv from PATH before checking the portable app tools directory, so machines without a global uv install failed to launch the backend.
+
+Fix: Resolve uv through UvRuntime's bundled release path first and preserve the offline release flags when spawning backend commands.
 ```
 
 ## Python Runtime and uv
