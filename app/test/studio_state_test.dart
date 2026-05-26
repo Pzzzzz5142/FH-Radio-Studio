@@ -997,65 +997,65 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         'Horizon XS 重建 FMOD bank',
       );
       expect(state.packageBuildProgressSteps.first.runtimeMs, 12);
-      expect(
-        state.activePackageBuildProgressStep?.parallelChipLabel,
-        '多进程 ×4',
-      );
+      expect(state.activePackageBuildProgressStep?.parallelChipLabel, '多进程 ×4');
       expect(state.packageBuildProgressPercent, 11);
     });
 
-    test('exposes every step running concurrently in parallel builds', () async {
-      final projectDir = p.join(tempRoot.path, 'project');
-      FhRadioStudioProject.ensure(projectDir);
-      SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
-      final prefs = await SharedPreferences.getInstance();
-      final controller = _MutableStudioController(prefs);
-      controller.setStateForTest(
-        controller.state.copyWith(
-          busy: true,
-          busyLabel: '构建电台包',
-          packageBuildProgressSteps: const [
-            PackageBuildProgressStep(
-              id: 'inspect_inputs',
-              label: '读取构建输入',
-              detail: '解析构建输入',
-              status: 'done',
-              weight: 1,
-            ),
-            PackageBuildProgressStep(
-              id: 'radio.4.rebuild_bank',
-              label: 'Horizon XS 重建 FMOD bank',
-              detail: '运行 fsbankcl',
-              status: 'running',
-              weight: 8,
-              processCount: 3,
-            ),
-            PackageBuildProgressStep(
-              id: 'radio.5.stage_bank',
-              label: 'Horizon Wilds 铺满 bank 槽位',
-              detail: '生成 fsbank staging WAV',
-              status: 'running',
-              weight: 2,
-              processCount: 3,
-            ),
-          ],
-        ),
-      );
+    test(
+      'exposes every step running concurrently in parallel builds',
+      () async {
+        final projectDir = p.join(tempRoot.path, 'project');
+        FhRadioStudioProject.ensure(projectDir);
+        SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+        final prefs = await SharedPreferences.getInstance();
+        final controller = _MutableStudioController(prefs);
+        controller.setStateForTest(
+          controller.state.copyWith(
+            busy: true,
+            busyLabel: '构建电台包',
+            packageBuildProgressSteps: const [
+              PackageBuildProgressStep(
+                id: 'inspect_inputs',
+                label: '读取构建输入',
+                detail: '解析构建输入',
+                status: 'done',
+                weight: 1,
+              ),
+              PackageBuildProgressStep(
+                id: 'radio.4.rebuild_bank',
+                label: 'Horizon XS 重建 FMOD bank',
+                detail: '运行 fsbankcl',
+                status: 'running',
+                weight: 8,
+                processCount: 3,
+              ),
+              PackageBuildProgressStep(
+                id: 'radio.5.stage_bank',
+                label: 'Horizon Wilds 铺满 bank 槽位',
+                detail: '生成 fsbank staging WAV',
+                status: 'running',
+                weight: 2,
+                processCount: 3,
+              ),
+            ],
+          ),
+        );
 
-      final state = controller.state;
-      // 旧的单步入口只看到第一个。
-      expect(
-        state.activePackageBuildProgressStep?.label,
-        'Horizon XS 重建 FMOD bank',
-      );
-      // 新入口返回全部并行步骤。
-      expect(
-        state.runningPackageBuildProgressSteps
-            .map((step) => step.label)
-            .toList(),
-        ['Horizon XS 重建 FMOD bank', 'Horizon Wilds 铺满 bank 槽位'],
-      );
-    });
+        final state = controller.state;
+        // 旧的单步入口只看到第一个。
+        expect(
+          state.activePackageBuildProgressStep?.label,
+          'Horizon XS 重建 FMOD bank',
+        );
+        // 新入口返回全部并行步骤。
+        expect(
+          state.runningPackageBuildProgressSteps
+              .map((step) => step.label)
+              .toList(),
+          ['Horizon XS 重建 FMOD bank', 'Horizon Wilds 铺满 bank 槽位'],
+        );
+      },
+    );
 
     test(
       'locks package edits but not custom songs when baseline is broken',
