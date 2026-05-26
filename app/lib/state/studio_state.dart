@@ -2522,7 +2522,12 @@ class StudioController extends StateNotifier<StudioState> {
   bool _startupFullCheckStarted = false;
   CliCancellationToken? _activeAiEnvironmentSyncToken;
 
-  FhRadioStudioCli get _cli => FhRadioStudioCli(repoRoot: state.repoRoot);
+  FhRadioStudioCli get _cli => createCli();
+
+  @protected
+  FhRadioStudioCli createCli() {
+    return FhRadioStudioCli(repoRoot: state.repoRoot);
+  }
 
   void setRepoRoot(String value) {
     state = state.copyWith(repoRoot: value);
@@ -3080,6 +3085,16 @@ class StudioController extends StateNotifier<StudioState> {
               : '正在检查当前环境和工具链组件。',
         ),
       );
+      final baseEnvironmentReady =
+          await _ensureBaseEnvironmentForToolchainCheck();
+      if (!baseEnvironmentReady) {
+        state = state.copyWith(
+          toolsOk: false,
+          statusSummary: '基础 Python 环境同步失败',
+          toolchainStatus: ToolchainStatusSummary.error('基础 Python 环境同步失败'),
+        );
+        return;
+      }
       final result = await _run(_statusArgs(), streamOutput: false);
       if (!result.ok) {
         state = state.copyWith(
@@ -3114,6 +3129,9 @@ class StudioController extends StateNotifier<StudioState> {
   Future<void> verifyFileIntegrity() async {
     if (state.busy) return;
     await _withPanelRefresh(_RefreshScope.fileIntegrity, '刷新文件校验', () async {
+      final baseEnvironmentReady =
+          await _ensureBaseEnvironmentForToolchainCheck();
+      if (!baseEnvironmentReady) return;
       await _refreshIntegrityFromCli();
     });
   }
@@ -4861,7 +4879,23 @@ class StudioController extends StateNotifier<StudioState> {
     Map<String, String>? extraEnvironment,
     bool repairNetwork = false,
     CliCancellationToken? cancellationToken,
+    bool autoDowngrade = true,
   }) async {
+    if (autoDowngrade) {
+      final profile = UvRuntime.profileFromCliArgs(args);
+      if (UvRuntime.dependencyGroupsForProfile(profile).isNotEmpty &&
+          !_cli.uvRuntime.projectEnvironmentIsRunnableForProfile(profile)) {
+        _append('AI 环境不可用，已自动降级到中杯运行');
+        return _runBase(
+          _replaceProfileArg(args, 'local-base'),
+          streamOutput: streamOutput,
+          streamLog: streamLog,
+          extraEnvironment: extraEnvironment,
+          repairNetwork: repairNetwork,
+          cancellationToken: cancellationToken,
+        );
+      }
+    }
     final cli = _cli;
     final action = '执行：${_describeAction(args)}';
     _append(action);
@@ -5048,6 +5082,24 @@ class StudioController extends StateNotifier<StudioState> {
     return args.first;
   }
 
+  Future<bool> _ensureBaseEnvironmentForToolchainCheck() async {
+    final cli = _cli;
+    const profile = 'local-base';
+    if (cli.uvRuntime.projectEnvironmentIsRunnableForProfile(profile)) {
+      return true;
+    }
+    _append('基础 Python 环境不可用或已搬迁，正在同步后继续检查。');
+    const action = '执行：同步基础 Python 环境';
+    _append(action);
+    final result = await cli.syncEnvironment(profile: profile);
+    if (!result.ok) {
+      _appendCompact(result.stdout);
+      _appendCompact(result.stderr, prefix: 'ERR ');
+    }
+    _append(result.ok ? '退出码：0' : '退出码：${result.exitCode}');
+    return result.ok;
+  }
+
   Future<void> _refreshToolchainStatusWithinBusy({
     String? profileOverride,
     bool resolveAiProfile = true,
@@ -5057,6 +5109,14 @@ class StudioController extends StateNotifier<StudioState> {
         previous: state.toolchainStatus,
       ),
     );
+    final baseEnvironmentReady =
+        await _ensureBaseEnvironmentForToolchainCheck();
+    if (!baseEnvironmentReady) {
+      state = state.copyWith(
+        toolchainStatus: ToolchainStatusSummary.error('基础 Python 环境同步失败'),
+      );
+      return;
+    }
     final requestedProfile = profileOverride ?? state.aiProfile;
     final parsed = await loadToolchainStatusForProfile(requestedProfile);
     if (parsed == null) return;
@@ -5102,7 +5162,7 @@ class StudioController extends StateNotifier<StudioState> {
     final args = _toolchainArgsForProfile(profile);
     var result = profile == 'local-base'
         ? await _runBase(args, streamOutput: false)
-        : await _run(args, streamOutput: false);
+        : await _run(args, streamOutput: false, autoDowngrade: false);
     if (!result.ok && profile != 'local-base') {
       _append('所选杯型环境检查失败，回退到中杯环境读取缺失状态。');
       result = await _runBase(args, streamOutput: false);
@@ -5180,6 +5240,12 @@ class StudioController extends StateNotifier<StudioState> {
 
   List<String> _toolchainArgsForProfile(String profile) {
     return ['toolchain-status', '--profile', profile, '--json'];
+  }
+
+  static List<String> _replaceProfileArg(List<String> args, String profile) {
+    final index = args.indexOf('--profile');
+    if (index < 0 || index + 1 >= args.length) return args;
+    return [...args.sublist(0, index + 1), profile, ...args.sublist(index + 2)];
   }
 
   List<String> _statusArgs() {

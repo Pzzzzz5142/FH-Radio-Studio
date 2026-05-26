@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
+import 'package:fh_radio_studio/core/fh_radio_studio_cli.dart';
 import 'package:fh_radio_studio/core/playlist_plan.dart';
 import 'package:fh_radio_studio/core/project_workspace.dart';
 import 'package:fh_radio_studio/state/studio_state.dart';
@@ -232,6 +233,60 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         'local-deep',
       );
     });
+
+    test('toolchain check syncs the base environment before probing', () async {
+      final projectDir = p.join(tempRoot.path, 'project');
+      FhRadioStudioProject.ensure(projectDir);
+      SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+
+      final prefs = await SharedPreferences.getInstance();
+      final runtime = _testUvRuntime(tempRoot, 'toolchain-check');
+      final cli = _RecordingCli(runtime);
+      final controller = _RecordingCliStudioController(prefs, cli);
+      controller.setStateForTest(
+        controller.state.copyWith(repoRoot: runtime.projectRoot),
+      );
+
+      await controller.refreshToolchainStatus();
+
+      expect(cli.syncCount, 1);
+      expect(
+        cli.commands.map((args) => args.first),
+        contains('toolchain-status'),
+      );
+      expect(controller.state.toolchainStatus.checked, isTrue);
+      expect(controller.state.log.join('\n'), contains('同步基础 Python 环境'));
+    });
+
+    test(
+      'full environment check also syncs the base environment first',
+      () async {
+        final projectDir = p.join(tempRoot.path, 'project');
+        FhRadioStudioProject.ensure(projectDir);
+        SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+
+        final prefs = await SharedPreferences.getInstance();
+        final runtime = _testUvRuntime(tempRoot, 'full-check');
+        final cli = _RecordingCli(runtime);
+        final controller = _RecordingCliStudioController(prefs, cli);
+        controller.setStateForTest(
+          controller.state.copyWith(
+            repoRoot: runtime.projectRoot,
+            gameDir: p.join(tempRoot.path, 'game'),
+          ),
+        );
+
+        await controller.refreshStatus(verifyFiles: true);
+
+        expect(cli.syncCount, 1);
+        expect(cli.commands.map((args) => args.first), [
+          'status',
+          'toolchain-status',
+          'verify-integrity',
+        ]);
+        expect(controller.state.fileIntegrity.checkedFiles, 0);
+      },
+    );
 
     test('falls back from unsupported AI profile to local', () async {
       final projectDir = p.join(tempRoot.path, 'project');
@@ -1218,6 +1273,214 @@ class _MutableStudioController extends StudioController {
   Future<void> refreshStatus({bool verifyFiles = false}) async {
     if (verifyFiles) fullRefreshCount++;
   }
+}
+
+class _RecordingCliStudioController extends StudioController {
+  _RecordingCliStudioController(super.prefs, this.cli);
+
+  final _RecordingCli cli;
+
+  void setStateForTest(StudioState value) {
+    state = value;
+  }
+
+  @override
+  FhRadioStudioCli createCli() {
+    return cli;
+  }
+}
+
+class _RecordingCli extends FhRadioStudioCli {
+  _RecordingCli(UvRuntime runtime)
+    : commands = [],
+      super(repoRoot: runtime.projectRoot, uvRuntime: runtime);
+
+  final List<List<String>> commands;
+  int syncCount = 0;
+
+  @override
+  Future<CliRunResult> syncEnvironment({
+    String profile = 'local-heavy',
+    bool forceReinstall = false,
+    Map<String, String>? extraEnvironment,
+    CliLineHandler? onStdout,
+    CliLineHandler? onStderr,
+    CliCancellationToken? cancellationToken,
+  }) async {
+    syncCount++;
+    _writeRunnableProjectEnvironment(uvRuntime, profile);
+    return const CliRunResult(
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      commandLine: 'uv sync',
+    );
+  }
+
+  @override
+  Future<CliRunResult> run(
+    List<String> args, {
+    Map<String, String>? extraEnvironment,
+    CliLineHandler? onStdout,
+    CliLineHandler? onStderr,
+    CliCancellationToken? cancellationToken,
+  }) async {
+    return _resultFor(args);
+  }
+
+  @override
+  Future<CliRunResult> runBase(
+    List<String> args, {
+    Map<String, String>? extraEnvironment,
+    CliLineHandler? onStdout,
+    CliLineHandler? onStderr,
+    CliCancellationToken? cancellationToken,
+  }) async {
+    return _resultFor(args);
+  }
+
+  CliRunResult _resultFor(List<String> args) {
+    commands.add([...args]);
+    final command = args.isEmpty ? null : args.first;
+    final stdout = switch (command) {
+      'status' => _statusJson(),
+      'toolchain-status' => _toolchainStatusJson(args),
+      'verify-integrity' => _integrityJson(),
+      _ => '{}',
+    };
+    return CliRunResult(
+      exitCode: 0,
+      stdout: stdout,
+      stderr: '',
+      commandLine: ['fh-radio-studio', ...args].join(' '),
+    );
+  }
+}
+
+UvRuntime _testUvRuntime(Directory root, String name) {
+  final appRoot = p.join(root.path, name);
+  return UvRuntime(
+    uvExecutable: p.join(
+      appRoot,
+      'tools',
+      'uv',
+      Platform.isWindows ? 'uv.exe' : 'uv',
+    ),
+    appRoot: appRoot,
+    projectRoot: p.join(appRoot, 'runtime'),
+    toolchainHome: p.join(appRoot, 'toolchain'),
+    projectEnvironment: p.join(appRoot, 'toolchain', 'envs', 'base'),
+    cacheDir: p.join(appRoot, 'toolchain', 'uv', 'cache'),
+    audioToolsDir: p.join(appRoot, 'toolchain', 'tools', 'audio'),
+    aiModelDir: p.join(appRoot, 'toolchain', 'tools', 'ai', 'models'),
+    mode: 'release',
+    torchExtra: 'torch-cpu',
+    profileEnvironments: true,
+    wheelhouseDir: p.join(appRoot, 'runtime', 'wheels'),
+    pythonInstallDir: p.join(appRoot, 'toolchain', 'python'),
+    offline: true,
+    noPythonDownloads: true,
+    noEditable: true,
+  );
+}
+
+void _writeRunnableProjectEnvironment(UvRuntime runtime, String profile) {
+  final environmentPath = runtime.projectEnvironmentForProfile(profile);
+  final scriptsDir = Directory(
+    p.join(environmentPath, Platform.isWindows ? 'Scripts' : 'bin'),
+  )..createSync(recursive: true);
+  final pythonHome = p.join(runtime.pythonInstallDir!, 'cpython-3.12');
+  Directory(pythonHome).createSync(recursive: true);
+  File(
+    p.join(scriptsDir.path, Platform.isWindows ? 'python.exe' : 'python'),
+  ).writeAsStringSync('');
+  final commandName =
+      Platform.isWindows && !runtime.cliCommand.toLowerCase().endsWith('.exe')
+      ? '${runtime.cliCommand}.exe'
+      : runtime.cliCommand;
+  File(p.join(scriptsDir.path, commandName)).writeAsStringSync('');
+  File(p.join(environmentPath, 'pyvenv.cfg')).writeAsStringSync(
+    'home = $pythonHome\ninclude-system-site-packages = false\n',
+  );
+}
+
+String _statusJson() {
+  return jsonEncode({
+    'game_running': false,
+    'game_version_id': 'steam-b1',
+    'tools_ok': true,
+    'selected_radio': null,
+    'radios': [],
+    'preferred_lang': 'EN',
+    'language': {
+      'source_lang': 'CHS',
+      'target_lang': 'EN',
+      'source_exists': true,
+      'target_exists': true,
+      'target_matches_source': true,
+      'voice_slot_verified': true,
+      'available': ['CHS', 'EN'],
+    },
+  });
+}
+
+String _toolchainStatusJson(List<String> args) {
+  final profileIndex = args.indexOf('--profile');
+  final profile = profileIndex >= 0 && profileIndex + 1 < args.length
+      ? args[profileIndex + 1]
+      : 'local-heavy';
+  return jsonEncode({
+    'profile': profile,
+    'overall': {'status': 'ready', 'label': 'OK', 'summary': '工具链检查通过。'},
+    'sections': {
+      'uv': {
+        'title': 'uv 运行时',
+        'status': 'ready',
+        'summary': 'uv ready',
+        'items': [],
+        'warnings': [],
+      },
+      'audio_tools': {
+        'title': '核心音频工具',
+        'status': 'ready',
+        'summary': '核心音频处理组件可用',
+        'items': [],
+        'warnings': [],
+      },
+      'python': {
+        'title': 'Python 环境',
+        'status': 'ready',
+        'summary': 'Python 依赖已覆盖当前 profile',
+        'items': [],
+        'warnings': [],
+      },
+      'ai': {
+        'title': 'AI 分析',
+        'status': 'ready',
+        'summary': 'AI Providers 已就绪',
+        'items': [],
+        'warnings': [],
+      },
+    },
+    'fixes': [],
+  });
+}
+
+String _integrityJson() {
+  return jsonEncode({
+    'integrity': {
+      'level': 'no_package',
+      'checked_files': 0,
+      'package_matches': 0,
+      'last_applied_package_matches': 0,
+      'baseline_matches': 0,
+      'pending_baseline_matches': 0,
+      'changed_files': 0,
+      'unknown_files': 0,
+      'package_files': 0,
+      'issues': [],
+    },
+  });
 }
 
 class _ToolchainFallbackController extends StudioController {
