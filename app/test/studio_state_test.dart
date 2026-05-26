@@ -777,6 +777,87 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
     });
 
     test(
+      'does not rebuild when current package already matches playlist draft',
+      () async {
+        final projectDir = p.join(tempRoot.path, 'project');
+        final paths = _writeIntegrityFixture(
+          projectDir,
+          deployedBytes: 'original',
+        );
+        final source = File(
+          p.join(FhRadioStudioProject.sourcesDir(projectDir), 'same-song.wav'),
+        )..createSync(recursive: true);
+        _writePackageManifestFile(
+          File(
+            p.join(
+              paths.packageRoot,
+              'package',
+              'fh_radio_studio_package_manifest.json',
+            ),
+          ),
+          source: source.path,
+          radioCode: 'XS',
+          playlistType: 'FreeRoam',
+          slot: 1,
+        );
+        PlaylistPlanStore.write(
+          projectDir,
+          const PlaylistPlan.empty().assign(
+            source: source.path,
+            radioCode: 'XS',
+            playlistType: 'FreeRoam',
+            slot: 1,
+          ),
+        );
+        SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+
+        final prefs = await SharedPreferences.getInstance();
+        final controller = StudioController(prefs);
+
+        final built = await controller.buildPackage();
+
+        expect(built, isFalse);
+        expect(controller.state.log, contains('准备包已经等于当前播放列表；修改分配或语言后再重新构建。'));
+      },
+    );
+
+    test(
+      'uses last applied package assignments when current package is missing',
+      () async {
+        final projectDir = p.join(tempRoot.path, 'project');
+        final paths = _writeIntegrityFixture(
+          projectDir,
+          deployedBytes: 'original',
+        );
+        Directory(paths.packageRoot).deleteSync(recursive: true);
+        final missingSource = p.join(
+          FhRadioStudioProject.sourcesDir(projectDir),
+          'previous-song.wav',
+        );
+        _writePackageManifestFile(
+          File(FhRadioStudioProject.lastAppliedPackageManifestPath(projectDir)),
+          source: missingSource,
+          radioCode: 'XS',
+          playlistType: 'FreeRoam',
+          slot: 1,
+        );
+        SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+
+        final prefs = await SharedPreferences.getInstance();
+        final controller = StudioController(prefs);
+
+        final built = await controller.buildPackage();
+
+        expect(built, isFalse);
+        expect(
+          controller.state.log,
+          isNot(contains('播放列表还没有分配曲目。请先在“播放列表”里把自建歌曲拖到目标电台。')),
+        );
+        expect(controller.state.log.join('\n'), contains('previous-song.wav'));
+      },
+    );
+
+    test(
       'cleans missing playlist sources after package build preflight',
       () async {
         final projectDir = p.join(tempRoot.path, 'project');
@@ -1100,6 +1181,54 @@ BaselinePlanSummary _brokenBaselinePlan() {
       ),
     ],
   );
+}
+
+void _writePackageManifestFile(
+  File manifest, {
+  required String source,
+  required String radioCode,
+  required String playlistType,
+  required int slot,
+}) {
+  final slotIndex = slot - 1;
+  manifest.createSync(recursive: true);
+  manifest.writeAsStringSync('''
+{
+  "schema_version": 2,
+  "radio": 4,
+  "radio_code": "$radioCode",
+  "station": "Horizon XS",
+  "target_bank_name": "R4_Tracks_CU1.assets.bank",
+  "bank_slots": 4,
+  "playlist_mode": "only",
+  "skip_bank": true,
+  "radios": [
+    {
+      "radio": 4,
+      "radio_code": "$radioCode",
+      "station": "Horizon XS",
+      "target_bank_name": "R4_Tracks_CU1.assets.bank",
+      "music": [
+        {
+          "source": "${_jsonPath(source)}",
+          "display_name": "Same Song",
+          "artist": "Local Artist"
+        }
+      ],
+      "assignments": [
+        {
+          "slot_index": $slotIndex,
+          "source_index": 0,
+          "source": "${_jsonPath(source)}",
+          "target_sound_name": "HZ6_R4_MOCK_REFERENCE",
+          "playlist_entry": true,
+          "playlist_types": ["$playlistType"]
+        }
+      ]
+    }
+  ]
+}
+''', encoding: utf8);
 }
 
 ({

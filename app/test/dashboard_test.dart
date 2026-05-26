@@ -1204,6 +1204,97 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'dashboard shows last applied package when current package is gone',
+    (tester) async {
+      GoogleFonts.config.allowRuntimeFetching = false;
+      final tempRoot = Directory.systemTemp.createTempSync(
+        'fh_radio_studio_dashboard_previous_applied_',
+      );
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+        if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+      });
+
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1365, 900);
+
+      final projectDir = p.join(tempRoot.path, 'project');
+      final gameDir = p.join(tempRoot.path, 'game');
+      FhRadioStudioProject.ensure(projectDir);
+      FhRadioStudioProject.writeSettings(projectDir, gameDir: gameDir);
+      SharedPreferences.setMockInitialValues({
+        'rm.studio.projectDir': projectDir,
+        'rm.studio.repoRoot': p.dirname(p.current),
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final controller = _DashboardTestController(prefs);
+      controller.setStateForTest(
+        controller.state.copyWith(
+          gameDir: gameDir,
+          sourceLang: 'JP',
+          targetLang: 'EN',
+          gameSourceLang: 'JP',
+          gameTargetLang: 'EN',
+          availableLanguages: const ['EN', 'JP'],
+          preferredLang: 'EN',
+          sourceLanguageExists: true,
+          targetLanguageExists: true,
+          targetMatchesSource: false,
+          preferredMatchesTarget: true,
+          voiceSlotVerified: true,
+          languageReady: true,
+          languageSummary: 'JP 显示 · EN 语音',
+          toolchainStatus: _toolchainReady,
+          lastPackageDir: null,
+          lastPackageSummary: null,
+          fileIntegrity: _integritySummary(
+            level: GameFileIntegrityLevel.previousPackageApplied,
+            checkedFiles: 4,
+            lastAppliedPackageMatches: 4,
+            packageManifestPath: null,
+            lastAppliedPackageManifestPath: p.join(
+              projectDir,
+              '.fh-radio-studio',
+              'last_applied.json',
+            ),
+          ),
+          log: const ['上一版准备包已写入'],
+        ),
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            sharedPreferencesProvider.overrideWithValue(prefs),
+            studioProvider.overrideWith((ref) => controller),
+          ],
+          child: MaterialApp(
+            theme: buildAppTheme(
+              brightness: Brightness.light,
+              accent: AppAccent.lime,
+            ),
+            home: const Scaffold(body: DashboardScreen()),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('上一版准备包已写入'), findsWidgets);
+      expect(find.text('上一版已写入'), findsWidgets);
+      expect(find.text('环境就绪 · 浏览或编辑都行'), findsNothing);
+      expect(find.text('环境状态可用'), findsNothing);
+      expect(find.text('准备电台包'), findsWidgets);
+      expect(
+        find.text('这不是原始环境；游戏目录仍是上次写入的准备包。只有“写入游戏”会再次改 FH6 目录。'),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 }
 
 class _DashboardTestController extends StudioController {
@@ -1398,10 +1489,13 @@ GameFileIntegritySummary _integritySummary({
   required GameFileIntegrityLevel level,
   required int checkedFiles,
   int packageMatches = 0,
+  int lastAppliedPackageMatches = 0,
   int baselineMatches = 0,
   int pendingBaselineMatches = 0,
   int changedFiles = 0,
   bool hasPendingBaseline = false,
+  String? packageManifestPath = 'fh_radio_studio_package_manifest.json',
+  String? lastAppliedPackageManifestPath,
 }) {
   String levelName(GameFileIntegrityLevel value) {
     return switch (value) {
@@ -1423,7 +1517,7 @@ GameFileIntegritySummary _integritySummary({
     'level': levelName(level),
     'checked_files': checkedFiles,
     'package_matches': packageMatches,
-    'last_applied_package_matches': 0,
+    'last_applied_package_matches': lastAppliedPackageMatches,
     'baseline_matches': baselineMatches,
     'pending_baseline_matches': pendingBaselineMatches,
     'changed_files': changedFiles,
@@ -1433,8 +1527,8 @@ GameFileIntegritySummary _integritySummary({
     'pending_baseline_manifest_path': hasPendingBaseline
         ? 'pending_baseline_manifest.json'
         : null,
-    'package_manifest_path': 'fh_radio_studio_package_manifest.json',
-    'last_applied_package_manifest_path': null,
+    'package_manifest_path': packageManifestPath,
+    'last_applied_package_manifest_path': lastAppliedPackageManifestPath,
     'current_game_version_id': 'steam-b23271700',
     'baseline_build_compatible': true,
     'baseline_supported_game_version_ids': const ['steam-b23271700'],

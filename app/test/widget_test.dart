@@ -1184,6 +1184,104 @@ void main() {
     expect(find.byTooltip('恢复当前列表为 builtin'), findsOneWidget);
   });
 
+  testWidgets('playlist pool labels assignments from the current list', (
+    tester,
+  ) async {
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'fh_radio_studio_playlist_pool_current_list_widget_',
+    );
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 900);
+
+    const radio = RadioStation(
+      code: 'XS',
+      name: 'Horizon XS',
+      hue: 'violet',
+      genre: 'Rock',
+      slot: 3,
+    );
+    const track = PoolTrack(
+      id: 'real:test-user-song',
+      title: 'User Song',
+      artist: 'Local Artist',
+      source: r'C:\music\user-song.wav',
+      durationSec: 121,
+      bpm: 0,
+      key: '待分析',
+      configured: true,
+      confirmed: 4,
+      added: '刚刚',
+    );
+    const catalog = PlaylistCatalog(
+      origin: PlaylistCatalogOrigin.game,
+      sourcePath: null,
+      radios: [radio],
+      modes: {'XS': StationMode.custom},
+      freeRoamTracks: {
+        'XS': [
+          TrackRef(
+            id: 'xs-current',
+            title: 'User Song',
+            artist: 'Local Artist',
+            durationSec: 121,
+            modded: true,
+          ),
+        ],
+      },
+      eventTracks: {
+        'XS': [
+          TrackRef(
+            id: 'xs-current-event',
+            title: 'User Song',
+            artist: 'Local Artist',
+            durationSec: 121,
+            modded: true,
+          ),
+        ],
+      },
+    );
+
+    final projectDir = p.join(tempRoot.path, 'project');
+    _writeIntegrityFixture(projectDir, gameBytes: 'original');
+    SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+    final prefs = await SharedPreferences.getInstance();
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+          playlistCatalogProvider.overrideWithValue(catalog),
+          realPoolTracksProvider.overrideWithValue(const [track]),
+          effectivePlaylistPlanProvider.overrideWithValue(
+            const PlaylistPlan.empty(),
+          ),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(
+            brightness: Brightness.light,
+            accent: AppAccent.lime,
+          ),
+          home: const Scaffold(body: PlaylistScreen()),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('User Song'), findsWidgets);
+    expect(find.text('XS · 1'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate((widget) => widget is Draggable).evaluate().length,
+      greaterThanOrEqualTo(2),
+    );
+  });
+
   testWidgets(
     'playlist builtin restore uses baseline list count as header total',
     (tester) async {

@@ -235,6 +235,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         await _confirmBumpBuild(context, c);
       case _DashboardScenario.readyToWrite:
         await _confirmDeploy(context, s, c);
+      case _DashboardScenario.previousDeployed:
       case _DashboardScenario.readyToPrepare:
       case _DashboardScenario.deployed:
         await _preparePackageFromUi(context, c);
@@ -282,6 +283,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         await _preparePackageFromUi(context, c);
       case _DashboardScenario.readyToPrepare:
         if (context.mounted) context.go(_dashboardPlaylistRoute);
+      case _DashboardScenario.previousDeployed:
       case _DashboardScenario.deployed:
         if (context.mounted) context.go(_dashboardPlaylistRoute);
     }
@@ -310,6 +312,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       case _DashboardScenario.readyToPrepare:
       case _DashboardScenario.readyToWrite:
         context.go(_dashboardPlaylistRoute);
+      case _DashboardScenario.previousDeployed:
       case _DashboardScenario.deployed:
         _openAndScroll(_DetailTarget.file);
     }
@@ -709,6 +712,7 @@ enum _DashboardScenario {
   fileCheckPending,
   readyToWrite,
   readyToPrepare,
+  previousDeployed,
   deployed,
   gameUpdate,
   conflict,
@@ -856,6 +860,13 @@ class _DashboardModel {
         kbd: 'Ctrl+B',
         helper: '在工作区构建准备包；不会修改 FH6 文件。',
       ),
+      _DashboardScenario.previousDeployed => const _HeroAction(
+        label: '准备电台包',
+        icon: 'music',
+        tone: _Tone.ok,
+        kbd: 'Ctrl+B',
+        helper: '游戏里仍是上次写入的包；重新构建只会更新工作区准备包。',
+      ),
       _DashboardScenario.deployed => const _HeroAction(
         label: '再次准备电台包',
         icon: 'music',
@@ -932,6 +943,11 @@ class _DashboardModel {
         icon: 'list',
         tone: _Tone.muted,
       ),
+      _DashboardScenario.previousDeployed => const _HeroAction(
+        label: '打开播放列表',
+        icon: 'list',
+        tone: _Tone.muted,
+      ),
       _DashboardScenario.deployed => const _HeroAction(
         label: '打开播放列表',
         icon: 'list',
@@ -953,6 +969,7 @@ class _DashboardModel {
       _DashboardScenario.buildBump => 'Steam build 已变化 · 文件仍安全',
       _DashboardScenario.readyToWrite => '准备包就绪 · 随时可写',
       _DashboardScenario.readyToPrepare => '环境就绪 · 浏览或编辑都行',
+      _DashboardScenario.previousDeployed => '上一版准备包已写入',
       _DashboardScenario.deployed => '已写入 · 一切同步',
     };
 
@@ -986,6 +1003,8 @@ class _DashboardModel {
         '工具链通过分层检查，准备包已生成，游戏文件当前处于可写入的安全状态。没有任何自动写入。',
       _DashboardScenario.readyToPrepare =>
         '工具链和语言状态可用。你可以继续编辑播放列表，或在需要发布时准备电台包。',
+      _DashboardScenario.previousDeployed =>
+        'FH6 目录文件等于上次成功写入的包。当前工作区还没有新的准备包，可以继续编辑播放列表或重新准备电台包。',
       _DashboardScenario.deployed => 'FH6 目录文件与准备包一致。写入指纹已更新，启动游戏即可验证。',
     };
 
@@ -995,6 +1014,8 @@ class _DashboardModel {
         '只有文件校验明确等于原始备份、准备包或上次写入包后，Dashboard 才会显示写入入口。',
       _DashboardScenario.readyToPrepare =>
         'Dashboard 是状态视图，没有非做不可的事。只有“写入游戏”会真的改 FH6 目录。',
+      _DashboardScenario.previousDeployed =>
+        '这不是原始环境；游戏目录仍是上次写入的准备包。只有“写入游戏”会再次改 FH6 目录。',
       _DashboardScenario.conflict ||
       _DashboardScenario.gameUpdate ||
       _DashboardScenario.pending =>
@@ -1019,6 +1040,7 @@ class _DashboardModel {
           _DashboardScenario.scanning => '展开高级诊断',
           _DashboardScenario.fileCheckPending => '展开文件校验',
           _DashboardScenario.blocking => '展开工具链详情',
+          _DashboardScenario.previousDeployed => '展开文件校验',
           _DashboardScenario.deployed => '展开文件校验',
           _DashboardScenario.gameUpdate ||
           _DashboardScenario.conflict ||
@@ -1033,6 +1055,7 @@ class _DashboardModel {
           _DashboardScenario.scanning => 'settings',
           _DashboardScenario.fileCheckPending => 'file',
           _DashboardScenario.blocking => 'settings',
+          _DashboardScenario.previousDeployed => 'shield',
           _DashboardScenario.deployed => 'shield',
           _DashboardScenario.gameUpdate ||
           _DashboardScenario.conflict ||
@@ -1077,8 +1100,15 @@ class _DashboardModel {
         ),
         _SafetyFact(
           label: hasPackage ? '准备包' : '上次准备包',
-          value: hasPackage ? packageAge : '未生成',
-          tone: hasPackage ? _Tone.ok : _Tone.muted,
+          value: hasPackage
+              ? packageAge
+              : s.fileIntegrity.hasLastAppliedPackage
+              ? '已写入'
+              : '未生成',
+          tone: hasPackage || s.fileIntegrity.hasLastAppliedPackage
+              ? _Tone.ok
+              : _Tone.muted,
+          tooltip: hasPackage ? s.lastPackageDir : s.lastAppliedPackageManifest,
         ),
         _SafetyFact(
           label: '指纹路径',
@@ -5524,10 +5554,13 @@ _DashboardScenario _scenarioFor(StudioState s) {
     GameFileIntegrityLevel.gameChanged => _DashboardScenario.gameUpdate,
     GameFileIntegrityLevel.externalConflict => _DashboardScenario.conflict,
     GameFileIntegrityLevel.pendingVerify => _DashboardScenario.pending,
-    GameFileIntegrityLevel.baseline ||
-    GameFileIntegrityLevel.previousPackageApplied =>
+    GameFileIntegrityLevel.baseline =>
       !s.currentPackageReady
           ? _DashboardScenario.readyToPrepare
+          : _DashboardScenario.readyToWrite,
+    GameFileIntegrityLevel.previousPackageApplied =>
+      !s.currentPackageReady
+          ? _DashboardScenario.previousDeployed
           : _DashboardScenario.readyToWrite,
     GameFileIntegrityLevel.noPackage => _DashboardScenario.readyToPrepare,
     GameFileIntegrityLevel.noBaseline => _DashboardScenario.noBaseline,
@@ -5541,6 +5574,7 @@ _Tone _toneForScenario(_DashboardScenario scenario) {
     _DashboardScenario.fileCheckPending => _Tone.warn,
     _DashboardScenario.readyToWrite => _Tone.ready,
     _DashboardScenario.readyToPrepare => _Tone.info,
+    _DashboardScenario.previousDeployed => _Tone.ok,
     _DashboardScenario.deployed => _Tone.ok,
     _DashboardScenario.confirmation => _Tone.ready,
     _DashboardScenario.gameUpdate ||
@@ -5559,6 +5593,7 @@ String _pillTextForScenario(_DashboardScenario scenario) {
     _DashboardScenario.fileCheckPending => '待校验',
     _DashboardScenario.readyToWrite => '包就绪',
     _DashboardScenario.readyToPrepare => '环境就绪',
+    _DashboardScenario.previousDeployed => '上一版已写入',
     _DashboardScenario.deployed => '已写入',
     _DashboardScenario.gameUpdate => '游戏更新',
     _DashboardScenario.conflict => '需要决定',
@@ -5669,6 +5704,12 @@ List<_ActivityItem> _activityForState(
       event: '环境状态可用',
       meta: '可以编辑播放列表或准备包',
       tone: _Tone.info,
+    ),
+    _DashboardScenario.previousDeployed => const _ActivityItem(
+      time: '最近',
+      event: '上一版准备包已写入',
+      meta: '文件等于上次写入记录',
+      tone: _Tone.ok,
     ),
     _DashboardScenario.deployed => const _ActivityItem(
       time: '最近',
@@ -6034,10 +6075,12 @@ _FileConclusion _fileConclusion(BuildContext context, StudioState s) {
       title: integrity.hasPackage ? '游戏文件 = 原始备份' : '原始备份已建立',
       next: integrity.hasPackage ? '可以安全写入准备包；写入前仍会弹出安全确认。' : '可以去播放列表准备电台包。',
     ),
-    GameFileIntegrityLevel.previousPackageApplied => const _FileConclusion(
-      tone: _Tone.warn,
+    GameFileIntegrityLevel.previousPackageApplied => _FileConclusion(
+      tone: s.currentPackageReady ? _Tone.warn : _Tone.ok,
       title: '上一版准备包已写入',
-      next: '当前准备包还没有覆盖进去；确认后可以写入新的准备包。',
+      next: s.currentPackageReady
+          ? '当前准备包还没有覆盖进去；确认后可以写入新的准备包。'
+          : '当前工作区还没有新的准备包；可以继续编辑并重新准备，也可以直接进游戏验证上一版。',
     ),
     GameFileIntegrityLevel.noPackage => _FileConclusion(
       tone: integrity.hasCurrentBaseline ? _Tone.warn : _Tone.danger,

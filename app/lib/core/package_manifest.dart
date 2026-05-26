@@ -17,7 +17,13 @@ File? packageManifestFile(String? packageDir) {
 
 Map<String, dynamic>? readPackageManifest(String? packageDir) {
   final manifest = packageManifestFile(packageDir);
-  if (manifest == null) return null;
+  return readPackageManifestFile(manifest?.path);
+}
+
+Map<String, dynamic>? readPackageManifestFile(String? manifestPath) {
+  if (manifestPath == null || manifestPath.trim().isEmpty) return null;
+  final manifest = File(manifestPath);
+  if (!manifest.existsSync()) return null;
   try {
     final decoded = jsonDecode(manifest.readAsStringSync(encoding: utf8));
     return decoded is Map

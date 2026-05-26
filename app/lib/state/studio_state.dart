@@ -2066,6 +2066,10 @@ String? _packageManifestPath(String? packageDir) {
 
 PackageArtifactSummary? _readPackageSummary(String? packageDir) {
   final manifest = packageManifestFile(packageDir);
+  return _readPackageSummaryFromManifest(manifest);
+}
+
+PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
   if (manifest == null) return null;
   final data = _readJsonMap(manifest);
   if (data == null) return null;
@@ -3633,14 +3637,46 @@ class StudioController extends StateNotifier<StudioState> {
       _append('当前游戏文件还没确认。请先在概览里保存新文件记录、生成测试准备包，或写回旧的基线；确认或放弃后再准备普通电台包。');
       return false;
     }
+    final planForBuild = PlaylistPlanStore.read(state.projectDir);
     final draft = _playlistDraftForBuild();
     final restoresBuiltin = draft.restoresBuiltin;
     final canBuildLanguageChange = !state.languageSelectionMatchesGame;
-    if (!draft.hasPlan && !canBuildLanguageChange) {
-      _append('播放列表还没有分配曲目。请先在“播放列表”里把自建歌曲拖到目标电台。');
+    final previousAppliedSummary = !state.currentPackageReady
+        ? _readPackageSummaryFromManifest(
+            File(state.lastAppliedPackageManifest),
+          )
+        : null;
+    final canBuildFromPreviousApplied =
+        !draft.hasPlan &&
+        previousAppliedSummary != null &&
+        previousAppliedSummary.assignments.isNotEmpty;
+    if (!draft.hasPlan &&
+        !canBuildLanguageChange &&
+        !canBuildFromPreviousApplied) {
+      if (state.currentPackageReady) {
+        _append('准备包已经等于当前播放列表；修改分配或语言后再重新构建。');
+      } else {
+        _append('播放列表还没有分配曲目。请先在“播放列表”里把自建歌曲拖到目标电台。');
+      }
       return false;
     }
-    final musicInputs = draft.inputs;
+    if (draft.hasPlan &&
+        !canBuildLanguageChange &&
+        !restoresBuiltin &&
+        state.currentPackageReady &&
+        _packageAssignmentsMatchPlan(
+          state.lastPackageSummary ?? _readPackageSummary(state.lastPackageDir),
+          planForBuild,
+        )) {
+      _append('准备包已经等于当前播放列表；修改分配或语言后再重新构建。');
+      return false;
+    }
+    final musicInputs = draft.inputs.isNotEmpty
+        ? draft.inputs
+        : _musicInputsFromPackageSummary(previousAppliedSummary);
+    final playlistFromPackage = canBuildFromPreviousApplied
+        ? state.lastAppliedPackageManifest
+        : null;
     if (musicInputs.isEmpty && !canBuildLanguageChange && !restoresBuiltin) {
       _append('播放列表草稿为空。请先在“播放列表”里分配至少一首自建歌曲。');
       return false;
@@ -3693,6 +3729,9 @@ class StudioController extends StateNotifier<StudioState> {
             (musicInputs.isNotEmpty || restoresBuiltin)) ...[
           '--playlist-plan',
           draft.playlistPlanPath!,
+        ] else if (playlistFromPackage != null) ...[
+          '--playlist-from-package',
+          playlistFromPackage,
         ],
         if (timingManifest != null) ...['--timing-manifest', timingManifest],
         '--metadata-cache',
@@ -3823,6 +3862,10 @@ class StudioController extends StateNotifier<StudioState> {
   List<String> _musicInputsFromCurrentPackage() {
     final summary =
         state.lastPackageSummary ?? _readPackageSummary(state.lastPackageDir);
+    return _musicInputsFromPackageSummary(summary);
+  }
+
+  List<String> _musicInputsFromPackageSummary(PackageArtifactSummary? summary) {
     if (summary == null || summary.assignments.isEmpty) return const [];
     final inputs = <String>[];
     final seen = <String>{};
@@ -3893,6 +3936,34 @@ class StudioController extends StateNotifier<StudioState> {
       hasPlan: true,
       restoresBuiltin: plan.builtinTargets.isNotEmpty,
     );
+  }
+
+  bool _packageAssignmentsMatchPlan(
+    PackageArtifactSummary? summary,
+    PlaylistPlan plan,
+  ) {
+    if (summary == null || plan.builtinTargets.isNotEmpty) return false;
+    final planKeys = <String>{};
+    for (final assignment in plan.assignments.values) {
+      if (!assignment.isAssigned) continue;
+      planKeys.add(
+        '${assignment.trackKey}|${assignment.radioCode}|${assignment.playlistType}|${assignment.slot}',
+      );
+    }
+    final packageKeys = <String>{};
+    for (final assignment in summary.assignments) {
+      final trackKey = PackageTrackAssignment.keyForPath(assignment.source);
+      for (final playlistType in assignment.normalizedPlaylistTypes) {
+        packageKeys.add(
+          '$trackKey|${assignment.radioLabel}|$playlistType|${assignment.slot}',
+        );
+      }
+    }
+    if (planKeys.length != packageKeys.length) return false;
+    for (final key in planKeys) {
+      if (!packageKeys.contains(key)) return false;
+    }
+    return true;
   }
 
   String _missingMusicInputMessage(String source) {

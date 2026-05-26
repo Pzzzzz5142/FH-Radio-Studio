@@ -176,6 +176,13 @@ final playlistCatalogForViewProvider =
                 ? state.pendingPackageDir
                 : null,
             lastPackageDir: state.lastPackageDir,
+            lastAppliedPackageManifest:
+                state.fileIntegrity.hasLastAppliedPackage
+                ? state.lastAppliedPackageManifest
+                : null,
+            baselineDir: state.fileIntegrity.hasCurrentBaseline
+                ? state.currentBaselineDir
+                : null,
             gameDir: state.gameDir,
             sourceLang: state.sourceLang,
             targetLang: state.targetLang,
@@ -197,6 +204,8 @@ final playlistCatalogForViewProvider =
         sourceLang: state.sourceLang,
         targetLang: state.targetLang,
         detectionPackageDirs: [state.pendingPackageDir, state.lastPackageDir],
+        detectionPackageManifestPaths: [state.lastAppliedPackageManifest],
+        baselineGameDir: state.baselineDir,
         bankSlotOverrides: bankSlotOverrides,
       );
     });
@@ -209,12 +218,23 @@ PlaylistCatalog loadPlaylistCatalog({
   required String sourceLang,
   required String targetLang,
   Iterable<String?> detectionPackageDirs = const [],
+  Iterable<String?> detectionPackageManifestPaths = const [],
+  String? baselineGameDir,
   Map<String, int> bankSlotOverrides = const {},
 }) {
   final detectionManifests = [
     for (final dir in detectionPackageDirs) readPackageManifest(dir),
+    for (final path in detectionPackageManifestPaths)
+      readPackageManifestFile(path),
   ].whereType<Map<String, dynamic>>().toList(growable: false);
   final gameAudio = _gameAudioDir(gameDir);
+  final baselineTracksByList = _baselineTracksByList(
+    _radioInfoFile(
+      _gameAudioDir(baselineGameDir ?? ''),
+      sourceLang,
+      targetLang,
+    ),
+  );
 
   if (view == PlaylistCatalogView.game) {
     final gameXml = _radioInfoFile(gameAudio, sourceLang, targetLang);
@@ -224,6 +244,7 @@ PlaylistCatalog loadPlaylistCatalog({
         view: view,
         origin: PlaylistCatalogOrigin.game,
         detectionPackageManifests: detectionManifests,
+        baselineTracksByList: baselineTracksByList,
         bankSlotOverrides: bankSlotOverrides,
       );
       if (catalog != null) return catalog;
@@ -245,6 +266,7 @@ PlaylistCatalog loadPlaylistCatalog({
       origin: PlaylistCatalogOrigin.package,
       packageManifest: manifest,
       detectionPackageManifests: [?manifest, ...detectionManifests],
+      baselineTracksByList: baselineTracksByList,
       bankSlotOverrides: bankSlotOverrides,
       bankAudioFallback: gameAudio,
     );
@@ -258,6 +280,7 @@ PlaylistCatalog loadPlaylistCatalog({
       view: view,
       origin: PlaylistCatalogOrigin.game,
       detectionPackageManifests: detectionManifests,
+      baselineTracksByList: baselineTracksByList,
       bankSlotOverrides: bankSlotOverrides,
     );
     if (catalog != null) return catalog;
@@ -276,6 +299,7 @@ PlaylistCatalog? _readXmlCatalog(
   required PlaylistCatalogOrigin origin,
   Map<String, dynamic>? packageManifest,
   Iterable<Map<String, dynamic>> detectionPackageManifests = const [],
+  Map<String, Map<String, List<TrackRef>>> baselineTracksByList = const {},
   Map<String, int> bankSlotOverrides = const {},
   Directory? bankAudioFallback,
 }) {
@@ -283,7 +307,6 @@ PlaylistCatalog? _readXmlCatalog(
     final document = XmlDocument.parse(
       xmlFile.readAsStringSync(encoding: utf8),
     );
-    final packageRadio = _objectInt(packageManifest?['radio']);
     final packageSounds = <String>{};
     final sourceBySoundName = <String, String>{};
     for (final manifest in detectionPackageManifests) {
@@ -334,28 +357,44 @@ PlaylistCatalog? _readXmlCatalog(
           slot: math.max(bankSlot ?? xmlSlot, 1),
         ),
       );
-      freeRoamTracks[code] = freeRoam.isEmpty
+      final rawFreeRoam = freeRoam.isEmpty
           ? samples.values.toList(growable: false)
           : freeRoam;
-      eventTracks[code] = event.isEmpty
-          ? freeRoamTracks[code] ?? samples.values.toList(growable: false)
-          : event;
+      final rawEvent = event.isEmpty ? rawFreeRoam : event;
+      final baselineFreeRoam = baselineTracksByList[code]?['FreeRoam'];
+      final baselineEvent = baselineTracksByList[code]?['Event'];
+      final freeComparedMode = _modeComparedToBaseline(
+        rawFreeRoam,
+        baselineFreeRoam,
+      );
+      final eventComparedMode = _modeComparedToBaseline(
+        rawEvent,
+        baselineEvent,
+      );
+      final resolvedFreeRoam = _markTracksComparedToBaseline(
+        rawFreeRoam,
+        baselineFreeRoam,
+      );
+      final resolvedEvent = _markTracksComparedToBaseline(
+        rawEvent,
+        baselineEvent,
+      );
+      freeRoamTracks[code] = resolvedFreeRoam;
+      eventTracks[code] = resolvedEvent;
 
-      final freeMode = _tracksContainModded(freeRoamTracks[code])
-          ? StationMode.custom
-          : StationMode.builtin;
-      final eventMode = _tracksContainModded(eventTracks[code])
-          ? StationMode.custom
-          : StationMode.builtin;
+      final freeMode =
+          freeComparedMode ??
+          (_tracksContainModded(resolvedFreeRoam)
+              ? StationMode.custom
+              : StationMode.builtin);
+      final eventMode =
+          eventComparedMode ??
+          (_tracksContainModded(resolvedEvent)
+              ? StationMode.custom
+              : StationMode.builtin);
       listModes[code] = {'FreeRoam': freeMode, 'Event': eventMode};
-      final isPackageRadio =
-          origin == PlaylistCatalogOrigin.package &&
-          packageRadio != null &&
-          number == packageRadio;
       modes[code] =
-          freeMode == StationMode.custom ||
-              eventMode == StationMode.custom ||
-              isPackageRadio
+          freeMode == StationMode.custom || eventMode == StationMode.custom
           ? StationMode.custom
           : StationMode.builtin;
     }
@@ -380,6 +419,91 @@ PlaylistCatalog? _readXmlCatalog(
   } on FileSystemException {
     return null;
   }
+}
+
+Map<String, Map<String, List<TrackRef>>> _baselineTracksByList(File? xmlFile) {
+  if (xmlFile == null || !xmlFile.existsSync()) return const {};
+  try {
+    final document = XmlDocument.parse(
+      xmlFile.readAsStringSync(encoding: utf8),
+    );
+    final out = <String, Map<String, List<TrackRef>>>{};
+    for (final station in document.findAllElements('RadioStation')) {
+      final number = _objectInt(station.getAttribute('Number'));
+      final name = station.getAttribute('Name')?.trim() ?? '';
+      final code = _radioCodeFor(number, name);
+      if (!isUiSupportedRadio(number: number, code: code, name: name)) {
+        continue;
+      }
+      final samples = _samplesBySoundName(station, code, const {});
+      final freeRoam = _playlistTracks(station, 'FreeRoam', samples, code);
+      final rawFreeRoam = freeRoam.isEmpty
+          ? samples.values.toList(growable: false)
+          : freeRoam;
+      final event = _playlistTracks(station, 'Event', samples, code);
+      out[code] = {
+        'FreeRoam': rawFreeRoam,
+        'Event': event.isEmpty ? rawFreeRoam : event,
+      };
+    }
+    return out;
+  } on FormatException {
+    return const {};
+  } on FileSystemException {
+    return const {};
+  }
+}
+
+StationMode? _modeComparedToBaseline(
+  List<TrackRef> tracks,
+  List<TrackRef>? baselineTracks,
+) {
+  if (baselineTracks == null) return null;
+  if (tracks.length != baselineTracks.length) return StationMode.custom;
+  for (var index = 0; index < tracks.length; index += 1) {
+    if (_trackSignature(tracks[index]) !=
+        _trackSignature(baselineTracks[index])) {
+      return StationMode.custom;
+    }
+  }
+  return StationMode.builtin;
+}
+
+List<TrackRef> _markTracksComparedToBaseline(
+  List<TrackRef> tracks,
+  List<TrackRef>? baselineTracks,
+) {
+  if (baselineTracks == null) return tracks;
+  final baselineSignatures = {
+    for (final track in baselineTracks) _trackSignature(track),
+  };
+  return [
+    for (final track in tracks)
+      _trackWithModded(
+        track,
+        modded: !baselineSignatures.contains(_trackSignature(track)),
+      ),
+  ];
+}
+
+TrackRef _trackWithModded(TrackRef track, {required bool modded}) {
+  if (track.modded == modded) return track;
+  return TrackRef(
+    id: track.id,
+    title: track.title,
+    artist: track.artist,
+    durationSec: track.durationSec,
+    soundName: track.soundName,
+    modded: modded,
+  );
+}
+
+String _trackSignature(TrackRef track) {
+  return [
+    track.soundName,
+    track.title,
+    track.artist,
+  ].map((part) => (part ?? '').trim().toLowerCase()).join('\u0001');
 }
 
 Directory? _packageAudioDir(String? packageDir) {

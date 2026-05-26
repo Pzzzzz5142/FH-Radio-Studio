@@ -124,10 +124,11 @@ class PlaylistNotifier extends StateNotifier<PlaylistState> {
     if (track == null) return false;
     final targetRadio = radioCode.trim().toUpperCase();
     final targetType = PlaylistAssignment.normalizePlaylistType(playlistType);
+    var plan = _ensureEditablePlanSeeded();
     if (!state.splitPlaylistTypes) {
       _syncPlanFrom(targetType);
+      plan = ref.read(effectivePlaylistPlanProvider);
     }
-    final plan = ref.read(effectivePlaylistPlanProvider);
     final existing =
         plan.assignmentFor(
           source: track.source,
@@ -219,6 +220,8 @@ class PlaylistNotifier extends StateNotifier<PlaylistState> {
     if (track == null) return;
     if (!state.splitPlaylistTypes && playlistType != null) {
       _syncPlanFrom(playlistType);
+    } else {
+      _ensureEditablePlanSeeded();
     }
     ref
         .read(playlistPlanProvider.notifier)
@@ -238,6 +241,7 @@ class PlaylistNotifier extends StateNotifier<PlaylistState> {
   void restoreBuiltin(String radioCode, String playlistType) {
     if (_editingLocked) return;
     final controller = ref.read(playlistPlanProvider.notifier);
+    _ensureEditablePlanSeeded();
     if (!state.splitPlaylistTypes) {
       _syncPlanFrom(playlistType);
     }
@@ -270,11 +274,28 @@ class PlaylistNotifier extends StateNotifier<PlaylistState> {
   }
 
   void _syncPlanFrom(String playlistType) {
-    final plan = ref.read(effectivePlaylistPlanProvider);
+    final plan = _ensureEditablePlanSeeded();
     if (!plan.hasDraft && !plan.hasSplitPlaylistDifferences) return;
     ref
         .read(playlistPlanProvider.notifier)
         .replaceWith(plan.syncPlaylistTypesFrom(playlistType));
+  }
+
+  PlaylistPlan _ensureEditablePlanSeeded() {
+    final currentDraft = ref.read(playlistPlanProvider);
+    if (currentDraft.hasDraft) return currentDraft;
+    final effective = ref.read(effectivePlaylistPlanProvider);
+    if (effective.hasDraft) return effective;
+    final catalog = ref.read(playlistCatalogProvider);
+    if (catalog.failed) return effective;
+    final detected = playlistPlanFromCatalog(
+      catalog,
+      state.pool,
+      includeBuiltinTargets: false,
+    );
+    if (detected.assignments.isEmpty) return effective;
+    ref.read(playlistPlanProvider.notifier).replaceWith(detected);
+    return ref.read(effectivePlaylistPlanProvider);
   }
 
   String _otherPlaylistType(String playlistType) {
@@ -286,8 +307,9 @@ class PlaylistNotifier extends StateNotifier<PlaylistState> {
 
 PlaylistPlan playlistPlanFromCatalog(
   PlaylistCatalog catalog,
-  List<PoolTrack> pool,
-) {
+  List<PoolTrack> pool, {
+  bool includeBuiltinTargets = true,
+}) {
   final poolByMeta = <String, String>{};
   for (final track in pool) {
     poolByMeta.putIfAbsent(_metaKey(track.title, track.artist), () {
@@ -299,10 +321,12 @@ PlaylistPlan playlistPlanFromCatalog(
   for (final radio in catalog.radios) {
     for (final playlistType in const ['FreeRoam', 'Event']) {
       if (catalog.modeOfList(radio.code, playlistType) != StationMode.custom) {
-        plan = plan.restoreBuiltin(
-          radioCode: radio.code,
-          playlistType: playlistType,
-        );
+        if (includeBuiltinTargets) {
+          plan = plan.restoreBuiltin(
+            radioCode: radio.code,
+            playlistType: playlistType,
+          );
+        }
         continue;
       }
 

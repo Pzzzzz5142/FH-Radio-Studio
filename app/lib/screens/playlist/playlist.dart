@@ -520,7 +520,12 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     final catalog = ref.watch(playlistCatalogProvider);
     final baselineCatalog = ref.watch(baselinePlaylistCatalogProvider);
     final plan = ref.watch(effectivePlaylistPlanProvider);
-    final pool = s.poolForDisplay(plan).where((t) => _matches(s, t)).toList();
+    final poolPlan = _poolAssignmentPlan(catalog, plan, s.pool);
+    final editingPlan = plan.hasDraft ? plan : poolPlan;
+    final pool = s
+        .poolForDisplay(editingPlan)
+        .where((t) => _matches(s, t))
+        .toList();
 
     return Center(
       child: ConstrainedBox(
@@ -548,7 +553,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
                   ),
                 )
               else ...[
-                _toolbar(context, s, catalog, view, plan, cli),
+                _toolbar(context, s, catalog, view, editingPlan, cli),
                 const SizedBox(height: 18),
                 Expanded(
                   child: _board(
@@ -557,7 +562,8 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
                     pool,
                     catalog,
                     baselineCatalog,
-                    plan,
+                    editingPlan,
+                    editingPlan,
                     view,
                     cli,
                   ),
@@ -798,6 +804,20 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     );
   }
 
+  PlaylistPlan _poolAssignmentPlan(
+    PlaylistCatalog catalog,
+    PlaylistPlan plan,
+    List<PoolTrack> pool,
+  ) {
+    if (plan.hasDraft || catalog.failed) return plan;
+    final detected = playlistPlanFromCatalog(
+      catalog,
+      pool,
+      includeBuiltinTargets: false,
+    );
+    return detected.assignments.isEmpty ? plan : detected;
+  }
+
   Widget _board(
     BuildContext context,
     PlaylistState s,
@@ -805,6 +825,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     PlaylistCatalog catalog,
     PlaylistCatalog? baselineCatalog,
     PlaylistPlan plan,
+    PlaylistPlan poolPlan,
     PlaylistCatalogView view,
     StudioState cli,
   ) {
@@ -863,7 +884,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
               SizedBox(
                 key: const ValueKey('playlist-pool-side-panel'),
                 width: poolPanelWidth,
-                child: _poolColumn(context, s, pool, catalog, plan, cli),
+                child: _poolColumn(context, s, pool, catalog, poolPlan, cli),
               ),
             ],
           );
@@ -889,7 +910,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
             SizedBox(
               key: const ValueKey('playlist-pool-side-panel'),
               width: poolPanelWidth,
-              child: _poolColumn(context, s, pool, catalog, plan, cli),
+              child: _poolColumn(context, s, pool, catalog, poolPlan, cli),
             ),
           ],
         );

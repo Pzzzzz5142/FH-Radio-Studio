@@ -114,6 +114,42 @@ void main() {
     );
   });
 
+  test('playlist custom mode compares current RadioInfo with baseline', () {
+    final temp = Directory.systemTemp.createTempSync(
+      'fh-radio-studio-playlist-baseline-compare-',
+    );
+    addTearDown(() {
+      if (temp.existsSync()) temp.deleteSync(recursive: true);
+    });
+    final baselineDir = Directory(p.join(temp.path, 'baseline'));
+    final gameDir = Directory(p.join(temp.path, 'ForzaHorizon6'));
+    final baselineAudio = Directory(p.join(baselineDir.path, 'media', 'audio'))
+      ..createSync(recursive: true);
+    final gameAudio = Directory(p.join(gameDir.path, 'media', 'audio'))
+      ..createSync(recursive: true);
+    File(p.join(baselineAudio.path, 'RadioInfo_CN.xml')).writeAsStringSync(
+      _singleTrackRadioInfoXml(title: 'Original Pulse', artist: 'Forza'),
+      encoding: utf8,
+    );
+    File(p.join(gameAudio.path, 'RadioInfo_CN.xml')).writeAsStringSync(
+      _singleTrackRadioInfoXml(title: 'Custom Pulse', artist: 'Local Artist'),
+      encoding: utf8,
+    );
+
+    final catalog = loadPlaylistCatalog(
+      packageDir: null,
+      gameDir: gameDir.path,
+      sourceLang: 'CN',
+      targetLang: 'EN',
+      baselineGameDir: baselineDir.path,
+    );
+
+    expect(catalog.origin, PlaylistCatalogOrigin.game);
+    expect(catalog.modeOfList('HOR', 'FreeRoam'), StationMode.custom);
+    expect(catalog.modeOfList('HOR', 'Event'), StationMode.custom);
+    expect(catalog.tracksOfRadio('HOR', 'FreeRoam').single.modded, isTrue);
+  });
+
   test('playlist catalog hides Streamer Mode from the UI', () {
     final repoRoot = p.dirname(p.current);
     final catalog = loadPlaylistCatalog(
@@ -948,6 +984,29 @@ String _bankSlotRadioInfoXml() {
         <Entry Name="HZ6_R1_SLOT_01" />
         <Entry Name="HZ6_R1_SLOT_02" />
         <Entry Name="HZ6_R1_SLOT_03" />
+      </PlayList>
+    </RadioStation>
+  </RadioStations>
+</RadioInfo>
+''';
+}
+
+String _singleTrackRadioInfoXml({
+  required String title,
+  required String artist,
+}) {
+  return '''
+<RadioInfo Language="CN">
+  <RadioStations>
+    <RadioStation Number="1" Name="Horizon Pulse">
+      <SampleList Type="Track">
+        <Sample SoundName="HZ6_R1_SLOT_01" SampleLength="48000" SampleRate="48000" DisplayName="$title" Artist="$artist" />
+      </SampleList>
+      <PlayList Type="FreeRoam">
+        <Entry Name="HZ6_R1_SLOT_01" />
+      </PlayList>
+      <PlayList Type="Event">
+        <Entry Name="HZ6_R1_SLOT_01" />
       </PlayList>
     </RadioStation>
   </RadioStations>

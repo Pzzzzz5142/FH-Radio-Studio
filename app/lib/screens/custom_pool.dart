@@ -9,6 +9,7 @@ import '../core/playlist_plan.dart';
 import '../domain/radio_library.dart';
 import '../state/studio_state.dart';
 import '../state/custom_pool_tracks.dart';
+import '../state/playlist_catalog_state.dart';
 import '../state/playlist_plan_state.dart';
 import '../state/router.dart';
 import '../state/siren_import_queue_state.dart';
@@ -25,6 +26,7 @@ import '../widgets/rm_icon.dart';
 import '../widgets/rm_panel.dart';
 import '../widgets/rm_segmented.dart';
 import '../widgets/stat_card.dart';
+import 'playlist/playlist_state.dart' show playlistPlanFromCatalog;
 
 enum _PoolFilter { all, unconfigured, configured }
 
@@ -46,10 +48,16 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
     final sirenImport = ref.watch(sirenImportQueueProvider);
     final sirenImporting = sirenImport.importing || cli.busyLabel == '导入塞壬唱片';
     final playlistPlan = ref.watch(effectivePlaylistPlanProvider);
+    final gameCatalog = ref.watch(gamePlaylistCatalogProvider);
+    final gameAssignmentPlan = gameCatalog.failed
+        ? const PlaylistPlan.empty()
+        : playlistPlanFromCatalog(
+            gameCatalog,
+            all,
+            includeBuiltinTargets: false,
+          );
+    final gameAssignmentsKnown = _gameAssignmentsKnown(cli, gameCatalog);
     final latestPackage = cli.pendingPackageSummary ?? cli.lastPackageSummary;
-    final gameMatchesLatestPackage =
-        cli.fileIntegrity.checkedFiles > 0 &&
-        cli.fileIntegrity.packageMatches == cli.fileIntegrity.checkedFiles;
     final configured = all.where((t) => t.configured).toList();
     final unconfigured = all.where((t) => !t.configured).toList();
     final unassigned = all.where((t) => t.assignedTo == null).toList();
@@ -104,7 +112,8 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
                       msrCount: msrTracks.length,
                       latestPackage: latestPackage,
                       playlistPlan: playlistPlan,
-                      gameMatchesLatestPackage: gameMatchesLatestPackage,
+                      gameAssignmentPlan: gameAssignmentPlan,
+                      gameAssignmentsKnown: gameAssignmentsKnown,
                       sirenImporting: sirenImporting,
                     ),
                     const SizedBox(height: 14),
@@ -243,7 +252,8 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
     required int msrCount,
     required PackageArtifactSummary? latestPackage,
     required PlaylistPlan playlistPlan,
-    required bool gameMatchesLatestPackage,
+    required PlaylistPlan gameAssignmentPlan,
+    required bool gameAssignmentsKnown,
     required bool sirenImporting,
   }) {
     final rm = context.rm;
@@ -306,7 +316,10 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
                 stagedAssignment: playlistPlan.assignmentForPath(
                   visible[i].source,
                 ),
-                gameMatchesLatestPackage: gameMatchesLatestPackage,
+                gameAssignment: gameAssignmentPlan.assignmentForPath(
+                  visible[i].source,
+                ),
+                gameAssignmentsKnown: gameAssignmentsKnown,
                 onTap: () => context.go(RmRoutes.editor(visible[i].id)),
                 onDelete: () => _confirmAndDeleteTrack(context, visible[i]),
               ),
@@ -482,6 +495,17 @@ class _CustomPoolScreenState extends ConsumerState<CustomPoolScreen> {
       ).showSnackBar(SnackBar(content: Text('删除失败：${error.message}')));
     }
   }
+
+  bool _gameAssignmentsKnown(StudioState cli, PlaylistCatalog catalog) {
+    if (catalog.failed || cli.fileIntegrity.checkedFiles <= 0) return false;
+    return switch (cli.fileIntegrity.level) {
+      GameFileIntegrityLevel.packageApplied ||
+      GameFileIntegrityLevel.previousPackageApplied ||
+      GameFileIntegrityLevel.baseline ||
+      GameFileIntegrityLevel.buildBumpAvailable => true,
+      _ => false,
+    };
+  }
 }
 
 class _ButtonSpinner extends StatelessWidget {
@@ -543,7 +567,8 @@ class _PoolRow extends StatefulWidget {
     required this.editLockMessage,
     required this.latestPackage,
     required this.stagedAssignment,
-    required this.gameMatchesLatestPackage,
+    required this.gameAssignment,
+    required this.gameAssignmentsKnown,
     required this.onTap,
     required this.onDelete,
   });
@@ -555,7 +580,8 @@ class _PoolRow extends StatefulWidget {
   final String editLockMessage;
   final PackageArtifactSummary? latestPackage;
   final PlaylistAssignment? stagedAssignment;
-  final bool gameMatchesLatestPackage;
+  final PlaylistAssignment? gameAssignment;
+  final bool gameAssignmentsKnown;
   final VoidCallback onTap;
   final VoidCallback onDelete;
 
@@ -573,8 +599,8 @@ class _PoolRowState extends State<_PoolRow> {
     final packageAssignment = widget.latestPackage?.assignmentForSource(
       t.source,
     );
-    final gameAssignment = widget.gameMatchesLatestPackage
-        ? packageAssignment
+    final gameAssignmentLabel = widget.gameAssignmentsKnown
+        ? _playlistAssignmentLabel(widget.gameAssignment)
         : null;
     final preparedTag = _preparedTag(
       staged: widget.stagedAssignment,
@@ -660,10 +686,8 @@ class _PoolRowState extends State<_PoolRow> {
                   children: [
                     _assignmentChip(
                       prefix: '游戏',
-                      assignment: gameAssignment,
-                      known:
-                          widget.gameMatchesLatestPackage &&
-                          widget.latestPackage != null,
+                      assignmentLabel: gameAssignmentLabel,
+                      known: widget.gameAssignmentsKnown,
                       assignedVariant: RmChipVariant.accent,
                     ),
                     Tooltip(
@@ -738,27 +762,34 @@ class _PoolRowState extends State<_PoolRow> {
 
   Widget _assignmentChip({
     required String prefix,
-    required PackageTrackAssignment? assignment,
+    required String? assignmentLabel,
     required bool known,
     required RmChipVariant assignedVariant,
   }) {
-    final label = assignment == null
+    final label = assignmentLabel == null
         ? (known ? '$prefix 未包含' : '$prefix 未检测')
-        : '$prefix ${assignment.label}';
-    final tooltip = assignment == null
+        : '$prefix $assignmentLabel';
+    final tooltip = assignmentLabel == null
         ? (known
-              ? '游戏中位置\n当前游戏文件等于最新准备包，但这首歌不在准备包播放列表里。'
-              : '游戏中位置\n当前游戏文件未检测为最新准备包，无法可靠判断这首歌在游戏里的位置。')
-        : '游戏中位置\n当前游戏文件已检测为最新准备包：${assignment.label}。';
+              ? '游戏中位置\n当前游戏 RadioInfo 可读取，但这首歌不在游戏播放列表里。'
+              : '游戏中位置\n当前游戏文件还没有完成可靠校验，无法判断这首歌在游戏里的位置。')
+        : '游戏中位置\n当前游戏 RadioInfo 中检测到：$assignmentLabel。';
     return Tooltip(
       message: tooltip,
       waitDuration: const Duration(milliseconds: 350),
       child: RmChip(
         label: label,
-        variant: assignment == null ? RmChipVariant.muted : assignedVariant,
+        variant: assignmentLabel == null
+            ? RmChipVariant.muted
+            : assignedVariant,
         showDot: true,
       ),
     );
+  }
+
+  String? _playlistAssignmentLabel(PlaylistAssignment? assignment) {
+    if (assignment == null || !assignment.isAssigned) return null;
+    return '${assignment.radioCode} · ${PlaylistAssignment.playlistLabel(assignment.playlistType)} slot ${assignment.slot}';
   }
 
   _PreparedTag _preparedTag({
