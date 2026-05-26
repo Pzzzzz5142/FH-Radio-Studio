@@ -182,13 +182,23 @@ Rules:
 - Use lowercase `type` and `scope`.
 - Keep `summary` in English, imperative, lowercase after the brackets, and without a trailing period.
 - Keep the header concise, preferably at or below 72 characters.
-- Use a body only when it adds why, impact, migration notes, or test coverage.
+- Prefer one type per commit.
+- If a change genuinely cannot be split and is both a bug fix and a performance optimization, use the compound type `[fix/perf][scope] summary`; do not write `[fix][perf]`, because the second bracket is reserved for scope.
 - Mark breaking changes with `!` on the type, for example `[feat!][runtime] remove global uv fallback`, and include a `BREAKING CHANGE:` footer.
+- For `fix` and `fix/perf` commits, keep the header summary focused on the user-visible bug, failure, or regression that was fixed; put the underlying cause, implementation details, and performance impact in the body.
+- For `fix` and `fix/perf` commits, always include a body with `Root cause:` and `Fix:` paragraphs. `Root cause:` should explain why the bug happened, and `Fix:` should explain the concrete change that prevents it. For `fix/perf`, also mention the performance improvement in `Fix:` or a short additional paragraph.
+- For non-`fix` commits, use a body only when it adds why, impact, migration notes, or test coverage.
 
 Types:
 
 ```text
 feat, fix, perf, refactor, build, ci, test, docs, style, chore, revert
+```
+
+The only supported compound type is:
+
+```text
+fix/perf
 ```
 
 Preferred scopes:
@@ -201,6 +211,7 @@ Examples:
 
 ```text
 [fix][runtime] launch release uv from bundled toolchain
+[fix/perf][analysis] avoid repeated local-heavy scoring
 [feat][audio] preserve siren playlist assignments in package builds
 [build][windows] require bundled release runtime artifacts
 [docs][release] document portable runtime preparation
@@ -209,15 +220,14 @@ Examples:
 [chore] update project metadata
 ```
 
-Full example with body:
+Fix commit body example:
 
 ```text
-[fix][audio] keep siren playlist assignments in package builds
+[fix][runtime] launch release uv from bundled toolchain
 
-Preserve generated playlist metadata during package assembly so siren tracks
-retain their station mapping after export.
+Root cause: Release startup still resolved uv from PATH before checking the portable app tools directory, so machines without a global uv install failed to launch the backend.
 
-Tests: uv run pytest test/test_cli_mock_game.py
+Fix: Resolve uv through UvRuntime's bundled release path first and preserve the offline release flags when spawning backend commands.
 ```
 
 ## Release Build
