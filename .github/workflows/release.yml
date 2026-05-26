@@ -4,9 +4,24 @@ on:
   push:
     branches:
       - "release/**"
-    tags:
-      - "v*"
   workflow_dispatch:
+    inputs:
+      action:
+        description: "Stage a release artifact, or publish the latest successful staged build"
+        required: true
+        type: choice
+        default: stage
+        options:
+          - stage
+          - publish-latest
+      release_ref:
+        description: "Release branch or id to publish, for example release/v0.1.0-rc.2"
+        required: false
+        type: string
+      source_run_id:
+        description: "Optional exact staged workflow run id to publish"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -18,6 +33,7 @@ concurrency:
 jobs:
   test:
     name: Python and Flutter tests
+    if: github.event_name != 'workflow_dispatch' || inputs.action == 'stage'
     runs-on: windows-latest
     timeout-minutes: 90
 
@@ -75,6 +91,7 @@ jobs:
 
   windows-release:
     name: Build Windows release artifact
+    if: github.event_name != 'workflow_dispatch' || inputs.action == 'stage'
     runs-on: windows-latest
     timeout-minutes: 180
     needs: test
@@ -170,5 +187,173 @@ jobs:
 
           The Windows archive and SHA256 file have been uploaded as the `FHRadioStudio-${{ steps.release_meta.outputs.release_id }}-windows-x64` workflow artifact.
 
-          This workflow does not create, update, or publish a GitHub Release. Download and test the workflow artifact first, then publish the tested archive from the GitHub Releases page.
+          This workflow does not create, update, or publish a GitHub Release during staging. Download and test the workflow artifact first. After validation, run this workflow manually with `action=publish-latest` to publish the latest successful staged build from GitHub artifacts.
+          "@ >> $env:GITHUB_STEP_SUMMARY
+
+  publish-release:
+    name: Publish latest staged release
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'publish-latest'
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    permissions:
+      actions: read
+      contents: write
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      INPUT_RELEASE_REF: ${{ inputs.release_ref }}
+      INPUT_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download staged artifact
+        run: |
+          $releaseRef = ([string]$env:INPUT_RELEASE_REF).Trim()
+          if (-not $releaseRef) {
+            $releaseRef = $env:GITHUB_REF_NAME
+          }
+          $releaseRef = $releaseRef -replace '^refs/heads/', '' -replace '^refs/tags/', ''
+
+          if ($releaseRef -match '^release/(v\d+\.\d+\.\d+(-rc\.\d+)?(\+\d+)?)$') {
+            $releaseId = $Matches[1]
+            $releaseBranch = $releaseRef
+          } elseif ($releaseRef -match '^(v\d+\.\d+\.\d+(-rc\.\d+)?(\+\d+)?)$') {
+            $releaseId = $Matches[1]
+            $releaseBranch = "release/$releaseId"
+          } else {
+            throw "Set release_ref to a release branch or id such as release/v0.1.0-rc.2."
+          }
+
+          $artifactName = "FHRadioStudio-$releaseId-windows-x64"
+          $downloadRoot = Join-Path $PWD "release-artifacts"
+          if (Test-Path -LiteralPath $downloadRoot) {
+            Remove-Item -LiteralPath $downloadRoot -Recurse -Force
+          }
+          New-Item -ItemType Directory -Force -Path $downloadRoot | Out-Null
+
+          $sourceRunId = ([string]$env:INPUT_SOURCE_RUN_ID).Trim()
+          if ($sourceRunId) {
+            $run = gh run view $sourceRunId --repo $env:GITHUB_REPOSITORY --json databaseId,status,conclusion,headSha,headBranch,url |
+              ConvertFrom-Json
+            if ($run.status -ne "completed" -or $run.conclusion -ne "success") {
+              throw "Source run $sourceRunId is not a successful completed staged build."
+            }
+            $candidateRuns = @($run)
+          } else {
+            $candidateRuns = gh run list `
+              --repo $env:GITHUB_REPOSITORY `
+              --workflow release.yml `
+              --branch $releaseBranch `
+              --status success `
+              --limit 20 `
+              --json databaseId,status,conclusion,headSha,headBranch,url,event |
+              ConvertFrom-Json
+          }
+
+          $selectedRun = $null
+          $artifactDir = $null
+          foreach ($candidate in $candidateRuns) {
+            $runId = [string]$candidate.databaseId
+            $candidateDir = Join-Path $downloadRoot "run-$runId"
+            New-Item -ItemType Directory -Force -Path $candidateDir | Out-Null
+            gh run download $runId `
+              --repo $env:GITHUB_REPOSITORY `
+              --name $artifactName `
+              --dir $candidateDir *> $null
+            if ($LASTEXITCODE -eq 0) {
+              $selectedRun = $candidate
+              $artifactDir = $candidateDir
+              break
+            }
+            Remove-Item -LiteralPath $candidateDir -Recurse -Force
+          }
+
+          if (-not $selectedRun) {
+            throw "No successful staged build with artifact '$artifactName' was found on $releaseBranch."
+          }
+
+          $zip = Get-ChildItem -LiteralPath $artifactDir -Filter "*.zip" |
+            Sort-Object Name |
+            Select-Object -First 1
+          $sha = Get-ChildItem -LiteralPath $artifactDir -Filter "*.sha256" |
+            Sort-Object Name |
+            Select-Object -First 1
+          if (-not $zip -or -not $sha) {
+            throw "Downloaded artifact '$artifactName' must contain a zip and a .sha256 file."
+          }
+
+          $shaLine = (Get-Content -Encoding UTF8 -Raw -LiteralPath $sha.FullName).Trim()
+          $expectedHash = ($shaLine -split '\s+')[0].Trim().ToLowerInvariant()
+          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip.FullName).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+            throw "SHA256 mismatch for $($zip.Name): expected $expectedHash, got $actualHash."
+          }
+          if ($shaLine -notmatch [regex]::Escape($zip.Name)) {
+            throw "SHA256 file does not reference $($zip.Name)."
+          }
+
+          "RELEASE_ID=$releaseId" >> $env:GITHUB_ENV
+          "RELEASE_BRANCH=$releaseBranch" >> $env:GITHUB_ENV
+          "RELEASE_HEAD_SHA=$($selectedRun.headSha)" >> $env:GITHUB_ENV
+          "RELEASE_SOURCE_RUN_ID=$($selectedRun.databaseId)" >> $env:GITHUB_ENV
+          "RELEASE_SOURCE_RUN_URL=$($selectedRun.url)" >> $env:GITHUB_ENV
+          "RELEASE_ZIP=$($zip.FullName)" >> $env:GITHUB_ENV
+          "RELEASE_SHA256=$($sha.FullName)" >> $env:GITHUB_ENV
+
+      - name: Create or verify release tag
+        run: |
+          git fetch origin $env:RELEASE_BRANCH --tags
+          $branchHead = (git rev-parse FETCH_HEAD).Trim()
+          if ($branchHead -ne $env:RELEASE_HEAD_SHA) {
+            throw "Latest $env:RELEASE_BRANCH no longer matches staged run $env:RELEASE_SOURCE_RUN_ID."
+          }
+
+          git rev-parse -q --verify "refs/tags/$env:RELEASE_ID" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            $tagSha = (git rev-list -n 1 "refs/tags/$env:RELEASE_ID").Trim()
+            if ($tagSha -ne $env:RELEASE_HEAD_SHA) {
+              throw "Tag $env:RELEASE_ID points at $tagSha, not staged commit $env:RELEASE_HEAD_SHA."
+            }
+          } else {
+            git tag $env:RELEASE_ID $env:RELEASE_HEAD_SHA
+            git push origin "refs/tags/$env:RELEASE_ID"
+          }
+
+      - name: Publish GitHub Release from staged artifact
+        run: |
+          gh release view $env:RELEASE_ID --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            throw "Release $env:RELEASE_ID already exists. Refusing to overwrite a published release."
+          }
+
+          $assets = @($env:RELEASE_ZIP, $env:RELEASE_SHA256)
+          $createArgs = @("release", "create", $env:RELEASE_ID)
+          $createArgs += $assets
+          $createArgs += @(
+            "--repo", $env:GITHUB_REPOSITORY,
+            "--title", $env:RELEASE_ID,
+            "--generate-notes",
+            "--verify-tag"
+          )
+          if ($env:RELEASE_ID -match "-") {
+            $createArgs += "--prerelease"
+          }
+          gh @createArgs
+
+          $releaseUrl = gh release view $env:RELEASE_ID --repo $env:GITHUB_REPOSITORY --json url --jq ".url"
+          @"
+          ### Published release
+
+          Published `$env:RELEASE_ID` from staged workflow run [$env:RELEASE_SOURCE_RUN_ID]($env:RELEASE_SOURCE_RUN_URL).
+
+          Release: $releaseUrl
           "@ >> $env:GITHUB_STEP_SUMMARY
