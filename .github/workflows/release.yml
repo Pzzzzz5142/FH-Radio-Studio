@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -74,7 +74,7 @@ jobs:
         run: flutter test
 
   windows-release:
-    name: Build and publish Windows release
+    name: Build Windows release artifact
     runs-on: windows-latest
     timeout-minutes: 180
     needs: test
@@ -163,40 +163,12 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
-      - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Summarize release validation stage
         run: |
-          $tag = $env:GITHUB_REF_NAME
-          $assets = @($env:RELEASE_ZIP, $env:RELEASE_SHA256)
-          foreach ($asset in $assets) {
-            if (-not (Test-Path -LiteralPath $asset)) {
-              throw "Release asset not found: $asset"
-            }
-          }
+          @"
+          ### Release validation stage
 
-          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
-          $viewExit = $LASTEXITCODE
-          if ($viewExit -eq 0) {
-            gh release upload $tag @assets --repo $env:GITHUB_REPOSITORY --clobber
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to upload assets to existing release '$tag'."
-            }
-          } else {
-            $createArgs = @("release", "create", $tag)
-            $createArgs += $assets
-            $createArgs += @(
-              "--repo", $env:GITHUB_REPOSITORY,
-              "--title", $tag,
-              "--generate-notes",
-              "--verify-tag"
-            )
-            if ($tag -match "-") {
-              $createArgs += "--prerelease"
-            }
-            gh @createArgs
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to create release '$tag'."
-            }
-          }
+          The Windows archive and SHA256 file have been uploaded as the `FHRadioStudio-${{ steps.release_meta.outputs.release_id }}-windows-x64` workflow artifact.
+
+          This workflow does not create, update, or publish a GitHub Release. Download and test the workflow artifact first, then publish the tested archive from the GitHub Releases page.
+          "@ >> $env:GITHUB_STEP_SUMMARY
