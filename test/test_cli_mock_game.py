@@ -1342,12 +1342,25 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
         if line.startswith(progress_prefix)
     ]
     plan_event = next(event for event in events if event.get("event") == "plan")
+    plan_steps_by_id = {step.get("id"): step for step in plan_event["steps"]}
     labels = [step.get("label") for step in plan_event["steps"]]
     assert "全局歌曲响度缓存" in labels
     assert "Horizon XS 重建 FMOD bank" in labels
     assert "Radio Eterna 重建 FMOD bank" in labels
     assert "R4 重建 FMOD bank" not in labels
     assert "R5 重建 FMOD bank" not in labels
+    assert plan_steps_by_id["song_loudness_cache"]["processes"] == 2
+    assert plan_steps_by_id["song_loudness_cache"]["work_items"] == 2
+    from backend.fh_radio_studio_cli.package import _radio_package_worker_count
+
+    expected_radio_workers = _radio_package_worker_count(2)
+    if expected_radio_workers > 1:
+        assert plan_steps_by_id["radio.4.prepare_audio"]["processes"] == expected_radio_workers
+        assert plan_steps_by_id["radio.5.rebuild_bank"]["processes"] == expected_radio_workers
+    else:
+        # 逻辑核 < 12 时，2 个电台按 核//6 封顶只剩 1 个 worker，不再标并行。
+        assert "processes" not in plan_steps_by_id["radio.4.prepare_audio"]
+        assert "processes" not in plan_steps_by_id["radio.5.rebuild_bank"]
     loudness_done_index = next(
         index
         for index, event in enumerate(events)
@@ -1394,6 +1407,54 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
     ]
     assert playlist_names(by_number["5"], "FreeRoam") == ["HZ6_R5_MOCK_REFERENCE"]
     assert playlist_names(by_number["5"], "Event") == ["HZ6_R5_MOCK_REFERENCE"]
+
+
+def test_baseline_loudness_plan_reports_parallel_processes(tmp_path: Path) -> None:
+    import argparse
+
+    from backend.fh_radio_studio_cli.package import _baseline_loudness_progress_step
+
+    manifest_path = tmp_path / "baseline_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {"files": [{"scope": "radio_bank", "path": f"bank_{i}.bank"} for i in range(3)]}
+        ),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(baseline_manifest=str(manifest_path), loudness_jobs=2)
+
+    step = _baseline_loudness_progress_step(args)
+    assert step is not None
+    assert step["id"] == "baseline_loudness"
+    assert step["label"] == "原始电台响度缓存"
+    # 缓存未命中会并行解码 3 个原始 bank，进度计划应体现多进程。
+    assert step["processes"] == 2
+
+    single_path = tmp_path / "single_manifest.json"
+    single_path.write_text(
+        json.dumps({"files": [{"scope": "radio_bank", "path": "only.bank"}]}),
+        encoding="utf-8",
+    )
+    single_args = argparse.Namespace(baseline_manifest=str(single_path), loudness_jobs=2)
+    single_step = _baseline_loudness_progress_step(single_args)
+    assert single_step is not None
+    # 只有一个 bank 不算并行，不应带 processes 字段。
+    assert "processes" not in single_step
+
+
+def test_radio_package_worker_count_caps_at_sixth_of_cores() -> None:
+    import os
+
+    from backend.fh_radio_studio_cli.package import _radio_package_worker_count
+
+    cores = os.cpu_count() or 1
+    cap = max(1, cores // 6)
+    # 单电台不并行。
+    assert _radio_package_worker_count(1) == 1
+    # 电台很多时，并行度按 核//6 封顶。
+    assert _radio_package_worker_count(1000) == cap
+    # 永不超过电台数。
+    assert _radio_package_worker_count(2) == max(1, min(2, cores // 6))
 
 
 def test_build_package_restores_builtin_targets_from_baseline(mock_game, tmp_path) -> None:

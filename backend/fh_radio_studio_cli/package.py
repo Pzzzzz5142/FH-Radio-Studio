@@ -36,6 +36,7 @@ from .language import normalize_text_language, string_tables_dir_for
 from .loudness import (
     LOUDNESS_ALGORITHM_VERSION,
     analyze_loudness_file,
+    baseline_loudness_bank_count,
     build_custom_set_loudness_profile,
     ensure_baseline_loudness_envelope,
     loudness_worker_count,
@@ -158,13 +159,20 @@ def _progress_step(
     detail: str,
     *,
     weight: int = 1,
+    processes: Optional[int] = None,
+    work_items: Optional[int] = None,
 ) -> Dict[str, object]:
-    return {
+    step: Dict[str, object] = {
         "id": step_id,
         "label": label,
         "detail": detail,
         "weight": weight,
     }
+    if processes is not None and processes > 1:
+        step["processes"] = processes
+    if work_items is not None and work_items > 0:
+        step["work_items"] = work_items
+    return step
 
 
 def _radio_progress_step_id(radio: int, step: str) -> str:
@@ -182,6 +190,8 @@ def _radio_progress_steps(
     *,
     skip_bank: bool,
     station_name: Optional[str] = None,
+    worker_processes: int = 1,
+    prepare_processes: int = 1,
 ) -> List[Dict[str, object]]:
     prefix = _radio_progress_prefix(radio, station_name)
     track_label = f"{music_count} 首" if music_count > 0 else "自建歌曲"
@@ -191,18 +201,22 @@ def _radio_progress_steps(
             f"{prefix} 响度匹配与时间点",
             f"分析 {track_label}的响度，按当前歌单匹配后转为 48 kHz WAV，并写入已确认 marker。",
             weight=max(2, music_count * 2),
+            processes=prepare_processes,
+            work_items=music_count,
         ),
         _progress_step(
             _radio_progress_step_id(radio, "stage_bank"),
             f"{prefix} 铺满 bank 槽位",
             "按 FH6 原 bank 的 sample 顺序生成 fsbank staging WAV。",
             weight=2,
+            processes=worker_processes,
         ),
         _progress_step(
             _radio_progress_step_id(radio, "rebuild_bank"),
             f"{prefix} 重建 FMOD bank",
             "运行 fsbankcl，修正 sample 名称，再拼回 .assets.bank。",
             weight=1 if skip_bank else 8,
+            processes=worker_processes,
         ),
     ]
 
@@ -245,6 +259,24 @@ def _baseline_loudness_cache_state(args: argparse.Namespace) -> str:
     return "cached"
 
 
+def _baseline_loudness_plan_parallelism(args: argparse.Namespace) -> Optional[int]:
+    """初始化基线响度缓存时会并行解码原始 bank；预估进程数供进度 UI 体现。"""
+    raw = getattr(args, "baseline_manifest", None)
+    if not raw:
+        return None
+    path = Path(str(raw)).expanduser()
+    if not path.exists():
+        return None
+    try:
+        manifest = load_manifest(path)
+    except CliError:
+        return None
+    bank_count = baseline_loudness_bank_count(manifest)
+    if bank_count <= 1:
+        return None
+    return loudness_worker_count(getattr(args, "loudness_jobs", 0), bank_count)
+
+
 def _baseline_loudness_progress_step(args: argparse.Namespace) -> Optional[Dict[str, object]]:
     state = _baseline_loudness_cache_state(args)
     if state == "none":
@@ -259,6 +291,7 @@ def _baseline_loudness_progress_step(args: argparse.Namespace) -> Optional[Dict[
             else "读取已缓存的原始电台响度范围，用来限制自建歌单目标响度。"
         ),
         weight=10 if initializing else 1,
+        processes=_baseline_loudness_plan_parallelism(args) if initializing else None,
     )
 
 
@@ -321,6 +354,12 @@ def _package_progress_plan(
     current_radio_passthrough: bool = False,
     song_loudness_count: int = 0,
 ) -> List[Dict[str, object]]:
+    radio_worker_processes = (
+        _radio_package_worker_count(len(radio_counts)) if not current_radio_passthrough else 1
+    )
+    song_loudness_processes = (
+        _loudness_worker_count(args, song_loudness_count) if song_loudness_count > 0 else 1
+    )
     steps = [
         _progress_step(
             "inspect_inputs",
@@ -349,15 +388,25 @@ def _package_progress_plan(
                     "全局歌曲响度缓存",
                     "先不区分电台，并行测量本次准备包用到的自建歌曲响度；后续电台构建直接复用结果。",
                     weight=max(2, song_loudness_count * 2),
+                    processes=song_loudness_processes,
+                    work_items=song_loudness_count,
                 )
             )
         for radio, music_count, station_name in radio_counts:
+            prepare_processes = radio_worker_processes
+            if song_loudness_count <= 0 and music_count > 1:
+                prepare_processes = max(
+                    prepare_processes,
+                    _loudness_worker_count(args, music_count),
+                )
             steps.extend(
                 _radio_progress_steps(
                     radio,
                     music_count,
                     skip_bank=args.skip_bank,
                     station_name=station_name,
+                    worker_processes=radio_worker_processes,
+                    prepare_processes=prepare_processes,
                 )
             )
     if args.source or args.target:
@@ -827,10 +876,10 @@ def _loudness_worker_count(args: argparse.Namespace, task_count: int) -> int:
 
 
 def _radio_package_worker_count(radio_count: int) -> int:
-    if radio_count <= 1:
-        return 1
+    # 单个电台重建大致要吃 ~6 个逻辑核心（ffmpeg/fsbankcl + 内部响度并行），
+    # 所以并行电台数按 逻辑核数 // 6 硬封顶，避免超额订阅拖慢整体。
     cpu_count = os.cpu_count() or 1
-    return max(1, min(max(2, cpu_count // 2), radio_count))
+    return max(1, min(radio_count, cpu_count // 6))
 
 
 def _drain_radio_progress_queue(progress_queue: Any, progress: _PackageProgressReporter) -> None:

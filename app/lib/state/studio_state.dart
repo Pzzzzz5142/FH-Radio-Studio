@@ -773,6 +773,8 @@ class PackageBuildProgressStep {
     required this.weight,
     this.summary = '',
     this.runtimeMs,
+    this.processCount,
+    this.workItemCount,
   });
 
   final String id;
@@ -782,6 +784,8 @@ class PackageBuildProgressStep {
   final int weight;
   final String summary;
   final int? runtimeMs;
+  final int? processCount;
+  final int? workItemCount;
 
   bool get terminal =>
       status == 'done' ||
@@ -789,10 +793,18 @@ class PackageBuildProgressStep {
       status == 'warning' ||
       status == 'error';
 
+  String get parallelChipLabel {
+    final processes = processCount;
+    if (processes == null || processes <= 1) return '';
+    return '多进程 ×$processes';
+  }
+
   PackageBuildProgressStep copyWith({
     String? status,
     String? summary,
     int? runtimeMs,
+    int? processCount,
+    int? workItemCount,
   }) {
     return PackageBuildProgressStep(
       id: id,
@@ -802,16 +814,27 @@ class PackageBuildProgressStep {
       weight: weight,
       summary: summary ?? this.summary,
       runtimeMs: runtimeMs ?? this.runtimeMs,
+      processCount: processCount ?? this.processCount,
+      workItemCount: workItemCount ?? this.workItemCount,
     );
   }
 
   factory PackageBuildProgressStep.fromJson(Map<String, dynamic> json) {
+    final processCount =
+        _objectInt(json['processes']) ??
+        _objectInt(json['workers']) ??
+        _objectInt(json['jobs']);
     return PackageBuildProgressStep(
       id: '${json['id'] ?? ''}',
       label: '${json['label'] ?? json['id'] ?? '步骤'}',
       detail: '${json['detail'] ?? ''}',
       status: 'pending',
       weight: _objectInt(json['weight']) ?? 1,
+      processCount: processCount,
+      workItemCount:
+          _objectInt(json['work_items']) ??
+          _objectInt(json['tasks']) ??
+          _objectInt(json['total']),
     );
   }
 }
@@ -1542,6 +1565,15 @@ class StudioState {
     return null;
   }
 
+  /// 并行构建时会有多个步骤同时 running（每个 worker 各跑一个电台），
+  /// 全部返回，供 UI 体现"同时处理 N 个电台"而非只显示一个。
+  List<PackageBuildProgressStep> get runningPackageBuildProgressSteps {
+    return [
+      for (final step in packageBuildProgressSteps)
+        if (step.status == 'running') step,
+    ];
+  }
+
   PackageBuildProgressStep? get lastVisiblePackageBuildProgressStep {
     for (final step in packageBuildProgressSteps.reversed) {
       if (step.status != 'pending') return step;
@@ -1826,6 +1858,18 @@ List<PackageBuildProgressStep> _packageBuildStartupProgressSteps() {
   ];
 }
 
+int? _packageProgressProcessCount(Map<String, dynamic> event) {
+  return _objectInt(event['processes']) ??
+      _objectInt(event['workers']) ??
+      _objectInt(event['jobs']);
+}
+
+int? _packageProgressWorkItemCount(Map<String, dynamic> event) {
+  return _objectInt(event['work_items']) ??
+      _objectInt(event['tasks']) ??
+      _objectInt(event['total']);
+}
+
 StudioState _stateWithPackageBuildProgressEvent(
   StudioState current,
   Map<String, dynamic> event,
@@ -1845,7 +1889,11 @@ StudioState _stateWithPackageBuildProgressEvent(
   if (stepId.isEmpty) return current;
   if (type == 'step_started') {
     return _updatePackageBuildProgressStep(current, stepId, (step) {
-      return step.copyWith(status: 'running');
+      return step.copyWith(
+        status: 'running',
+        processCount: _packageProgressProcessCount(event),
+        workItemCount: _packageProgressWorkItemCount(event),
+      );
     });
   }
   if (type == 'step_completed') {
@@ -1855,6 +1903,8 @@ StudioState _stateWithPackageBuildProgressEvent(
         status: status,
         summary: '${event['summary'] ?? step.summary}',
         runtimeMs: _objectInt(event['runtime_ms']),
+        processCount: _packageProgressProcessCount(event),
+        workItemCount: _packageProgressWorkItemCount(event),
       );
     });
   }
@@ -1864,6 +1914,8 @@ StudioState _stateWithPackageBuildProgressEvent(
         status: 'error',
         summary: '${event['summary'] ?? '执行失败'}',
         runtimeMs: _objectInt(event['runtime_ms']),
+        processCount: _packageProgressProcessCount(event),
+        workItemCount: _packageProgressWorkItemCount(event),
       );
     });
   }

@@ -12,12 +12,17 @@ class RmChip extends StatelessWidget {
     this.variant = RmChipVariant.defaultC,
     this.leading,
     this.showDot = false,
+    this.dense = false,
   });
 
   final String label;
   final RmChipVariant variant;
   final Widget? leading;
   final bool showDot;
+
+  /// 紧凑模式：更小的字号与内边距，整体高度低于正文行高，
+  /// 方便嵌进标题行而不撑高那一行。
+  final bool dense;
 
   @override
   Widget build(BuildContext context) {
@@ -65,8 +70,12 @@ class RmChip extends StatelessWidget {
         dot = rm.fg4;
     }
 
+    final dotSize = dense ? 5.0 : 6.0;
+    final gap = dense ? 4.0 : 6.0;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      padding: dense
+          ? const EdgeInsets.symmetric(horizontal: 6, vertical: 1)
+          : const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(999),
@@ -77,20 +86,25 @@ class RmChip extends StatelessWidget {
         children: [
           if (showDot) ...[
             Container(
-              width: 6,
-              height: 6,
+              width: dotSize,
+              height: dotSize,
               decoration: BoxDecoration(color: dot, shape: BoxShape.circle),
             ),
-            const SizedBox(width: 6),
+            SizedBox(width: gap),
           ],
           if (leading != null) ...[
             IconTheme.merge(
-              data: IconThemeData(color: text, size: 10),
+              data: IconThemeData(color: text, size: dense ? 9 : 10),
               child: leading!,
             ),
-            const SizedBox(width: 6),
+            SizedBox(width: gap),
           ],
-          Text(label, style: RmText.chip(color: text)),
+          Text(
+            label,
+            style: dense
+                ? RmText.mono(9.5, color: text)
+                : RmText.chip(color: text),
+          ),
         ],
       ),
     );

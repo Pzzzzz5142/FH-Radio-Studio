@@ -1783,6 +1783,8 @@ void main() {
             detail: '运行 fsbankcl，修正 sample 名称，再拼回 .assets.bank。',
             status: 'running',
             weight: 8,
+            processCount: 4,
+            workItemCount: 9,
           ),
           PackageBuildProgressStep(
             id: 'patch_xml',
@@ -1853,6 +1855,11 @@ void main() {
       find.text('运行 fsbankcl，修正 sample 名称，再拼回 .assets.bank。'),
       findsOneWidget,
     );
+    expect(find.text('多进程 ×4'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('package-build-parallel-summary')),
+      findsOneWidget,
+    );
     expect(find.text('9%'), findsOneWidget);
     expect(
       tester.getSize(progress).width,
@@ -1869,6 +1876,110 @@ void main() {
     expect(taps, 0);
     expect(tester.takeException(), isNull);
     semantics.dispose();
+  });
+
+  testWidgets('package build overlay lists every radio running in parallel', (
+    tester,
+  ) async {
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'fh_radio_studio_package_parallel_overlay_',
+    );
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1400, 900);
+
+    final projectDir = p.join(tempRoot.path, 'project');
+    FhRadioStudioProject.ensure(projectDir);
+    SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+    final prefs = await SharedPreferences.getInstance();
+    final controller = _StaticStudioController(prefs);
+    controller.setStateForTest(
+      controller.state.copyWith(
+        busy: true,
+        busyLabel: '构建电台包',
+        packageBuildProgressSteps: const [
+          PackageBuildProgressStep(
+            id: 'inspect_inputs',
+            label: '读取构建输入',
+            detail: '解析构建输入。',
+            status: 'done',
+            weight: 1,
+          ),
+          PackageBuildProgressStep(
+            id: 'radio.4.rebuild_bank',
+            label: 'Horizon XS 重建 FMOD bank',
+            detail: '运行 fsbankcl。',
+            status: 'running',
+            weight: 8,
+            processCount: 3,
+          ),
+          PackageBuildProgressStep(
+            id: 'radio.5.stage_bank',
+            label: 'Horizon Wilds 铺满 bank 槽位',
+            detail: '生成 fsbank staging WAV。',
+            status: 'running',
+            weight: 2,
+            processCount: 3,
+          ),
+          PackageBuildProgressStep(
+            id: 'radio.6.measure_loudness',
+            label: 'Horizon Pulse 响度匹配与时间点',
+            detail: '分析响度并写入 marker。',
+            status: 'running',
+            weight: 4,
+            processCount: 3,
+          ),
+        ],
+      ),
+    );
+
+    final router = GoRouter(
+      initialLocation: '/dashboard',
+      routes: [
+        ShellRoute(
+          builder: (context, state, child) => AppShell(child: child),
+          routes: [
+            GoRoute(
+              path: '/dashboard',
+              builder: (context, state) =>
+                  const Center(child: Text('behind overlay')),
+            ),
+          ],
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+          studioProvider.overrideWith((ref) => controller),
+        ],
+        child: MaterialApp.router(
+          theme: buildAppTheme(
+            brightness: Brightness.light,
+            accent: AppAccent.lime,
+          ),
+          routerConfig: router,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('并行处理 3 个电台'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('package-build-concurrent-steps')),
+      findsOneWidget,
+    );
+    expect(find.text('Horizon XS 重建 FMOD bank'), findsOneWidget);
+    expect(find.text('Horizon Wilds 铺满 bank 槽位'), findsOneWidget);
+    expect(find.text('Horizon Pulse 响度匹配与时间点'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('package build success dialog renders completion summary', (
