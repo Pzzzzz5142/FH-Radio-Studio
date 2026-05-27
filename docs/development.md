@@ -163,6 +163,98 @@ For focused Flutter verification after state/CLI integration changes:
 flutter test test/project_workspace_test.dart test/playlist_catalog_state_test.dart test/studio_state_test.dart test/fh_radio_studio_cli_runtime_test.dart test/widget_test.dart
 ```
 
+## Issue Labels
+
+Use issue labels as structured metadata. Each issue should usually have one `type:*`
+label, one `priority:*` label, and at least one `area:*` label. Add `needs:*`,
+`risk:*`, `regression`, or `release:blocker` only when they add useful review,
+testing, or release context.
+
+Type labels:
+
+| Label | Meaning |
+| --- | --- |
+| `type:bug` | User-visible defect or failing behavior. |
+| `type:feat` | New product capability or workflow. |
+| `type:enhancement` | Improvement to existing behavior. |
+| `type:perf` | Performance or resource-use improvement. |
+| `type:refactor` | Internal restructuring without behavior change. |
+| `type:docs` | Documentation, guides, or user-facing copy. |
+| `type:test` | Tests, fixtures, or QA coverage. |
+| `type:build` | Build system, packaging scripts, or generated artifacts. |
+| `type:ci` | GitHub Actions or automation. |
+| `type:chore` | General maintenance. |
+
+Priority labels:
+
+| Label | Meaning |
+| --- | --- |
+| `priority:p0-critical` | Critical blocker, data loss, or unusable app. |
+| `priority:p1-high` | High impact and should be handled soon. |
+| `priority:p2-medium` | Normal priority work. |
+| `priority:p3-low` | Low urgency or polish. |
+
+Area labels:
+
+| Label | Meaning |
+| --- | --- |
+| `area:app` | Flutter desktop app. |
+| `area:backend` | Python CLI and product logic. |
+| `area:audio` | Audio import, transcoding, metadata, or loudness. |
+| `area:analysis` | AI timepoint analysis, ranking, or providers. |
+| `area:playlist` | Playlist planning and radio assignment. |
+| `area:replace-editor` | Replace editor UI and timepoint confirmation. |
+| `area:integrity` | Baselines, backups, and game file integrity. |
+| `area:package-deploy` | Package build and deploy workflow. |
+| `area:runtime` | uv, Python runtime, toolchain, or CLI launch. |
+| `area:siren` | MONSTER SIREN integration and imports. |
+| `area:release` | Release staging, publishing, and portable bundles. |
+| `area:windows` | Windows platform runner or native build. |
+| `area:docs` | Docs, blog, README, or guides. |
+
+Status labels:
+
+| Label | Meaning |
+| --- | --- |
+| `status:triage` | Awaiting classification or initial review. |
+| `status:accepted` | Confirmed and ready to work. |
+| `status:needs-info` | More details are required. |
+| `status:needs-repro` | Reproduction steps are required. |
+| `status:blocked` | Cannot proceed due to a dependency or blocker. |
+
+Verification and risk labels:
+
+| Label | Meaning |
+| --- | --- |
+| `needs:visual-qa` | Requires Flutter visual verification or screenshots. |
+| `needs:audio-qa` | Requires listening or audio output verification. |
+| `needs:fh6-install` | Requires a real FH6 install or game files. |
+| `needs:local-heavy` | Validate with the `local-heavy` AI profile. |
+| `risk:game-files` | Touches protected FH6 files or deploy flow. |
+| `risk:data-loss` | Could overwrite or delete user or game data. |
+| `regression` | Previously working behavior is broken. |
+| `release:blocker` | Blocks a release candidate or publish. |
+
+Contributor and default labels:
+
+| Label | Meaning |
+| --- | --- |
+| `good first issue` | Good for newcomers. |
+| `help wanted` | Extra attention or contributor help is wanted. |
+| `duplicate` | This issue or pull request already exists. |
+| `invalid` | The report does not describe actionable project work. |
+| `question` | Further information or discussion is requested. |
+| `wontfix` | This will not be worked on. |
+
+Labeling examples:
+
+```text
+type:perf + priority:p2-medium + area:analysis + needs:local-heavy
+type:feat + priority:p2-medium + area:replace-editor + needs:visual-qa
+type:bug + priority:p1-high + area:integrity + area:package-deploy + risk:game-files
+type:build + priority:p1-high + area:release + area:runtime + release:blocker
+```
+
 ## Commit Messages
 
 Use bracketed conventional commit messages:
