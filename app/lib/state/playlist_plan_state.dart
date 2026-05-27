@@ -20,6 +20,17 @@ class PlaylistPlanController extends StateNotifier<PlaylistPlan> {
   final Ref ref;
   late String _projectDir;
 
+  Set<String>? get _validCodes {
+    final radios = ref.read(studioProvider).radioOptions;
+    if (radios.isEmpty) return null;
+    return {for (final r in radios) r.code};
+  }
+
+  Map<String, String> get _radioCodeAliases => {
+    for (final r in ref.read(studioProvider).radioOptions)
+      ?legacyRadioCodeForStation(number: r.number, name: r.name): r.code,
+  };
+
   void _resetDraft() {
     state = const PlaylistPlan.empty();
     PlaylistPlanStore.delete(_projectDir);
@@ -30,7 +41,12 @@ class PlaylistPlanController extends StateNotifier<PlaylistPlan> {
   void replaceWith(PlaylistPlan plan) {
     if (_editingLocked) return;
     state = plan;
-    PlaylistPlanStore.write(_projectDir, state);
+    PlaylistPlanStore.write(
+      _projectDir,
+      state,
+      validCodes: _validCodes,
+      radioCodeAliases: _radioCodeAliases,
+    );
   }
 
   void assign({
@@ -40,41 +56,75 @@ class PlaylistPlanController extends StateNotifier<PlaylistPlan> {
     required int slot,
   }) {
     if (_editingLocked) return;
+    final codes = _validCodes;
     state = _stateSeededFromPackage().assign(
       source: source,
       radioCode: radioCode,
       playlistType: playlistType,
       slot: slot,
     );
-    PlaylistPlanStore.write(_projectDir, state);
+    PlaylistPlanStore.write(
+      _projectDir,
+      state,
+      validCodes: codes,
+      radioCodeAliases: _radioCodeAliases,
+    );
   }
 
   void unassign(String source, {String? radioCode, String? playlistType}) {
     if (_editingLocked) return;
+    final codes = _validCodes;
     state = _stateSeededFromPackage().unassign(
       source,
       radioCode: radioCode,
       playlistType: playlistType,
     );
-    PlaylistPlanStore.write(_projectDir, state);
+    PlaylistPlanStore.write(
+      _projectDir,
+      state,
+      validCodes: codes,
+      radioCodeAliases: _radioCodeAliases,
+    );
   }
 
   void removeDeletedSource(String source) {
-    final stored = PlaylistPlanStore.read(_projectDir);
+    final codes = _validCodes;
+    final aliases = _radioCodeAliases;
+    final stored = PlaylistPlanStore.read(
+      _projectDir,
+      validCodes: codes,
+      radioCodeAliases: aliases,
+    );
     final base = state.hasDraft
         ? state
         : (stored.hasDraft ? stored : _stateSeededFromPackage());
     state = base.unassign(source);
-    PlaylistPlanStore.write(_projectDir, state);
+    PlaylistPlanStore.write(
+      _projectDir,
+      state,
+      validCodes: codes,
+      radioCodeAliases: aliases,
+    );
   }
 
   void removeDeletedSources(Iterable<String> sources) {
-    final stored = PlaylistPlanStore.read(_projectDir);
+    final codes = _validCodes;
+    final aliases = _radioCodeAliases;
+    final stored = PlaylistPlanStore.read(
+      _projectDir,
+      validCodes: codes,
+      radioCodeAliases: aliases,
+    );
     final base = state.hasDraft
         ? state
         : (stored.hasDraft ? stored : _stateSeededFromPackage());
     state = base.unassignSources(sources);
-    PlaylistPlanStore.write(_projectDir, state);
+    PlaylistPlanStore.write(
+      _projectDir,
+      state,
+      validCodes: codes,
+      radioCodeAliases: aliases,
+    );
   }
 
   void restoreBuiltin({
@@ -82,11 +132,17 @@ class PlaylistPlanController extends StateNotifier<PlaylistPlan> {
     required String playlistType,
   }) {
     if (_editingLocked) return;
+    final codes = _validCodes;
     state = _stateSeededFromPackage().restoreBuiltin(
       radioCode: radioCode,
       playlistType: playlistType,
     );
-    PlaylistPlanStore.write(_projectDir, state);
+    PlaylistPlanStore.write(
+      _projectDir,
+      state,
+      validCodes: codes,
+      radioCodeAliases: _radioCodeAliases,
+    );
   }
 
   PlaylistPlan _stateSeededFromPackage() {
@@ -128,16 +184,22 @@ PlaylistPlan playlistPlanFromPackageSummaries({
   if (package == null || package.assignments.isEmpty) {
     return const PlaylistPlan.empty();
   }
+  if (package.radio != null && !isUiSupportedRadio(name: package.station)) {
+    return const PlaylistPlan.empty();
+  }
   final assignments = <String, PlaylistAssignment>{};
   for (final item in package.assignments) {
     if (item.source.trim().isEmpty || item.slot <= 0) continue;
-    if (!isUiSupportedRadio(code: item.radioLabel)) continue;
     final playlistTypes = item.normalizedPlaylistTypes;
     for (final playlistType in playlistTypes) {
       final assignment = PlaylistAssignment(
         trackKey: PlaylistAssignment.keyForPath(item.source),
         source: item.source,
-        radioCode: item.radioLabel,
+        radioCode: canonicalRadioCode(
+          item.radioLabel,
+          number: package.radio,
+          name: package.station,
+        ),
         playlistType: playlistType,
         slot: item.slot,
       );

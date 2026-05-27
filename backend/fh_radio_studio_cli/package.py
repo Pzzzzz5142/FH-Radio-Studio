@@ -27,7 +27,9 @@ from .game import (
     find_child_by_attr,
     find_station,
     iter_track_samples,
+    legacy_radio_code_for_station,
     parse_xml,
+    radio_code_for_station,
     radio_info_files,
     resolve_game_dir,
     steam_game_version,
@@ -351,11 +353,11 @@ def _package_progress_plan(
     args: argparse.Namespace,
     radio_counts: List[Tuple[int, int, Optional[str]]],
     *,
-    current_radio_passthrough: bool = False,
+    copy_radio_files: bool = False,
     song_loudness_count: int = 0,
 ) -> List[Dict[str, object]]:
     radio_worker_processes = (
-        _radio_package_worker_count(len(radio_counts)) if not current_radio_passthrough else 1
+        _radio_package_worker_count(len(radio_counts)) if not copy_radio_files else 1
     )
     song_loudness_processes = (
         _loudness_worker_count(args, song_loudness_count) if song_loudness_count > 0 else 1
@@ -368,12 +370,12 @@ def _package_progress_plan(
             weight=1,
         )
     ]
-    if current_radio_passthrough:
+    if copy_radio_files:
         steps.append(
             _progress_step(
-                "copy_current_radio",
-                "复制当前电台文件",
-                "语言-only 包会保留当前 RadioInfo 和 bank 内容，只写入语言设置。",
+                "copy_radio_files",
+                "复制电台文件",
+                "从基线复制需要恢复的 RadioInfo 和 bank 内容。",
                 weight=3,
             )
         )
@@ -418,7 +420,7 @@ def _package_progress_plan(
                 weight=1,
             )
         )
-    if not current_radio_passthrough:
+    if not copy_radio_files:
         steps.append(
             _progress_step(
                 "patch_xml",
@@ -835,27 +837,6 @@ def collect_music_inputs(inputs: List[str]) -> List[Path]:
     return results
 
 
-def radio_code_for_station(radio: int, name: str) -> str:
-    normalized = name.lower()
-    if "horizon pulse" in normalized:
-        return "HOR"
-    if "bass arena" in normalized:
-        return "BAS"
-    if "block party" in normalized:
-        return "BLK"
-    if "eurobeat" in normalized:
-        return "EUR"
-    if "rocas" in normalized:
-        return "ROC"
-    if normalized == "xs" or "horizon xs" in normalized:
-        return "XS"
-    if "timeless" in normalized:
-        return "TIM"
-    if "mixmaster" in normalized:
-        return "MIX"
-    return f"R{radio}"
-
-
 def normalize_playlist_type(value: object) -> str:
     return "Event" if str(value).strip().lower() == "event" else "FreeRoam"
 
@@ -904,7 +885,7 @@ def _measure_loudness_cache_misses(
         return {}
     worker_count = _loudness_worker_count(args, len(paths)) if allow_parallel else 1
     label = "Loudness cache miss" if has_cache else "Loudness analysis"
-    worker_label = f"{worker_count} process(es)" if allow_parallel else "current radio process"
+    worker_label = f"{worker_count} process(es)" if allow_parallel else "radio process"
     print(f"  {label}: measuring {len(paths)} song(s) with {worker_label}.")
 
     results: Dict[str, Dict[str, object]] = {}
@@ -1128,6 +1109,9 @@ def station_number_by_code(root: ET.Element) -> Dict[str, int]:
         code = radio_code_for_station(number, station.get("Name", ""))
         out[code] = number
         out[f"R{number}"] = number
+        legacy_code = legacy_radio_code_for_station(number, station.get("Name", ""))
+        if legacy_code:
+            out[legacy_code] = number
     return out
 
 
@@ -1827,135 +1811,6 @@ def validate_language_settings(args: argparse.Namespace, game_dir: Path) -> None
         die(f"Target language table not found: {target_table}")
 
 
-def cmd_build_current_radio_package(
-    args: argparse.Namespace,
-    game_dir: Path,
-    audio_dir: Path,
-    radio_info: Path,
-    root: ET.Element,
-    progress: Optional[_PackageProgressReporter] = None,
-) -> int:
-    progress = progress or _PackageProgressReporter(False)
-    station = find_station(root, args.radio)
-    progress.plan(
-        _package_progress_plan(
-            args,
-            [(args.radio, 0, station.get("Name"))],
-            current_radio_passthrough=True,
-        )
-    )
-    out_dir = Path(args.out_dir).expanduser()
-    package_root = out_dir / "package"
-    package_audio = package_root / "media" / "audio"
-    package_bank_dir = package_audio / "FMODBanks"
-    package_string_dir = package_root / "media" / "Stripped" / "StringTables"
-    with progress.stage("inspect_inputs"):
-        for path in (package_audio, package_bank_dir):
-            path.mkdir(parents=True, exist_ok=True)
-        target_bank = resolve_target_bank_for_station(audio_dir, station, args.radio, args.bank)
-        bank_info = parse_fsb5(target_bank)
-        replaceable_slots = playlist_entry_caps_for_types(
-            station,
-            PLAYLIST_TYPES,
-            bank_info.num_samples,
-        )
-
-    with progress.stage("package_language"):
-        language_manifest = package_language_settings(args, game_dir, package_string_dir)
-        if language_manifest is None:
-            die(
-                "No music files or playlist assignments were provided. Assign at least one track, "
-                "or pass --source and --target to build a current-radio package."
-            )
-
-    with progress.stage("copy_current_radio", summary=target_bank.name):
-        packaged_bank = package_bank_dir / target_bank.name
-        shutil.copy2(target_bank, packaged_bank)
-        print(f"Packaged current bank: {target_bank.name}")
-
-        copied_radio_info: List[str] = []
-        for source_xml in radio_info_files(audio_dir):
-            target_xml = package_audio / source_xml.name
-            shutil.copy2(source_xml, target_xml)
-            parse_xml(target_xml)
-            copied_radio_info.append(source_xml.name)
-            print(f"  copied {source_xml.name} unchanged")
-
-    package_manifest: Dict[str, object] = {
-        "schema_version": 2,
-        "current_radio_passthrough": True,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "game": "FH6",
-        "game_dir": str(game_dir),
-        **_package_game_version_fields(game_dir),
-        "source_audio_dir": str(audio_dir.resolve()),
-        "source_radio_info": str(radio_info),
-        "playlist_plan": None,
-        "radio": args.radio,
-        "radio_code": radio_code_for_station(args.radio, station.get("Name", "")),
-        "station": station.get("Name"),
-        "source_bank": str(target_bank),
-        "target_bank_name": target_bank.name,
-        "bank_slots": bank_info.num_samples,
-        "replaceable_slots": replaceable_slots,
-        "playlist_mode": args.playlist_mode,
-        "quality": args.quality,
-        "skip_bank": False,
-        "timing_manifest": None,
-        "runtime_verified": True,
-        "runtime_warning": None,
-        "radios": [
-            {
-                "radio": args.radio,
-                "radio_code": radio_code_for_station(args.radio, station.get("Name", "")),
-                "station": station.get("Name"),
-                "source_bank": str(target_bank),
-                "target_bank_name": target_bank.name,
-                "bank_slots": bank_info.num_samples,
-                "replaceable_slots": replaceable_slots,
-                "pack_order": None,
-                "splice": None,
-                "loudness_profile": None,
-                "music": [],
-                "assignments": [],
-            }
-        ],
-        "language": language_manifest,
-        "xml_patch_totals": {
-            "samples_patched": 0,
-            "missing_samples": 0,
-            "playlist_entries_added": 0,
-            "playlist_entries_removed": 0,
-        },
-    }
-    with progress.stage("complete_package", summary="manifest + MD5"):
-        apply_baseline_completion(package_manifest, package_root, args)
-        package_manifest["package_files"] = package_file_fingerprints(package_root)
-        manifest_path = package_root / "fh_radio_studio_package_manifest.json"
-        write_json(manifest_path, package_manifest)
-        instructions = [
-            "FH Radio Studio current-radio package",
-            "=" * 35,
-            f"Radio  : R{args.radio} {station.get('Name')}",
-            f"Bank   : {target_bank.name}",
-            f"Display: {language_manifest['source_lang']}",
-            f"Voice  : {language_manifest['target_lang']}",
-            "",
-            "RadioInfo and the selected bank are copied from the current game unchanged.",
-            "Deploy also writes UserPreferredLang when language settings are present.",
-            "",
-            "Package files:",
-            f"  {package_audio}",
-            f"  {package_string_dir}",
-            f"  {manifest_path}",
-        ]
-        write_text(package_root / "INSTALL_README.txt", "\n".join(instructions) + "\n")
-
-    print(f"Package manifest: {manifest_path}")
-    print(f"Current-radio package built with {len(copied_radio_info)} RadioInfo file(s).")
-    return 0
-
-
 def _baseline_audio_dir_from_manifest(baseline_manifest: Optional[str]) -> Optional[Path]:
     if not baseline_manifest:
         return None
@@ -1991,7 +1846,7 @@ def cmd_build_baseline_restore_package(
         _package_progress_plan(
             args,
             radio_counts,
-            current_radio_passthrough=True,
+            copy_radio_files=True,
         )
     )
 
@@ -2042,7 +1897,7 @@ def cmd_build_baseline_restore_package(
     with progress.stage("package_language"):
         language_manifest = package_language_settings(args, game_dir, package_string_dir)
 
-    with progress.stage("copy_current_radio", summary=f"{len(restored_units)} radio(s)"):
+    with progress.stage("copy_radio_files", summary=f"{len(restored_units)} radio(s)"):
         copied_radio_info: List[str] = []
         for source_xml in radio_info_files(baseline_audio):
             target_xml = package_audio / source_xml.name
@@ -2474,13 +2329,11 @@ def cmd_build_package(args: argparse.Namespace) -> int:
             progress,
         )
     if not args.music:
-        if args.source or args.target:
-            return cmd_build_current_radio_package(
-                args, game_dir, audio_dir, radio_info, root, progress
-            )
         die(
             "No music files or playlist assignments were provided. Assign at least one track in the playlist draft before building a radio package."
         )
+    if args.radio is None:
+        die("Pass --radio when building a single-radio package without a playlist plan.")
 
     station = find_station(root, args.radio)
     target_bank = resolve_target_bank_for_station(audio_dir, station, args.radio, args.bank)

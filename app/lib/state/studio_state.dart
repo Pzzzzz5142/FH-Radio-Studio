@@ -373,6 +373,7 @@ class RadioStatusOption {
   const RadioStatusOption({
     required this.number,
     required this.name,
+    required this.code,
     required this.tracks,
     required this.bankSlots,
     required this.freeRoam,
@@ -381,6 +382,7 @@ class RadioStatusOption {
 
   final int number;
   final String name;
+  final String code;
   final int? tracks;
   final int? bankSlots;
   final int? freeRoam;
@@ -655,7 +657,6 @@ class PackageArtifactSummary {
     required this.playlistMode,
     required this.skipBank,
     required this.runtimeVerified,
-    this.currentRadioPassthrough = false,
     this.baselineRestore = false,
     required this.sourceLang,
     required this.targetLang,
@@ -672,7 +673,6 @@ class PackageArtifactSummary {
   final String playlistMode;
   final bool skipBank;
   final bool runtimeVerified;
-  final bool currentRadioPassthrough;
   final bool baselineRestore;
   final String? sourceLang;
   final String? targetLang;
@@ -723,13 +723,6 @@ class PackageArtifactSummary {
       final radios = radio == null ? station : 'R$radio · $station';
       return '恢复 builtin · $radios 从原始备份原样打包$language';
     }
-    if (currentRadioPassthrough) {
-      final language = sourceLang == null || targetLang == null
-          ? '语言设置'
-          : '$sourceLang 显示 / $targetLang 语音';
-      final slots = _slotDetail;
-      return '当前游戏 radio 原样打包$slots · $language';
-    }
     final slots = _slotDetail;
     final mode = playlistMode == 'add' ? '保留原播放列表' : '替换播放列表';
     final packageState = skipBank ? '仅生成预览' : '可写入音频包';
@@ -742,9 +735,6 @@ class PackageArtifactSummary {
   String get trackPreview {
     if (baselineRestore) {
       return 'RadioInfo 与 bank 来自原始备份';
-    }
-    if (currentRadioPassthrough && previewTracks.isEmpty) {
-      return 'RadioInfo 与 bank 保持当前游戏内容';
     }
     if (previewTracks.isEmpty) return '未读取到曲目信息';
     final names = previewTracks.take(3).join(', ');
@@ -1207,7 +1197,6 @@ class StudioState {
     required this.gameDir,
     required this.preferredPath,
     required this.musicPaths,
-    required this.radio,
     required this.aiProfile,
     required this.aiProfileNotice,
     required this.aiUsePipMirror,
@@ -1320,12 +1309,10 @@ class StudioState {
     final projectPendingPackageDir = hasProject
         ? _latestPendingPackageDir(projectDir)
         : null;
-    final radio = _objectInt(projectSettings['radio']) ?? 4;
     if (hasProject) {
       FhRadioStudioProject.writeSettings(
         projectDir,
         gameDir: gameDir,
-        radio: radio,
         sourceLang: sourceLang,
         targetLang: targetLang,
         aiProfile: aiProfile,
@@ -1339,7 +1326,6 @@ class StudioState {
       gameDir: gameDir,
       preferredPath: preferredPath,
       musicPaths: projectMusicPaths,
-      radio: radio,
       aiProfile: aiProfile,
       aiProfileNotice: null,
       aiUsePipMirror: aiUsePipMirror,
@@ -1410,7 +1396,6 @@ class StudioState {
   final String gameDir;
   final String preferredPath;
   final List<String> musicPaths;
-  final int radio;
   final String aiProfile;
   final String? aiProfileNotice;
   final bool aiUsePipMirror;
@@ -1677,7 +1662,6 @@ class StudioState {
     String? gameDir,
     String? preferredPath,
     List<String>? musicPaths,
-    int? radio,
     String? aiProfile,
     Object? aiProfileNotice = _sentinel,
     bool? aiUsePipMirror,
@@ -1737,7 +1721,6 @@ class StudioState {
       gameDir: gameDir ?? this.gameDir,
       preferredPath: preferredPath ?? this.preferredPath,
       musicPaths: musicPaths ?? this.musicPaths,
-      radio: radio ?? this.radio,
       aiProfile: aiProfile ?? this.aiProfile,
       aiProfileNotice: identical(aiProfileNotice, _sentinel)
           ? this.aiProfileNotice
@@ -2182,10 +2165,12 @@ PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
   void readPackageUnit(Map<String, dynamic> unit) {
     final radio = _objectInt(unit['radio']);
     final station = _objectString(unit['station']) ?? '';
-    final radioLabel =
-        _objectString(unit['radio_code']) ??
-        _radioAssignmentLabel(radio, station);
-    if (!isUiSupportedRadio(number: radio, code: radioLabel, name: station)) {
+    final radioLabel = canonicalRadioCode(
+      _objectString(unit['radio_code']),
+      number: radio,
+      name: station,
+    );
+    if (!isUiSupportedRadio(name: station)) {
       return;
     }
     visibleUnits += 1;
@@ -2273,8 +2258,6 @@ PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
     playlistMode: _objectString(data['playlist_mode']) ?? 'only',
     skipBank: _objectBool(data['skip_bank']) ?? false,
     runtimeVerified: _objectBool(data['runtime_verified']) ?? false,
-    currentRadioPassthrough:
-        _objectBool(data['current_radio_passthrough']) ?? false,
     baselineRestore: _objectBool(data['baseline_restore']) ?? false,
     sourceLang: _objectString(language?['source_lang']),
     targetLang: _objectString(language?['target_lang']),
@@ -2327,20 +2310,6 @@ String _buildPackageFailureMessage(CliRunResult result) {
   return result.cancelled
       ? '测试准备包生成已取消。'
       : 'build-package 退出码 ${result.exitCode}。';
-}
-
-String _radioAssignmentLabel(int? radio, String station) {
-  final normalized = station.toLowerCase();
-  if (normalized.contains('horizon pulse')) return 'HOR';
-  if (normalized.contains('bass arena')) return 'BAS';
-  if (normalized.contains('block party')) return 'BLK';
-  if (normalized.contains('eurobeat')) return 'EUR';
-  if (normalized.contains('rocas')) return 'ROC';
-  if (normalized == 'xs' || normalized.contains('horizon xs')) return 'XS';
-  if (normalized.contains('timeless')) return 'TIM';
-  if (normalized.contains('mixmaster')) return 'MIX';
-  if (radio != null) return 'R$radio';
-  return station.trim().isEmpty ? 'R?' : station;
 }
 
 String? _steamBuildLabel(String? versionId) {
@@ -2566,8 +2535,6 @@ class StudioController extends StateNotifier<StudioState> {
         _objectString(projectSettings['game_dir']) ?? _defaultGameDir();
     final preferredPath =
         _objectString(projectSettings['preferred_path']) ?? '';
-    final storedRadio = _objectInt(projectSettings['radio']) ?? state.radio;
-    final radio = isUiSupportedRadio(number: storedRadio) ? storedRadio : 4;
     final sourceLang =
         _objectString(projectSettings['source_lang'])?.toUpperCase() ??
         state.sourceLang;
@@ -2581,7 +2548,6 @@ class StudioController extends StateNotifier<StudioState> {
       next,
       gameDir: gameDir,
       preferredPath: preferredPath,
-      radio: radio,
       sourceLang: sourceLang,
       targetLang: targetLang,
       aiProfile: aiProfile,
@@ -2593,7 +2559,6 @@ class StudioController extends StateNotifier<StudioState> {
       gameDir: gameDir,
       preferredPath: preferredPath,
       musicPaths: musicPaths,
-      radio: radio,
       aiProfile: aiProfile,
       sourceLang: sourceLang,
       targetLang: targetLang,
@@ -2735,7 +2700,6 @@ class StudioController extends StateNotifier<StudioState> {
     FhRadioStudioProject.writeSettings(
       state.projectDir,
       gameDir: value,
-      radio: state.radio,
       sourceLang: state.sourceLang,
       targetLang: state.targetLang,
       aiProfile: state.aiProfile,
@@ -2891,10 +2855,21 @@ class StudioController extends StateNotifier<StudioState> {
       if (isSirenSource) {
         SirenImportRegistry.removeByPath(state.projectDir, source);
       }
+      final validCodes = _validRadioCodes();
+      final aliases = _radioCodeAliases();
       final planFile = File(PlaylistPlanStore.configPath(state.projectDir));
-      final plan = PlaylistPlanStore.read(state.projectDir);
+      final plan = PlaylistPlanStore.read(
+        state.projectDir,
+        validCodes: validCodes,
+        radioCodeAliases: aliases,
+      );
       if (plan.hasDraft || planFile.existsSync()) {
-        PlaylistPlanStore.write(state.projectDir, plan.unassign(source));
+        PlaylistPlanStore.write(
+          state.projectDir,
+          plan.unassign(source),
+          validCodes: validCodes,
+          radioCodeAliases: aliases,
+        );
       }
 
       final next = <String>[];
@@ -2935,12 +2910,20 @@ class StudioController extends StateNotifier<StudioState> {
         cleaned += 1;
       }
 
+      final validCodes = _validRadioCodes();
+      final aliases = _radioCodeAliases();
       final planFile = File(PlaylistPlanStore.configPath(state.projectDir));
-      final plan = PlaylistPlanStore.read(state.projectDir);
+      final plan = PlaylistPlanStore.read(
+        state.projectDir,
+        validCodes: validCodes,
+        radioCodeAliases: aliases,
+      );
       if (plan.hasDraft || planFile.existsSync()) {
         PlaylistPlanStore.write(
           state.projectDir,
           plan.unassignSources(sources),
+          validCodes: validCodes,
+          radioCodeAliases: aliases,
         );
       }
 
@@ -2977,24 +2960,6 @@ class StudioController extends StateNotifier<StudioState> {
     _append('已清空音乐输入队列。');
   }
 
-  void setRadio(String value) {
-    final next = int.tryParse(value) ?? state.radio;
-    setRadioNumber(next);
-  }
-
-  void setRadioNumber(int next) {
-    if (!isUiSupportedRadio(number: next)) return;
-    state = state.copyWith(radio: next);
-    FhRadioStudioProject.writeSettings(
-      state.projectDir,
-      gameDir: state.gameDir,
-      radio: next,
-      sourceLang: state.sourceLang,
-      targetLang: state.targetLang,
-      aiProfile: state.aiProfile,
-    );
-  }
-
   bool setAiProfile(String value) {
     final next = _validatedAiProfile(value);
     if (next == state.aiProfile) {
@@ -3027,7 +2992,6 @@ class StudioController extends StateNotifier<StudioState> {
     FhRadioStudioProject.writeSettings(
       state.projectDir,
       gameDir: state.gameDir,
-      radio: state.radio,
       sourceLang: state.sourceLang,
       targetLang: state.targetLang,
       aiProfile: value,
@@ -3052,7 +3016,6 @@ class StudioController extends StateNotifier<StudioState> {
     FhRadioStudioProject.writeSettings(
       state.projectDir,
       gameDir: state.gameDir,
-      radio: state.radio,
       sourceLang: next,
       targetLang: state.targetLang,
       aiProfile: state.aiProfile,
@@ -3076,7 +3039,6 @@ class StudioController extends StateNotifier<StudioState> {
     FhRadioStudioProject.writeSettings(
       state.projectDir,
       gameDir: state.gameDir,
-      radio: state.radio,
       sourceLang: state.sourceLang,
       targetLang: next,
       aiProfile: state.aiProfile,
@@ -3785,7 +3747,11 @@ class StudioController extends StateNotifier<StudioState> {
       _append('当前游戏文件还没确认。请先在概览里保存新文件记录、生成测试准备包，或写回旧的基线；确认或放弃后再准备普通电台包。');
       return false;
     }
-    final planForBuild = PlaylistPlanStore.read(state.projectDir);
+    final planForBuild = PlaylistPlanStore.read(
+      state.projectDir,
+      validCodes: _validRadioCodes(),
+      radioCodeAliases: _radioCodeAliases(),
+    );
     final draft = _playlistDraftForBuild();
     final restoresBuiltin = draft.restoresBuiltin;
     final canBuildLanguageChange = !state.languageSelectionMatchesGame;
@@ -3798,9 +3764,7 @@ class StudioController extends StateNotifier<StudioState> {
         !draft.hasPlan &&
         previousAppliedSummary != null &&
         previousAppliedSummary.assignments.isNotEmpty;
-    if (!draft.hasPlan &&
-        !canBuildLanguageChange &&
-        !canBuildFromPreviousApplied) {
+    if (!draft.hasPlan && !canBuildFromPreviousApplied) {
       if (state.currentPackageReady) {
         _append('准备包已经等于当前播放列表；修改分配或语言后再重新构建。');
       } else {
@@ -3825,7 +3789,7 @@ class StudioController extends StateNotifier<StudioState> {
     final playlistFromPackage = canBuildFromPreviousApplied
         ? state.lastAppliedPackageManifest
         : null;
-    if (musicInputs.isEmpty && !canBuildLanguageChange && !restoresBuiltin) {
+    if (musicInputs.isEmpty && !restoresBuiltin) {
       _append('播放列表草稿为空。请先在“播放列表”里分配至少一首自建歌曲。');
       return false;
     }
@@ -3849,16 +3813,11 @@ class StudioController extends StateNotifier<StudioState> {
       _deletePackageDir(
         FhRadioStudioProject.pendingPackageDir(state.projectDir),
       );
-      if (canBuildLanguageChange && musicInputs.isEmpty && !restoresBuiltin) {
-        _append('播放列表草稿为空；将把当前 radio 原样准备进包，并加入语言设置。');
-      }
       final result = await _run([
         'build-package',
         ...musicInputs,
         '--game-dir',
         state.gameDir,
-        '--radio',
-        '${state.radio}',
         '--source',
         state.sourceLang,
         '--target',
@@ -3965,8 +3924,6 @@ class StudioController extends StateNotifier<StudioState> {
         p.join(state.pendingBaselineDir, 'media', 'Stripped', 'StringTables'),
         '--baseline-manifest',
         state.pendingBaselineManifest,
-        '--radio',
-        '${state.radio}',
         '--source',
         state.sourceLang,
         '--target',
@@ -4053,7 +4010,11 @@ class StudioController extends StateNotifier<StudioState> {
     bool restoresBuiltin,
   })
   _playlistDraftForBuild() {
-    final plan = PlaylistPlanStore.read(state.projectDir);
+    final plan = PlaylistPlanStore.read(
+      state.projectDir,
+      validCodes: _validRadioCodes(),
+      radioCodeAliases: _radioCodeAliases(),
+    );
     if (!plan.hasDraft) {
       return (
         inputs: const [],
@@ -4112,6 +4073,18 @@ class StudioController extends StateNotifier<StudioState> {
       if (!packageKeys.contains(key)) return false;
     }
     return true;
+  }
+
+  Set<String>? _validRadioCodes() {
+    if (state.radioOptions.isEmpty) return null;
+    return {for (final r in state.radioOptions) r.code};
+  }
+
+  Map<String, String> _radioCodeAliases() {
+    return {
+      for (final r in state.radioOptions)
+        ?legacyRadioCodeForStation(number: r.number, name: r.name): r.code,
+    };
   }
 
   String _missingMusicInputMessage(String source) {
@@ -5274,8 +5247,6 @@ class StudioController extends StateNotifier<StudioState> {
   List<String> _statusArgs() {
     final args = <String>[
       'status',
-      '--radio',
-      '${state.radio}',
       '--source',
       state.sourceLang,
       '--target',
@@ -5402,7 +5373,11 @@ class StudioController extends StateNotifier<StudioState> {
         targetBaselineStatus:
             _asString(targetBaseline?['status']) ?? 'no_baseline',
       ),
-      statusSummary: _radioSummary(selected) ?? 'RadioInfo 可读取',
+      statusSummary:
+          (radioOptions.isNotEmpty
+              ? _radioSummaryForOption(radioOptions.first)
+              : _radioSummary(selected)) ??
+          'RadioInfo 可读取',
       gameDirError: null,
     );
     if (state.sourceLang != previousSourceLang ||
@@ -5410,7 +5385,6 @@ class StudioController extends StateNotifier<StudioState> {
       FhRadioStudioProject.writeSettings(
         state.projectDir,
         gameDir: state.gameDir,
-        radio: state.radio,
         sourceLang: state.sourceLang,
         targetLang: state.targetLang,
         aiProfile: state.aiProfile,
@@ -5427,12 +5401,19 @@ class StudioController extends StateNotifier<StudioState> {
       final number = _asInt(map['number']);
       final name = _asString(map['name']);
       if (number == null || name == null || name.isEmpty) continue;
-      if (!isUiSupportedRadio(number: number, name: name)) continue;
+      if (!isUiSupportedRadio(name: name)) continue;
+      final code = canonicalRadioCode(
+        _asString(map['radio_code']),
+        number: number,
+        name: name,
+      );
+      if (code.isEmpty) continue;
       final playlists = _asMap(map['playlists']);
       options.add(
         RadioStatusOption(
           number: number,
           name: name,
+          code: code,
           tracks: _asInt(map['tracks']),
           bankSlots: _asInt(map['bank_slots']),
           freeRoam: _asInt(playlists?['FreeRoam']),
@@ -5489,7 +5470,7 @@ class StudioController extends StateNotifier<StudioState> {
 
   String? _radioSummary(Map<String, dynamic>? selected) {
     if (selected == null) return null;
-    final name = _asString(selected['name']) ?? 'R${state.radio}';
+    final name = _asString(selected['name']) ?? 'RadioInfo';
     final tracks = _asInt(selected['tracks']);
     final playlists = _asMap(selected['playlists']);
     final free = _asInt(playlists?['FreeRoam']);
@@ -5497,6 +5478,13 @@ class StudioController extends StateNotifier<StudioState> {
     if (tracks == null) return name;
     if (free == null || event == null) return '$name · $tracks 首';
     return '$name · $tracks 首 · Free/Event $free/$event';
+  }
+
+  String _radioSummaryForOption(RadioStatusOption option) {
+    if (option.freeRoam == null || option.event == null) {
+      return '${option.name} · ${option.tracks ?? 0} 首';
+    }
+    return '${option.name} · ${option.tracks ?? 0} 首 · Free/Event ${option.freeRoam}/${option.event}';
   }
 
   Map<String, dynamic>? _asMap(Object? value) {

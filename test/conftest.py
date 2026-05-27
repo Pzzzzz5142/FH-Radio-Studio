@@ -78,7 +78,6 @@ def full_project(mock_game: MockGame) -> TestProject:
                 },
                 "settings": {
                     "game_dir": str(mock_game.game_dir),
-                    "radio": 4,
                     "source_lang": "CHS",
                     "target_lang": "EN",
                 },

@@ -851,7 +851,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
             ),
           ),
           source: source.path,
-          radioCode: 'XS',
+          radioCode: 'R4',
           playlistType: 'FreeRoam',
           slot: 1,
         );
@@ -859,7 +859,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
           projectDir,
           const PlaylistPlan.empty().assign(
             source: source.path,
-            radioCode: 'XS',
+            radioCode: 'R4',
             playlistType: 'FreeRoam',
             slot: 1,
           ),
@@ -892,7 +892,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         _writePackageManifestFile(
           File(FhRadioStudioProject.lastAppliedPackageManifestPath(projectDir)),
           source: missingSource,
-          radioCode: 'XS',
+          radioCode: 'R4',
           playlistType: 'FreeRoam',
           slot: 1,
         );
@@ -1118,7 +1118,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
   "radios": [
     {
       "radio": 4,
-      "radio_code": "XS",
+      "radio_code": "R4",
       "station": "Horizon XS",
       "music": [
         {
@@ -1178,8 +1178,8 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         pending: null,
         last: summary,
       );
-      expect(plan.assignmentsForRadio('XS', 'FreeRoam'), hasLength(1));
-      expect(plan.assignmentsForRadio('XS', 'Event'), isEmpty);
+      expect(plan.assignmentsForRadio('R4', 'FreeRoam'), hasLength(1));
+      expect(plan.assignmentsForRadio('R4', 'Event'), isEmpty);
       expect(plan.assignmentsForRadio('R5', 'Event'), hasLength(1));
     });
 
@@ -1214,7 +1214,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
   "radios": [
     {
       "radio": 4,
-      "radio_code": "XS",
+      "radio_code": "R4",
       "station": "Horizon XS",
       "bank_slots": 3,
       "replaceable_slots": {"FreeRoam": 1, "Event": 1},
@@ -1291,11 +1291,13 @@ class _RecordingCliStudioController extends StudioController {
 }
 
 class _RecordingCli extends FhRadioStudioCli {
-  _RecordingCli(UvRuntime runtime)
+  _RecordingCli(UvRuntime runtime, {String Function()? statusJson})
     : commands = [],
+      _statusJsonOverride = statusJson,
       super(repoRoot: runtime.projectRoot, uvRuntime: runtime);
 
   final List<List<String>> commands;
+  final String Function()? _statusJsonOverride;
   int syncCount = 0;
 
   @override
@@ -1343,7 +1345,7 @@ class _RecordingCli extends FhRadioStudioCli {
     commands.add([...args]);
     final command = args.isEmpty ? null : args.first;
     final stdout = switch (command) {
-      'status' => _statusJson(),
+      'status' => _statusJsonOverride?.call() ?? _statusJson(),
       'toolchain-status' => _toolchainStatusJson(args),
       'verify-integrity' => _integrityJson(),
       _ => '{}',
@@ -1654,7 +1656,7 @@ _writeIntegrityFixture(
   "radios": [
     {
       "radio": 4,
-      "radio_code": "XS",
+      "radio_code": "R4",
       "station": "Horizon XS",
       "target_bank_name": "R4_Tracks_CU1.assets.bank",
       "music": [],

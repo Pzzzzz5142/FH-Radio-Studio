@@ -589,6 +589,8 @@ def test_verify_integrity_offers_build_bump_when_files_match(mock_game, full_pro
 def test_build_package_completes_deploy_set_from_baseline(mock_game, full_project) -> None:
     baseline_dir = full_project.backups_dir / "baseline-current"
     package_dir = full_project.packages_dir / "complete-language-package"
+    source = full_project.sources_dir / "Baseline Complete.wav"
+    write_test_tone(source)
     baseline = run_cli(
         "baseline",
         "create",
@@ -604,6 +606,7 @@ def test_build_package_completes_deploy_set_from_baseline(mock_game, full_projec
 
     build = run_cli(
         "build-package",
+        str(source),
         "--game-dir",
         str(mock_game.game_dir),
         "--radio",
@@ -1174,20 +1177,8 @@ def test_baseline_bank_order_index_is_derived_and_used_for_build(mock_game, tmp_
     assert not (package_dir / "package" / "derived" / "bank_order.json").exists()
 
 
-def test_build_package_can_stage_language_change_without_playlist(mock_game, tmp_path) -> None:
-    package_dir = tmp_path / "packages" / "language-change-current-radio"
-    baseline_dir = tmp_path / "backups" / "baseline-current"
-    deploy_log_dir = tmp_path / "backups" / "deploy-language-change"
-    last_applied = tmp_path / ".fh-radio-studio" / "last_applied_package_manifest.json"
-    radio_info_cn = mock_game.game_dir / "media" / "audio" / "RadioInfo_CN.xml"
-    radio_info_en = mock_game.game_dir / "media" / "audio" / "RadioInfo_EN.xml"
-    target_bank = mock_game.game_dir / "media" / "audio" / "FMODBanks" / "R4_Tracks_CU1.assets.bank"
-    chs_table = mock_game.game_dir / "media" / "Stripped" / "StringTables" / "CHS.zip"
-    target_table = mock_game.game_dir / "media" / "Stripped" / "StringTables" / "EN.zip"
-    original_radio_info_cn_md5 = md5_file(radio_info_cn)
-    original_radio_info_en_md5 = md5_file(radio_info_en)
-    original_bank_md5 = md5_file(target_bank)
-    mock_game.preferred_path.write_text("CHS", encoding="utf-8")
+def test_build_package_rejects_language_change_without_playlist(mock_game, tmp_path) -> None:
+    package_dir = tmp_path / "packages" / "language-change-without-playlist"
 
     build = run_cli(
         "build-package",
@@ -1202,81 +1193,10 @@ def test_build_package_can_stage_language_change_without_playlist(mock_game, tmp
         "--out-dir",
         str(package_dir),
     )
-    assert_cli_ok(build)
 
-    manifest_path = package_dir / "package" / "fh_radio_studio_package_manifest.json"
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert payload["current_radio_passthrough"] is True
-    assert payload["radio"] == 4
-    assert payload["station"] == "Horizon XS"
-    assert payload["target_bank_name"] == "R4_Tracks_CU1.assets.bank"
-    assert len(payload["radios"]) == 1
-    assert payload["radios"][0]["music"] == []
-    assert payload["radios"][0]["assignments"] == []
-    assert payload["language"]["source_lang"] == "CHS"
-    assert payload["language"]["target_lang"] == "EN"
-    package_radio_info_cn = package_dir / "package" / "media" / "audio" / "RadioInfo_CN.xml"
-    package_radio_info_en = package_dir / "package" / "media" / "audio" / "RadioInfo_EN.xml"
-    package_bank = (
-        package_dir / "package" / "media" / "audio" / "FMODBanks" / "R4_Tracks_CU1.assets.bank"
-    )
-    assert md5_file(package_radio_info_cn) == original_radio_info_cn_md5
-    assert md5_file(package_radio_info_en) == original_radio_info_en_md5
-    assert md5_file(package_bank) == original_bank_md5
-    assert (package_dir / "package" / "media" / "Stripped" / "StringTables" / "EN.zip").exists()
-    assert [item["install_relative_path"] for item in payload["package_files"]] == [
-        "media/audio/RadioInfo_CN.xml",
-        "media/audio/RadioInfo_EN.xml",
-        "media/audio/FMODBanks/R4_Tracks_CU1.assets.bank",
-        "media/Stripped/StringTables/EN.zip",
-    ]
-
-    baseline = run_cli(
-        "baseline",
-        "create",
-        "--game-dir",
-        str(mock_game.game_dir),
-        "--package-dir",
-        str(package_dir / "package"),
-        "--out-dir",
-        str(baseline_dir),
-        "--state",
-        "current",
-        "--yes",
-    )
-    assert_cli_ok(baseline)
-    baseline_manifest = baseline_dir / "baseline_manifest.json"
-    baseline_payload = json.loads(baseline_manifest.read_text(encoding="utf-8"))
-    assert baseline_payload["file_count"] == 4
-    assert [item["install_relative_path"] for item in baseline_payload["files"]] == [
-        "media/audio/RadioInfo_CN.xml",
-        "media/audio/RadioInfo_EN.xml",
-        "media/audio/FMODBanks/R4_Tracks_CU1.assets.bank",
-        "media/Stripped/StringTables/EN.zip",
-    ]
-
-    deploy = run_cli(
-        "deploy-package",
-        str(package_dir / "package"),
-        "--game-dir",
-        str(mock_game.game_dir),
-        "--baseline-manifest",
-        str(baseline_manifest),
-        "--last-applied-manifest",
-        str(last_applied),
-        "--preferred-path",
-        str(mock_game.preferred_path),
-        "--yes",
-    )
-    assert_cli_ok(deploy)
-    assert not (deploy_log_dir / "deploy_manifest.json").exists()
-    last_applied_payload = json.loads(last_applied.read_text(encoding="utf-8"))
-    assert len(last_applied_payload["package_files"]) == 4
-    assert md5_file(radio_info_cn) == original_radio_info_cn_md5
-    assert md5_file(radio_info_en) == original_radio_info_en_md5
-    assert md5_file(target_bank) == original_bank_md5
-    assert md5_file(target_table) == md5_file(chs_table)
-    assert mock_game.preferred_path.read_text(encoding="utf-8") == "EN"
+    assert build.returncode != 0
+    assert "No music files or playlist assignments were provided" in build.stderr
+    assert not (package_dir / "package" / "fh_radio_studio_package_manifest.json").exists()
 
 
 def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_path) -> None:
@@ -1380,7 +1300,7 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
     assert payload["radio"] is None
     assert len(payload["radios"]) == 2
     by_radio = {item["radio"]: item for item in payload["radios"]}
-    assert by_radio[4]["radio_code"] == "XS"
+    assert by_radio[4]["radio_code"] == "R4"
     assert by_radio[5]["radio_code"] == "R5"
     assert by_radio[4]["assignments"][0]["source"] == str(source_xs.resolve())
     assert by_radio[4]["assignments"][0]["playlist_types"] == ["FreeRoam"]

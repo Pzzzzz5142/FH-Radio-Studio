@@ -278,7 +278,7 @@ def build_parser() -> argparse.ArgumentParser:
         "music", nargs="*", help="Music files or directories to pack into the target bank"
     )
     package.add_argument("--out-dir", required=True, help="Output package directory")
-    package.add_argument("--radio", type=int, required=True, help="Target FH6 radio number")
+    package.add_argument("--radio", type=int, help="Target FH6 radio number")
     package.add_argument(
         "--source-audio-dir",
         help="Read RadioInfo XML and source banks from this media/audio directory instead of the live game directory",

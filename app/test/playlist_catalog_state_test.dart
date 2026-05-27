@@ -45,9 +45,9 @@ void main() {
 
     expect(catalog.origin, PlaylistCatalogOrigin.package);
     expect(catalog.sourcePath, contains('RadioInfo_CN.xml'));
-    expect(catalog.modeOf('XS'), StationMode.custom);
+    expect(catalog.modeOf('R4'), StationMode.custom);
     expect(
-      catalog.tracksOfRadio('XS', 'FreeRoam').map((track) => track.title),
+      catalog.tracksOfRadio('R4', 'FreeRoam').map((track) => track.title),
       contains('Full Flow Test'),
     );
   });
@@ -81,9 +81,9 @@ void main() {
     );
 
     expect(catalog.origin, PlaylistCatalogOrigin.game);
-    expect(catalog.modeOfList('HOR', 'FreeRoam'), StationMode.builtin);
+    expect(catalog.modeOfList('R1', 'FreeRoam'), StationMode.builtin);
     expect(
-      catalog.tracksOfRadio('XS', 'FreeRoam').map((track) => track.title),
+      catalog.tracksOfRadio('R4', 'FreeRoam').map((track) => track.title),
       isNot(contains('Full Flow Test')),
     );
   });
@@ -107,9 +107,9 @@ void main() {
     );
 
     expect(catalog.origin, PlaylistCatalogOrigin.game);
-    expect(catalog.modeOf('HOR'), StationMode.builtin);
+    expect(catalog.modeOf('R1'), StationMode.builtin);
     expect(
-      catalog.tracksOfRadio('HOR', 'FreeRoam').map((track) => track.title),
+      catalog.tracksOfRadio('R1', 'FreeRoam').map((track) => track.title),
       contains('Mock R1 Reference'),
     );
   });
@@ -145,9 +145,9 @@ void main() {
     );
 
     expect(catalog.origin, PlaylistCatalogOrigin.game);
-    expect(catalog.modeOfList('HOR', 'FreeRoam'), StationMode.custom);
-    expect(catalog.modeOfList('HOR', 'Event'), StationMode.custom);
-    expect(catalog.tracksOfRadio('HOR', 'FreeRoam').single.modded, isTrue);
+    expect(catalog.modeOfList('R1', 'FreeRoam'), StationMode.custom);
+    expect(catalog.modeOfList('R1', 'Event'), StationMode.custom);
+    expect(catalog.tracksOfRadio('R1', 'FreeRoam').single.modded, isTrue);
   });
 
   test('playlist catalog hides Streamer Mode from the UI', () {
@@ -202,7 +202,7 @@ void main() {
     );
 
     expect(catalog.radios.single.slot, 3);
-    expect(catalog.tracksOfRadio('HOR', 'FreeRoam'), hasLength(3));
+    expect(catalog.tracksOfRadio('R1', 'FreeRoam'), hasLength(3));
   });
 
   test('package catalog falls back to game bank slots', () {
@@ -292,6 +292,7 @@ void main() {
           RadioStatusOption(
             number: 1,
             name: 'Horizon Pulse',
+            code: 'R1',
             tracks: 4,
             bankSlots: 5,
             freeRoam: 3,
@@ -307,7 +308,7 @@ void main() {
       );
       addTearDown(container.dispose);
 
-      expect(container.read(baselineBankSlotOverridesProvider)['HOR'], 3);
+      expect(container.read(baselineBankSlotOverridesProvider)['R1'], 3);
       final catalog = container.read(
         playlistCatalogForViewProvider(PlaylistCatalogView.game),
       );
@@ -348,16 +349,16 @@ void main() {
       detectionPackageDirs: [packageDir],
     );
     final track = catalog
-        .tracksOfRadio('XS', 'FreeRoam')
+        .tracksOfRadio('R4', 'FreeRoam')
         .firstWhere((track) => track.modded);
     final plan = playlistPlanFromCatalog(catalog, const []);
 
     expect(catalog.origin, PlaylistCatalogOrigin.game);
-    expect(catalog.modeOfList('XS', 'FreeRoam'), StationMode.custom);
+    expect(catalog.modeOfList('R4', 'FreeRoam'), StationMode.custom);
     expect(catalog.sourceForTrack(track), endsWith('Full Flow Test.wav'));
-    expect(plan.assignmentsForRadio('XS', 'FreeRoam'), hasLength(1));
-    expect(plan.assignmentsForRadio('XS', 'Event'), hasLength(1));
-    expect(plan.hasBuiltinOverride('HOR', 'FreeRoam'), isTrue);
+    expect(plan.assignmentsForRadio('R4', 'FreeRoam'), hasLength(1));
+    expect(plan.assignmentsForRadio('R4', 'Event'), hasLength(1));
+    expect(plan.hasBuiltinOverride('R1', 'FreeRoam'), isTrue);
   });
 
   test(
@@ -397,7 +398,7 @@ void main() {
         targetLang: 'EN',
         previewTracks: const ['FH Radio Studio Dev - Full Flow Test'],
         assignments: [
-          PackageTrackAssignment(source: source, radioLabel: 'XS', slot: 1),
+          PackageTrackAssignment(source: source, radioLabel: 'R4', slot: 1),
         ],
       ),
       last: null,
@@ -405,7 +406,7 @@ void main() {
 
     final assignment = plan.assignmentForPath(source);
     expect(assignment, isNotNull);
-    expect(assignment!.radioCode, 'XS');
+    expect(assignment!.radioCode, 'R4');
     expect(assignment.slot, 1);
   });
 
@@ -441,27 +442,27 @@ void main() {
       final plan = const PlaylistPlan.empty()
           .assign(
             source: source,
-            radioCode: 'XS',
+            radioCode: 'R4',
             playlistType: 'FreeRoam',
             slot: 1,
           )
           .assign(
             source: source,
-            radioCode: 'XS',
+            radioCode: 'R4',
             playlistType: 'FreeRoam',
             slot: 9,
           )
           .assign(
             source: source,
-            radioCode: 'BAS',
+            radioCode: 'R2',
             playlistType: 'Event',
             slot: 1,
           );
 
       expect(plan.assignmentsForPath(source), hasLength(2));
-      expect(plan.assignmentsForRadio('XS', 'FreeRoam'), hasLength(1));
-      expect(plan.assignmentsForRadio('XS', 'FreeRoam').single.slot, 1);
-      expect(plan.sourcesForRadio('XS'), [source]);
+      expect(plan.assignmentsForRadio('R4', 'FreeRoam'), hasLength(1));
+      expect(plan.assignmentsForRadio('R4', 'FreeRoam').single.slot, 1);
+      expect(plan.sourcesForRadio('R4'), [source]);
     },
   );
 
@@ -472,15 +473,15 @@ void main() {
       final plan = const PlaylistPlan.empty()
           .assign(
             source: source,
-            radioCode: 'XS',
+            radioCode: 'R4',
             playlistType: 'FreeRoam',
             slot: 1,
           )
-          .restoreBuiltin(radioCode: 'XS', playlistType: 'FreeRoam');
+          .restoreBuiltin(radioCode: 'R4', playlistType: 'FreeRoam');
 
       expect(plan.hasDraft, isTrue);
-      expect(plan.hasBuiltinOverride('XS', 'FreeRoam'), isTrue);
-      expect(plan.assignmentsForRadio('XS', 'FreeRoam'), isEmpty);
+      expect(plan.hasBuiltinOverride('R4', 'FreeRoam'), isTrue);
+      expect(plan.assignmentsForRadio('R4', 'FreeRoam'), isEmpty);
     },
   );
 
@@ -493,7 +494,7 @@ void main() {
     });
 
     final plan = const PlaylistPlan.empty().restoreBuiltin(
-      radioCode: 'XS',
+      radioCode: 'R4',
       playlistType: 'Event',
     );
 
@@ -511,7 +512,7 @@ void main() {
       isFalse,
     );
     expect(restored.hasDraft, isTrue);
-    expect(restored.hasBuiltinOverride('XS', 'Event'), isTrue);
+    expect(restored.hasBuiltinOverride('R4', 'Event'), isTrue);
     expect(restored.assignments, isEmpty);
   });
 
@@ -531,7 +532,7 @@ void main() {
   "assignments": [
     {
       "source": ${jsonEncode(source)},
-      "radio_code": "XS",
+      "radio_code": "R4",
       "playlist_type": "FreeRoam",
       "slot": 1
     }
@@ -567,7 +568,7 @@ void main() {
         ..writeAsBytesSync(const []);
       final plan = const PlaylistPlan.empty().assign(
         source: first.path,
-        radioCode: 'XS',
+        radioCode: 'R4',
         playlistType: 'FreeRoam',
         slot: 1,
       );
@@ -608,7 +609,7 @@ void main() {
         first.path,
       ]);
       expect(
-        state.tracksOfRadio('XS', 'FreeRoam', plan).single.source,
+        state.tracksOfRadio('R4', 'FreeRoam', plan).single.source,
         first.path,
       );
     },
@@ -696,19 +697,19 @@ void main() {
     final split = const PlaylistPlan.empty()
         .assign(
           source: free,
-          radioCode: 'XS',
+          radioCode: 'R4',
           playlistType: 'FreeRoam',
           slot: 1,
         )
-        .assign(source: event, radioCode: 'XS', playlistType: 'Event', slot: 1);
+        .assign(source: event, radioCode: 'R4', playlistType: 'Event', slot: 1);
 
     expect(split.hasSplitPlaylistDifferences, isTrue);
 
     final synced = split.syncPlaylistTypesFrom('Event');
 
     expect(synced.hasSplitPlaylistDifferences, isFalse);
-    expect(synced.assignmentsForRadio('XS', 'FreeRoam').single.source, event);
-    expect(synced.assignmentsForRadio('XS', 'Event').single.source, event);
+    expect(synced.assignmentsForRadio('R4', 'FreeRoam').single.source, event);
+    expect(synced.assignmentsForRadio('R4', 'Event').single.source, event);
   });
 
   test(
@@ -736,17 +737,17 @@ void main() {
 
       final notifier = container.read(playlistProvider.notifier);
       expect(
-        notifier.assignToRadio('one', 'XS', 'FreeRoam', maxSlots: 1),
+        notifier.assignToRadio('one', 'R4', 'FreeRoam', maxSlots: 1),
         isTrue,
       );
       expect(
-        notifier.assignToRadio('two', 'XS', 'FreeRoam', maxSlots: 1),
+        notifier.assignToRadio('two', 'R4', 'FreeRoam', maxSlots: 1),
         isFalse,
       );
 
       final plan = container.read(playlistPlanProvider);
-      expect(plan.assignmentsForRadio('XS', 'FreeRoam'), hasLength(1));
-      expect(plan.assignmentsForRadio('XS', 'Event'), hasLength(1));
+      expect(plan.assignmentsForRadio('R4', 'FreeRoam'), hasLength(1));
+      expect(plan.assignmentsForRadio('R4', 'Event'), hasLength(1));
     },
   );
 
@@ -768,26 +769,26 @@ void main() {
 
     final notifier = container.read(playlistProvider.notifier);
     expect(
-      notifier.assignToRadio('one', 'XS', 'FreeRoam', maxSlots: 3),
+      notifier.assignToRadio('one', 'R4', 'FreeRoam', maxSlots: 3),
       isTrue,
     );
     expect(
       notifier.assignToRadio(
         'one',
-        'BAS',
+        'R2',
         'FreeRoam',
         maxSlots: 3,
-        originRadioCode: 'XS',
+        originRadioCode: 'R4',
         originPlaylistType: 'FreeRoam',
       ),
       isTrue,
     );
 
     final plan = container.read(playlistPlanProvider);
-    expect(plan.assignmentsForRadio('XS', 'FreeRoam'), isEmpty);
-    expect(plan.assignmentsForRadio('XS', 'Event'), isEmpty);
-    expect(plan.assignmentsForRadio('BAS', 'FreeRoam'), hasLength(1));
-    expect(plan.assignmentsForRadio('BAS', 'Event'), hasLength(1));
+    expect(plan.assignmentsForRadio('R4', 'FreeRoam'), isEmpty);
+    expect(plan.assignmentsForRadio('R4', 'Event'), isEmpty);
+    expect(plan.assignmentsForRadio('R2', 'FreeRoam'), hasLength(1));
+    expect(plan.assignmentsForRadio('R2', 'Event'), hasLength(1));
   });
 
   test(
@@ -815,30 +816,30 @@ void main() {
 
       final notifier = container.read(playlistProvider.notifier);
       expect(
-        notifier.assignToRadio('one', 'XS', 'FreeRoam', maxSlots: 1),
+        notifier.assignToRadio('one', 'R4', 'FreeRoam', maxSlots: 1),
         isTrue,
       );
       expect(
-        notifier.assignToRadio('two', 'BAS', 'FreeRoam', maxSlots: 1),
+        notifier.assignToRadio('two', 'R2', 'FreeRoam', maxSlots: 1),
         isTrue,
       );
       expect(
         notifier.assignToRadio(
           'one',
-          'BAS',
+          'R2',
           'FreeRoam',
           maxSlots: 1,
-          originRadioCode: 'XS',
+          originRadioCode: 'R4',
           originPlaylistType: 'FreeRoam',
         ),
         isFalse,
       );
 
       final plan = container.read(playlistPlanProvider);
-      expect(plan.assignmentsForRadio('XS', 'FreeRoam'), hasLength(1));
-      expect(plan.assignmentsForRadio('BAS', 'FreeRoam'), hasLength(1));
+      expect(plan.assignmentsForRadio('R4', 'FreeRoam'), hasLength(1));
+      expect(plan.assignmentsForRadio('R2', 'FreeRoam'), hasLength(1));
       expect(
-        plan.assignmentsForRadio('BAS', 'FreeRoam').single.source,
+        plan.assignmentsForRadio('R2', 'FreeRoam').single.source,
         tracks[1].source,
       );
     },
@@ -863,7 +864,7 @@ void main() {
     final notifier = container.read(playlistProvider.notifier);
 
     expect(
-      notifier.assignToRadio('one', 'XS', 'FreeRoam', maxSlots: 3),
+      notifier.assignToRadio('one', 'R4', 'FreeRoam', maxSlots: 3),
       isFalse,
     );
     expect(container.read(playlistPlanProvider).assignments, isEmpty);
@@ -882,7 +883,7 @@ void main() {
       project.path,
       PlaylistPlan.empty().assign(
         source: source,
-        radioCode: 'XS',
+        radioCode: 'R4',
         playlistType: 'FreeRoam',
         slot: 2,
       ),
@@ -914,13 +915,13 @@ void main() {
       PlaylistPlan.empty()
           .assign(
             source: outside,
-            radioCode: 'BAS',
+            radioCode: 'R2',
             playlistType: 'FreeRoam',
             slot: 1,
           )
           .assign(
             source: sourceTrack.source,
-            radioCode: 'XS',
+            radioCode: 'R4',
             playlistType: 'FreeRoam',
             slot: 1,
           )

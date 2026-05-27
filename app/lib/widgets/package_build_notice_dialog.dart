@@ -518,10 +518,10 @@ List<_NoticeRow> _buildNoticeRows(String message, bool languageChanged) {
   rows.add(
     _NoticeRow(
       icon: languageChanged ? 'check' : 'settings',
-      title: languageChanged ? '语言变更会随完整 radio 包准备' : '只改语言也可以准备',
+      title: languageChanged ? '语言变更会随完整 radio 包准备' : '准备包需要播放列表',
       detail: languageChanged
-          ? '如果播放列表为空，App 会把当前目标 radio 的 RadioInfo 和 bank 原样放进准备包，并加入语言设置。'
-          : '先在基础设置里改显示/语音语言；没有播放列表时也会生成完整 radio 包。',
+          ? '先在播放列表里保留或分配至少一首自建歌曲，语言设置会随下一次完整准备包一起写入。'
+          : '没有播放列表草稿时不会生成准备包，请先把自建歌曲拖进目标电台。',
     ),
   );
   return rows;

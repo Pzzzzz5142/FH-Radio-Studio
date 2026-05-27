@@ -121,7 +121,6 @@ class FhRadioStudioProject {
     String projectDir, {
     String? gameDir,
     String? preferredPath,
-    int? radio,
     String? sourceLang,
     String? targetLang,
     String? aiProfile,
@@ -142,9 +141,9 @@ class FhRadioStudioProject {
     final settings = data['settings'] is Map
         ? (data['settings'] as Map).map((key, value) => MapEntry('$key', value))
         : <String, dynamic>{};
+    settings.remove('radio');
     if (gameDir != null) settings['game_dir'] = gameDir;
     if (preferredPath != null) settings['preferred_path'] = preferredPath;
-    if (radio != null) settings['radio'] = radio;
     if (sourceLang != null) settings['source_lang'] = sourceLang;
     if (targetLang != null) settings['target_lang'] = targetLang;
     if (aiProfile != null) settings['ai_profile'] = aiProfile;

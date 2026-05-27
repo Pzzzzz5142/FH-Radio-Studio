@@ -229,6 +229,34 @@ def target_track_bank_detail(
     return details[0] if details else None
 
 
+def radio_code_for_station(radio: int, name: str) -> str:
+    if radio > 0:
+        return f"R{radio}"
+    normalized = name.strip()
+    return normalized if normalized else "R?"
+
+
+def legacy_radio_code_for_station(radio: int, name: str) -> Optional[str]:
+    normalized = name.lower()
+    if "horizon pulse" in normalized:
+        return "HOR"
+    if "bass arena" in normalized:
+        return "BAS"
+    if "block party" in normalized:
+        return "BLK"
+    if "eurobeat" in normalized:
+        return "EUR"
+    if "rocas" in normalized:
+        return "ROC"
+    if normalized == "xs" or "horizon xs" in normalized:
+        return "XS"
+    if "timeless" in normalized:
+        return "TIM"
+    if "mixmaster" in normalized:
+        return "MIX"
+    return None
+
+
 def station_summary(station: ET.Element, audio_dir: Optional[Path] = None) -> Dict[str, object]:
     track_list = find_child_by_attr(station, "SampleList", "Type", "Track")
     banks = station.find("Banks")
@@ -236,9 +264,12 @@ def station_summary(station: ET.Element, audio_dir: Optional[Path] = None) -> Di
         playlist.get("Type", "?"): len(playlist.findall("Entry"))
         for playlist in station.findall("PlayList")
     }
+    number = safe_int(station.get("Number"))
+    name = station.get("Name", "")
     summary: Dict[str, object] = {
-        "number": safe_int(station.get("Number")),
-        "name": station.get("Name", ""),
+        "number": number,
+        "name": name,
+        "radio_code": radio_code_for_station(number, name),
         "banks": (
             [bank.get("Name", "") for bank in banks.findall("Bank")] if banks is not None else []
         ),

@@ -81,12 +81,12 @@ class PlaylistAssignment {
     return normalizePlaylistType(value) == 'Event' ? '比赛' : '漫游';
   }
 
-  PlaylistAssignment copyWith({String? source, int? slot}) {
+  PlaylistAssignment copyWith({String? source, String? radioCode, int? slot}) {
     final nextSource = source ?? this.source;
     return PlaylistAssignment(
       trackKey: PlaylistAssignment.keyForPath(nextSource),
       source: nextSource,
-      radioCode: radioCode,
+      radioCode: radioCode ?? this.radioCode,
       playlistType: playlistType,
       slot: slot ?? this.slot,
     );
@@ -439,13 +439,27 @@ class PlaylistPlanStore {
     );
   }
 
-  static PlaylistPlan read(String projectDir) {
+  static PlaylistPlan read(
+    String projectDir, {
+    Set<String>? validCodes,
+    Map<String, String> radioCodeAliases = const {},
+  }) {
     final file = File(configPath(projectDir));
     if (!file.existsSync()) return const PlaylistPlan.empty();
     final plan = _readFile(file);
-    final normalized = projectSourcesOnly(projectDir, plan);
+    final normalized = projectSourcesOnly(
+      projectDir,
+      plan,
+      validCodes: validCodes,
+      radioCodeAliases: radioCodeAliases,
+    );
     if (!_samePlan(plan, normalized)) {
-      write(projectDir, normalized);
+      write(
+        projectDir,
+        normalized,
+        validCodes: validCodes,
+        radioCodeAliases: radioCodeAliases,
+      );
     }
     return normalized;
   }
@@ -483,8 +497,18 @@ class PlaylistPlanStore {
     }
   }
 
-  static void write(String projectDir, PlaylistPlan plan) {
-    final normalized = projectSourcesOnly(projectDir, plan);
+  static void write(
+    String projectDir,
+    PlaylistPlan plan, {
+    Set<String>? validCodes,
+    Map<String, String> radioCodeAliases = const {},
+  }) {
+    final normalized = projectSourcesOnly(
+      projectDir,
+      plan,
+      validCodes: validCodes,
+      radioCodeAliases: radioCodeAliases,
+    );
     if (!normalized.hasDraft) {
       delete(projectDir);
       return;
@@ -518,20 +542,48 @@ class PlaylistPlanStore {
     }
   }
 
-  static PlaylistPlan projectSourcesOnly(String projectDir, PlaylistPlan plan) {
+  static PlaylistPlan projectSourcesOnly(
+    String projectDir,
+    PlaylistPlan plan, {
+    Set<String>? validCodes,
+    Map<String, String> radioCodeAliases = const {},
+  }) {
     final out = <String, PlaylistAssignment>{};
     for (final assignment in plan.assignments.values) {
-      if (!isUiSupportedRadio(code: assignment.radioCode)) continue;
-      final normalized = _normalizeProjectSource(projectDir, assignment);
+      final radioCode = canonicalRadioCode(
+        assignment.radioCode,
+        aliases: radioCodeAliases,
+      );
+      if (validCodes != null && !validCodes.contains(radioCode)) {
+        continue;
+      }
+      final normalized = _normalizeProjectSource(
+        projectDir,
+        assignment.copyWith(radioCode: radioCode),
+      );
       if (normalized == null) continue;
       out[normalized.assignmentKey] = normalized;
     }
     final builtinTargets = {
       for (final target in plan.builtinTargets)
-        if (isUiSupportedRadio(code: PlaylistPlan._targetRadioCode(target)))
-          target,
+        ?_canonicalTargetKey(target, validCodes, radioCodeAliases),
     };
     return PlaylistPlan(assignments: out, builtinTargets: builtinTargets);
+  }
+
+  static String? _canonicalTargetKey(
+    String target,
+    Set<String>? validCodes,
+    Map<String, String> radioCodeAliases,
+  ) {
+    final radio = PlaylistPlan._targetRadioCode(target);
+    if (radio == null) return null;
+    final playlistType = target.split('|').length > 1
+        ? target.split('|')[1]
+        : 'FreeRoam';
+    final code = canonicalRadioCode(radio, aliases: radioCodeAliases);
+    if (validCodes != null && !validCodes.contains(code)) return null;
+    return PlaylistPlan._targetKey(code, playlistType);
   }
 
   static PlaylistAssignment? _normalizeProjectSource(

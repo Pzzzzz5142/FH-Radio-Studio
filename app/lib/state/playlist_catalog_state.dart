@@ -186,10 +186,14 @@ final playlistCatalogForViewProvider =
             gameDir: state.gameDir,
             sourceLang: state.sourceLang,
             targetLang: state.targetLang,
+            radioCodeOverrides: {
+              for (final option in state.radioOptions)
+                option.number: option.code,
+            },
             bankSlotOverrides: {
               for (final option in state.radioOptions)
                 if (option.bankSlots != null && option.bankSlots! > 0)
-                  _radioCodeFor(option.number, option.name): option.bankSlots!,
+                  option.code: option.bankSlots!,
             },
           ),
         ),
@@ -206,6 +210,7 @@ final playlistCatalogForViewProvider =
         detectionPackageDirs: [state.pendingPackageDir, state.lastPackageDir],
         detectionPackageManifestPaths: [state.lastAppliedPackageManifest],
         baselineGameDir: state.baselineDir,
+        radioCodeOverrides: state.radioCodeOverrides,
         bankSlotOverrides: bankSlotOverrides,
       );
     });
@@ -220,6 +225,7 @@ PlaylistCatalog loadPlaylistCatalog({
   Iterable<String?> detectionPackageDirs = const [],
   Iterable<String?> detectionPackageManifestPaths = const [],
   String? baselineGameDir,
+  Map<int, String> radioCodeOverrides = const {},
   Map<String, int> bankSlotOverrides = const {},
 }) {
   final detectionManifests = [
@@ -234,6 +240,7 @@ PlaylistCatalog loadPlaylistCatalog({
       sourceLang,
       targetLang,
     ),
+    radioCodeOverrides: radioCodeOverrides,
   );
 
   if (view == PlaylistCatalogView.game) {
@@ -245,6 +252,7 @@ PlaylistCatalog loadPlaylistCatalog({
         origin: PlaylistCatalogOrigin.game,
         detectionPackageManifests: detectionManifests,
         baselineTracksByList: baselineTracksByList,
+        radioCodeOverrides: radioCodeOverrides,
         bankSlotOverrides: bankSlotOverrides,
       );
       if (catalog != null) return catalog;
@@ -267,6 +275,7 @@ PlaylistCatalog loadPlaylistCatalog({
       packageManifest: manifest,
       detectionPackageManifests: [?manifest, ...detectionManifests],
       baselineTracksByList: baselineTracksByList,
+      radioCodeOverrides: radioCodeOverrides,
       bankSlotOverrides: bankSlotOverrides,
       bankAudioFallback: gameAudio,
     );
@@ -281,6 +290,7 @@ PlaylistCatalog loadPlaylistCatalog({
       origin: PlaylistCatalogOrigin.game,
       detectionPackageManifests: detectionManifests,
       baselineTracksByList: baselineTracksByList,
+      radioCodeOverrides: radioCodeOverrides,
       bankSlotOverrides: bankSlotOverrides,
     );
     if (catalog != null) return catalog;
@@ -300,6 +310,7 @@ PlaylistCatalog? _readXmlCatalog(
   Map<String, dynamic>? packageManifest,
   Iterable<Map<String, dynamic>> detectionPackageManifests = const [],
   Map<String, Map<String, List<TrackRef>>> baselineTracksByList = const {},
+  Map<int, String> radioCodeOverrides = const {},
   Map<String, int> bankSlotOverrides = const {},
   Directory? bankAudioFallback,
 }) {
@@ -328,8 +339,12 @@ PlaylistCatalog? _readXmlCatalog(
     for (final station in document.findAllElements('RadioStation')) {
       final number = _objectInt(station.getAttribute('Number'));
       final name = station.getAttribute('Name')?.trim() ?? '';
-      final code = _radioCodeFor(number, name);
-      if (!isUiSupportedRadio(number: number, code: code, name: name)) {
+      final code = canonicalRadioCode(
+        number != null ? radioCodeOverrides[number] : null,
+        number: number,
+        name: name,
+      );
+      if (!isUiSupportedRadio(name: name)) {
         continue;
       }
       final samples = _samplesBySoundName(station, code, packageSounds);
@@ -421,7 +436,10 @@ PlaylistCatalog? _readXmlCatalog(
   }
 }
 
-Map<String, Map<String, List<TrackRef>>> _baselineTracksByList(File? xmlFile) {
+Map<String, Map<String, List<TrackRef>>> _baselineTracksByList(
+  File? xmlFile, {
+  Map<int, String> radioCodeOverrides = const {},
+}) {
   if (xmlFile == null || !xmlFile.existsSync()) return const {};
   try {
     final document = XmlDocument.parse(
@@ -431,8 +449,12 @@ Map<String, Map<String, List<TrackRef>>> _baselineTracksByList(File? xmlFile) {
     for (final station in document.findAllElements('RadioStation')) {
       final number = _objectInt(station.getAttribute('Number'));
       final name = station.getAttribute('Name')?.trim() ?? '';
-      final code = _radioCodeFor(number, name);
-      if (!isUiSupportedRadio(number: number, code: code, name: name)) {
+      final code = canonicalRadioCode(
+        number != null ? radioCodeOverrides[number] : null,
+        number: number,
+        name: name,
+      );
+      if (!isUiSupportedRadio(name: name)) {
         continue;
       }
       final samples = _samplesBySoundName(station, code, const {});
@@ -806,20 +828,6 @@ Map<String, String> _packagePlaylistSourcesBySoundName(
 
 bool _tracksContainModded(List<TrackRef>? tracks) {
   return tracks?.any((track) => track.modded) ?? false;
-}
-
-String _radioCodeFor(int? number, String station) {
-  final normalized = station.toLowerCase();
-  if (normalized.contains('horizon pulse')) return 'HOR';
-  if (normalized.contains('bass arena')) return 'BAS';
-  if (normalized.contains('block party')) return 'BLK';
-  if (normalized.contains('eurobeat')) return 'EUR';
-  if (normalized.contains('rocas')) return 'ROC';
-  if (normalized == 'xs' || normalized.contains('horizon xs')) return 'XS';
-  if (normalized.contains('timeless')) return 'TIM';
-  if (normalized.contains('mixmaster')) return 'MIX';
-  if (number != null) return 'R$number';
-  return station.trim().isEmpty ? 'R?' : station.trim();
 }
 
 String _radioHue(String code) {
