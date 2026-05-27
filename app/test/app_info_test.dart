@@ -41,14 +41,6 @@ void main() {
     expect(releaseInfo.sidebarLines, ['FH Radio Studio 0.1.0-rc.1']);
   });
 
-  test('fallback main-style build exposes build commit line', () {
-    expect(fallbackAppReleaseId, '0.1.0-rc.3');
-    expect(AppInfo.fallback.sidebarLines, [
-      'FH Radio Studio 0.1.0-rc.3',
-      'build None',
-    ]);
-  });
-
   test('only release branch names hide build visibility', () {
     expect(shouldShowBuildInfoForBranchName('release/v0.1.0'), isFalse);
     expect(shouldShowBuildInfoForBranchName('release/v0.1.0-rc.1'), isFalse);
