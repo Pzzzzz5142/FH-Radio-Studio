@@ -838,7 +838,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
     });
 
     test(
-      'seeds playlist from game and baseline diff when no package exists',
+      'reconstructs playlist via CLI and builds from it when no package exists',
       () async {
         final projectDir = p.join(tempRoot.path, 'project');
         final gameDir = p.join(projectDir, 'game');
@@ -849,32 +849,6 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
             FhRadioStudioProject.sourcesDir(projectDir),
             'Local Artist - Diff Song.wav',
           ),
-        )..createSync(recursive: true);
-        final metadataFile = File(TrackMetadataCache.configPath(projectDir));
-        metadataFile.parent.createSync(recursive: true);
-        metadataFile.writeAsStringSync(
-          const JsonEncoder.withIndent('  ')
-              .convert({
-                'schema_version': 1,
-                'tracks': [
-                  {
-                    'source': '',
-                    'artist': 'Local Artist',
-                    'title': 'Diff Song',
-                    'from_tags': true,
-                  },
-                ],
-              })
-              .replaceFirst(
-                '"source": ""',
-                '"source": "${_jsonPath(source.path)}"',
-              ),
-          encoding: utf8,
-        );
-        final gameAudio = Directory(p.join(gameDir, 'media', 'audio'))
-          ..createSync(recursive: true);
-        final baselineAudio = Directory(
-          p.join(projectDir, 'backups', 'baseline-current', 'media', 'audio'),
         )..createSync(recursive: true);
         File(
             p.join(
@@ -889,28 +863,25 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
             '{"kind":"game_baseline","state":"current"}',
             encoding: utf8,
           );
-        File(p.join(baselineAudio.path, 'RadioInfo_CHS.xml')).writeAsStringSync(
-          _radioInfoXml(
-            [('HZ6_R4_BASE', 'Base Song', 'Base Artist')],
-            ['HZ6_R4_BASE'],
-          ),
-          encoding: utf8,
-        );
-        File(p.join(gameAudio.path, 'RadioInfo_CHS.xml')).writeAsStringSync(
-          _radioInfoXml(
-            [
-              ('HZ6_R4_BASE', 'Base Song', 'Base Artist'),
-              ('HZ6_R4_CUSTOM', 'Diff Song', 'Local Artist'),
-            ],
-            ['HZ6_R4_CUSTOM'],
-          ),
-          encoding: utf8,
-        );
         SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+
+        // The CLI owns the diff/reverse-match; here we only verify the UI calls
+        // reconstruct-plan and then consumes the plan it writes.
+        final seededPlan =
+            '''
+{
+  "schema_version": 2,
+  "assignments": [
+    {"source": "${_jsonPath(source.path)}", "radio_code": "R4", "playlist_type": "FreeRoam", "slot": 1},
+    {"source": "${_jsonPath(source.path)}", "radio_code": "R4", "playlist_type": "Event", "slot": 1}
+  ],
+  "builtin_targets": []
+}
+''';
 
         final prefs = await SharedPreferences.getInstance();
         final runtime = _testUvRuntime(tempRoot, 'package-game-diff');
-        final cli = _RecordingCli(runtime);
+        final cli = _RecordingCli(runtime, reconstructPlanJson: seededPlan);
         final controller = _RecordingCliStudioController(prefs, cli);
         controller.setStateForTest(
           controller.state.copyWith(repoRoot: runtime.projectRoot),
@@ -919,6 +890,31 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         final built = await controller.buildPackage();
 
         expect(built, isTrue);
+        final reconstructArgs = cli.commands.singleWhere(
+          (args) => args.isNotEmpty && args.first == 'reconstruct-plan',
+        );
+        expect(
+          reconstructArgs,
+          containsAllInOrder([
+            '--baseline-manifest',
+            controller.state.currentBaselineManifest,
+          ]),
+        );
+        expect(
+          reconstructArgs,
+          containsAllInOrder([
+            '--out',
+            PlaylistPlanStore.configPath(projectDir),
+          ]),
+        );
+        expect(
+          reconstructArgs,
+          containsAllInOrder([
+            '--music-dir',
+            FhRadioStudioProject.sourcesDir(projectDir),
+          ]),
+        );
+
         final plan = PlaylistPlanStore.read(projectDir);
         expect(plan.assignments, hasLength(2));
         expect(plan.assignments.values.map((item) => item.source).toSet(), {
@@ -1571,11 +1567,16 @@ class _RecordingCliStudioController extends StudioController {
 }
 
 class _RecordingCli extends FhRadioStudioCli {
-  _RecordingCli(UvRuntime runtime)
+  _RecordingCli(UvRuntime runtime, {this.reconstructPlanJson})
     : commands = [],
       super(repoRoot: runtime.projectRoot, uvRuntime: runtime);
 
   final List<List<String>> commands;
+
+  /// When set, simulates the `reconstruct-plan` CLI command by writing this
+  /// JSON to the command's `--out` path (the real CLI is the source of truth
+  /// for the diff; the UI only reads what it emits).
+  final String? reconstructPlanJson;
   int syncCount = 0;
 
   @override
@@ -1622,6 +1623,14 @@ class _RecordingCli extends FhRadioStudioCli {
   CliRunResult _resultFor(List<String> args) {
     commands.add([...args]);
     final command = args.isEmpty ? null : args.first;
+    if (command == 'reconstruct-plan' && reconstructPlanJson != null) {
+      final outIndex = args.indexOf('--out');
+      if (outIndex >= 0 && outIndex + 1 < args.length) {
+        final out = File(args[outIndex + 1]);
+        out.parent.createSync(recursive: true);
+        out.writeAsStringSync(reconstructPlanJson!, encoding: utf8);
+      }
+    }
     final stdout = switch (command) {
       'status' => _statusJson(),
       'toolchain-status' => _toolchainStatusJson(args),
@@ -2073,35 +2082,3 @@ List<int> _le32(int value) => [
 ];
 
 String _jsonPath(String path) => path.replaceAll(r'\', r'\\');
-
-String _radioInfoXml(
-  List<(String soundName, String title, String artist)> samples,
-  List<String> playlist,
-) {
-  final sampleXml = samples
-      .map(
-        (sample) =>
-            '<Sample SoundName="${sample.$1}" DisplayName="${sample.$2}" Artist="${sample.$3}" />',
-      )
-      .join('\n');
-  final entryXml = playlist
-      .map((soundName) => '<Entry Name="$soundName" />')
-      .join('\n');
-  return '''
-<RadioInfo>
-  <RadioStations>
-    <RadioStation Number="4" Name="Horizon XS">
-      <SampleList Type="Track">
-$sampleXml
-      </SampleList>
-      <PlayList Type="FreeRoam">
-$entryXml
-      </PlayList>
-      <PlayList Type="Event">
-$entryXml
-      </PlayList>
-    </RadioStation>
-  </RadioStations>
-</RadioInfo>
-''';
-}

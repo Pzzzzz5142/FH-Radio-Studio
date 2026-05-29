@@ -360,6 +360,53 @@ void main() {
     expect(plan.hasBuiltinOverride('HOR', 'FreeRoam'), isTrue);
   });
 
+  test('prefers package manifest source over a pool title/artist match', () {
+    final repoRoot = p.dirname(p.current);
+    final packageDir = p.join(
+      repoRoot,
+      'test',
+      'project',
+      'cli-full-flow',
+      'packages',
+      'r4-full-flow',
+    );
+
+    final catalog = loadPlaylistCatalog(
+      view: PlaylistCatalogView.package,
+      packageDir: packageDir,
+      gameDir: p.join(Directory.systemTemp.path, 'missing-fh6-game'),
+      sourceLang: 'CN',
+      targetLang: 'EN',
+      detectionPackageDirs: [packageDir],
+    );
+    final track = catalog
+        .tracksOfRadio('XS', 'FreeRoam')
+        .firstWhere((track) => track.modded);
+
+    // A pool track that collides on title/artist but points at a different file.
+    final decoyPool = [
+      PoolTrack(
+        id: 'decoy',
+        title: track.title,
+        artist: track.artist,
+        source: p.join(Directory.systemTemp.path, 'decoy-Full Flow Test.wav'),
+        durationSec: 1,
+        bpm: 0,
+        key: '',
+        configured: false,
+        confirmed: 0,
+        added: 'now',
+      ),
+    ];
+
+    final plan = playlistPlanFromCatalog(catalog, decoyPool);
+    final assignment = plan.assignmentsForRadio('XS', 'FreeRoam').single;
+
+    // The authoritative manifest source wins; the decoy pool path is ignored.
+    expect(assignment.source, endsWith('Full Flow Test.wav'));
+    expect(assignment.source, isNot(contains('decoy')));
+  });
+
   test(
     'reports a failed catalog when package and game files are unavailable',
     () {

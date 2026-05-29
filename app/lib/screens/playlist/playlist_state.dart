@@ -332,9 +332,11 @@ PlaylistPlan playlistPlanFromCatalog(
 
       var slot = 1;
       for (final track in catalog.tracksOfRadio(radio.code, playlistType)) {
+        // 包 manifest 的 sound_name→source 是权威映射（构建时写入），优先采用；
+        // 只有没有该映射时才退回按 title/artist 在 pool 里匹配。
         final source =
-            poolByMeta[_metaKey(track.title, track.artist)] ??
-            catalog.sourceForTrack(track);
+            catalog.sourceForTrack(track) ??
+            poolByMeta[_metaKey(track.title, track.artist)];
         if (source == null || source.trim().isEmpty) continue;
         plan = plan.assign(
           source: source,

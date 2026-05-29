@@ -7,7 +7,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:xml/xml.dart';
 
 import '../core/project_workspace.dart';
 import '../core/playlist_plan.dart';
@@ -2596,136 +2595,6 @@ double? _objectDouble(Object? value) {
   return null;
 }
 
-@immutable
-class _DiffTrack {
-  const _DiffTrack({
-    required this.soundName,
-    required this.title,
-    required this.artist,
-  });
-
-  final String soundName;
-  final String title;
-  final String artist;
-
-  String get signature =>
-      '${soundName.trim().toLowerCase()}|${_diffMetaKey(title, artist)}';
-}
-
-File? _radioInfoFileForDiff(
-  Directory audioDir,
-  String sourceLang,
-  String targetLang,
-) {
-  if (!audioDir.existsSync()) return null;
-  final candidates = [sourceLang, targetLang, 'EN', 'GB', 'CHS', 'CN']
-      .map((lang) => lang.trim().toUpperCase())
-      .where((lang) => lang.isNotEmpty)
-      .toSet()
-      .map((lang) => File(p.join(audioDir.path, 'RadioInfo_$lang.xml')));
-  for (final file in candidates) {
-    if (file.existsSync()) return file;
-  }
-  final files =
-      audioDir
-          .listSync(followLinks: false)
-          .whereType<File>()
-          .where((file) => p.basename(file.path).startsWith('RadioInfo_'))
-          .toList()
-        ..sort((a, b) => a.path.toLowerCase().compareTo(b.path.toLowerCase()));
-  return files.firstOrNull;
-}
-
-Map<String, Map<String, List<_DiffTrack>>> _readRadioInfoPlaylistsForDiff(
-  File xmlFile,
-) {
-  try {
-    final document = XmlDocument.parse(
-      xmlFile.readAsStringSync(encoding: utf8),
-    );
-    final out = <String, Map<String, List<_DiffTrack>>>{};
-    for (final station in document.findAllElements('RadioStation')) {
-      final number = _objectInt(station.getAttribute('Number'));
-      final name = station.getAttribute('Name')?.trim() ?? '';
-      final radioCode = _radioAssignmentLabel(number, name);
-      if (!isUiSupportedRadio(number: number, code: radioCode, name: name)) {
-        continue;
-      }
-      final samples = <String, _DiffTrack>{};
-      final sampleOrder = <_DiffTrack>[];
-      for (final sample in station.findAllElements('Sample')) {
-        final soundName = sample.getAttribute('SoundName')?.trim() ?? '';
-        if (soundName.isEmpty) continue;
-        final track = _DiffTrack(
-          soundName: soundName,
-          title: sample.getAttribute('DisplayName')?.trim() ?? soundName,
-          artist: sample.getAttribute('Artist')?.trim() ?? 'Unknown Artist',
-        );
-        samples[soundName] = track;
-        sampleOrder.add(track);
-      }
-      final lists = <String, List<_DiffTrack>>{};
-      for (final playlistType in const ['FreeRoam', 'Event']) {
-        final tracks = <_DiffTrack>[];
-        final playlists = station.findElements('PlayList').where((element) {
-          final type = element.getAttribute('Type') ?? 'FreeRoam';
-          return PlaylistAssignment.normalizePlaylistType(type) == playlistType;
-        });
-        for (final playlist in playlists) {
-          for (final entry in playlist.findElements('Entry')) {
-            final name = entry.getAttribute('Name')?.trim() ?? '';
-            final track = samples[name];
-            if (track != null) tracks.add(track);
-          }
-        }
-        lists[playlistType] = tracks.isEmpty ? sampleOrder : tracks;
-      }
-      out[radioCode] = lists;
-    }
-    return out;
-  } on FormatException {
-    return const {};
-  } on FileSystemException {
-    return const {};
-  }
-}
-
-bool _sameDiffTrackList(List<_DiffTrack> a, List<_DiffTrack> b) {
-  if (a.length != b.length) return false;
-  for (var index = 0; index < a.length; index++) {
-    if (a[index].signature != b[index].signature) return false;
-  }
-  return true;
-}
-
-String _diffMetaKey(String title, String artist) {
-  return '${artist.trim().toLowerCase()}|${title.trim().toLowerCase()}';
-}
-
-String _guessTrackTitle(File file) {
-  final parts = _guessTrackMetadata(file);
-  return parts.$2;
-}
-
-String _guessTrackArtist(File file) {
-  final parts = _guessTrackMetadata(file);
-  return parts.$1;
-}
-
-(String, String) _guessTrackMetadata(File file) {
-  final stem = p
-      .basenameWithoutExtension(file.path)
-      .replaceFirst(RegExp(r'^\s*\d+\s*[-_. ]+\s*'), '');
-  final parts = stem.split(RegExp(r'\s+-\s+'));
-  if (parts.length >= 2 && parts.first.trim().isNotEmpty) {
-    return (parts.first.trim(), parts.sublist(1).join(' - ').trim());
-  }
-  return (
-    'Unknown Artist',
-    stem.trim().isEmpty ? p.basename(file.path) : stem.trim(),
-  );
-}
-
 String _defaultGameDir() {
   if (Platform.isWindows) {
     return r'C:\Program Files (x86)\Steam\steamapps\common\ForzaHorizon6';
@@ -4054,13 +3923,34 @@ class StudioController extends StateNotifier<StudioState> {
     }
     var planForBuild = PlaylistPlanStore.read(state.projectDir);
     if (!state.currentPackageReady && !planForBuild.hasDraft) {
-      final detected = _playlistPlanFromGameDiff();
-      if (detected.hasDraft) {
-        planForBuild = detected;
-        PlaylistPlanStore.write(state.projectDir, planForBuild);
-        _append(
-          '已根据当前游戏文件与原始备份差分初始化播放列表草稿：${planForBuild.assignments.length} 首自建曲目。',
-        );
+      // CLI 才是 track metadata 的 true source：差分游戏与原始备份、把自建曲逆向
+      // 匹配回项目源文件、重建播放列表草稿，都交给 reconstruct-plan 完成，UI 只读结果。
+      final reconstruct = await _run([
+        'reconstruct-plan',
+        '--game-dir',
+        state.gameDir,
+        '--baseline-manifest',
+        state.currentBaselineManifest,
+        '--metadata-cache',
+        TrackMetadataCache.configPath(state.projectDir),
+        '--music-dir',
+        FhRadioStudioProject.sourcesDir(state.projectDir),
+        '--music-dir',
+        FhRadioStudioProject.sirenDir(state.projectDir),
+        '--source',
+        state.sourceLang,
+        '--target',
+        state.targetLang,
+        '--out',
+        PlaylistPlanStore.configPath(state.projectDir),
+      ], streamOutput: false);
+      if (reconstruct.ok) {
+        planForBuild = PlaylistPlanStore.read(state.projectDir);
+        if (planForBuild.hasDraft) {
+          _append(
+            '已根据当前游戏文件与原始备份差分初始化播放列表草稿：${planForBuild.assignments.length} 首自建曲目。',
+          );
+        }
       }
     }
     final draft = _playlistDraftForBuild(planForBuild);
@@ -4332,63 +4222,6 @@ class StudioController extends StateNotifier<StudioState> {
       if (seen.add(key)) inputs.add(source);
     }
     return inputs;
-  }
-
-  PlaylistPlan _playlistPlanFromGameDiff() {
-    final gameXml = _radioInfoFileForDiff(
-      Directory(p.join(state.gameDir, 'media', 'audio')),
-      state.sourceLang,
-      state.targetLang,
-    );
-    final baselineXml = _radioInfoFileForDiff(
-      Directory(state.currentBaselineAudioDir),
-      state.sourceLang,
-      state.targetLang,
-    );
-    if (gameXml == null || baselineXml == null)
-      return const PlaylistPlan.empty();
-    final game = _readRadioInfoPlaylistsForDiff(gameXml);
-    final baseline = _readRadioInfoPlaylistsForDiff(baselineXml);
-    if (game.isEmpty || baseline.isEmpty) return const PlaylistPlan.empty();
-
-    final sourceByMeta = _projectSourcesByMetadata();
-    var plan = const PlaylistPlan.empty();
-    for (final radioEntry in game.entries) {
-      final radioCode = radioEntry.key;
-      final baselineLists = baseline[radioCode] ?? const {};
-      for (final playlistType in const ['FreeRoam', 'Event']) {
-        final gameTracks =
-            radioEntry.value[playlistType] ?? const <_DiffTrack>[];
-        final baselineTracks =
-            baselineLists[playlistType] ?? const <_DiffTrack>[];
-        if (_sameDiffTrackList(gameTracks, baselineTracks)) continue;
-        for (var index = 0; index < gameTracks.length; index++) {
-          final track = gameTracks[index];
-          final source = sourceByMeta[_diffMetaKey(track.title, track.artist)];
-          if (source == null || source.trim().isEmpty) continue;
-          plan = plan.assign(
-            source: source,
-            radioCode: radioCode,
-            playlistType: playlistType,
-            slot: index + 1,
-          );
-        }
-      }
-    }
-    return plan;
-  }
-
-  Map<String, String> _projectSourcesByMetadata() {
-    final metadata = TrackMetadataCache.read(state.projectDir);
-    final out = <String, String>{};
-    for (final path in _projectMusicPaths(state.projectDir)) {
-      final file = File(path);
-      final cached = metadata[canonicalPathKey(path)];
-      final title = cached?.title ?? _guessTrackTitle(file);
-      final artist = cached?.artist ?? _guessTrackArtist(file);
-      out.putIfAbsent(_diffMetaKey(title, artist), () => file.absolute.path);
-    }
-    return out;
   }
 
   Future<bool> createPendingBaselineOnly() async {

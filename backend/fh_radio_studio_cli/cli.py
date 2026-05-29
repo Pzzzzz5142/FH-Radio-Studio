@@ -24,6 +24,7 @@ from .metadata import cmd_scan_metadata
 from .package import cmd_build_package
 from .prepare import cmd_prepare_track
 from .radio_xml import cmd_patch_xml
+from .reconstruct_plan import cmd_reconstruct_plan
 from .status import cmd_status
 from .toolchain import PROFILES as TOOLCHAIN_PROFILES
 from .toolchain import cmd_toolchain_status
@@ -234,6 +235,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scan_metadata.add_argument("--json", action="store_true", help="Print JSON summary only")
     scan_metadata.set_defaults(func=cmd_scan_metadata)
+
+    reconstruct_plan = sub.add_parser(
+        "reconstruct-plan",
+        help="Diff the current game RadioInfo against the baseline and rebuild a playlist plan",
+    )
+    reconstruct_plan.add_argument(
+        "--game-dir", help="FH6 game directory; auto-detected when omitted"
+    )
+    reconstruct_plan.add_argument(
+        "--baseline-manifest", required=True, help="Trusted baseline manifest JSON"
+    )
+    reconstruct_plan.add_argument(
+        "--metadata-cache", help="Project track_metadata.json used to resolve sources"
+    )
+    reconstruct_plan.add_argument(
+        "--music-dir",
+        action="append",
+        default=[],
+        help="Project music root (sources/siren); repeatable",
+    )
+    reconstruct_plan.add_argument("--source", help="Source display language (RadioInfo preference)")
+    reconstruct_plan.add_argument("--target", help="Target voice language (RadioInfo preference)")
+    reconstruct_plan.add_argument(
+        "--out", required=True, help="Path to write the reconstructed playlist_plan.json"
+    )
+    reconstruct_plan.set_defaults(func=cmd_reconstruct_plan)
 
     check_ai = sub.add_parser(
         "check-ai-tools", help="Check local AI timepoint provider/runtime readiness"
