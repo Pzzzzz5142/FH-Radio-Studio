@@ -17,6 +17,35 @@ def baseline_manifest_path(root: Path) -> Path:
     return root / "baseline_manifest.json"
 
 
+def _project_root_from_baseline_dir(baseline_dir: Path) -> Optional[Path]:
+    if baseline_dir.parent.name != "backups":
+        return None
+    project_root = baseline_dir.parent.parent
+    return project_root if project_root != baseline_dir.parent else None
+
+
+def _clear_prepared_packages_for_overwrite(baseline_dir: Path) -> List[Path]:
+    project_root = _project_root_from_baseline_dir(baseline_dir)
+    if project_root is None:
+        return []
+    packages_root = project_root / "packages"
+    metadata_root = project_root / ".fh-radio-studio"
+    targets = [
+        packages_root / "current",
+        packages_root / "pending",
+        metadata_root / "last_applied_package_manifest.json",
+    ]
+    cleared: List[Path] = []
+    for target in targets:
+        if target.is_dir():
+            shutil.rmtree(target)
+            cleared.append(target)
+        elif target.is_file():
+            target.unlink()
+            cleared.append(target)
+    return cleared
+
+
 def _emit_progress(enabled: bool, payload: Dict[str, object]) -> None:
     if not enabled:
         return
@@ -746,6 +775,9 @@ def cmd_baseline(args: argparse.Namespace) -> int:
 
         if out_dir.exists() and args.overwrite:
             shutil.rmtree(out_dir)
+        if args.overwrite and args.state == "current":
+            for cleared in _clear_prepared_packages_for_overwrite(out_dir):
+                print(f"  cleared package artifact {cleared}")
         manifest_files = []
         for item in files:
             rel_text = str(item["relative_path"]).replace("\\", "/")

@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:path/path.dart' as p;
+import 'package:fh_radio_studio/core/playlist_plan.dart';
 import 'package:fh_radio_studio/core/project_workspace.dart';
 import 'package:fh_radio_studio/screens/dashboard.dart';
 import 'package:fh_radio_studio/state/app_state.dart';
@@ -158,6 +159,18 @@ void main() {
     expect(find.text('确认这是可用的'), findsWidgets);
     expect(find.text('旧准备包'), findsOneWidget);
     expect(find.text('放弃新文件'), findsOneWidget);
+    final forceBackup = find.widgetWithText(RmButton, '强制备份');
+    final forceApplyBaseline = find.widgetWithText(RmButton, '强制写入本地备份至游戏');
+    expect(forceBackup, findsOneWidget);
+    expect(forceApplyBaseline, findsOneWidget);
+    expect(
+      tester.widget<RmButton>(forceBackup).variant,
+      RmButtonVariant.dangerOutline,
+    );
+    expect(
+      tester.widget<RmButton>(forceApplyBaseline).variant,
+      RmButtonVariant.dangerPrimary,
+    );
     expect(find.text('测试准备包 · 确认新版本'), findsNothing);
     expect(find.text('生成测试准备包'), findsNothing);
     expect(
@@ -168,6 +181,194 @@ void main() {
           .getSize(find.byKey(const ValueKey('dashboard-route-card-1')))
           .height,
     );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('force backup clears playlist draft after baseline overwrite', (
+    tester,
+  ) async {
+    GoogleFonts.config.allowRuntimeFetching = false;
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'fh_radio_studio_dashboard_force_backup_',
+    );
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1365, 900);
+
+    final projectDir = p.join(tempRoot.path, 'project');
+    final gameDir = p.join(tempRoot.path, 'game');
+    FhRadioStudioProject.ensure(projectDir);
+    FhRadioStudioProject.writeSettings(projectDir, gameDir: gameDir);
+    final source = File(p.join(projectDir, 'sources', 'draft.wav'))
+      ..createSync(recursive: true);
+    final assignment = PlaylistAssignment(
+      trackKey: PlaylistAssignment.keyForPath(source.path),
+      source: source.path,
+      radioCode: 'R4',
+      playlistType: 'FreeRoam',
+      slot: 1,
+    );
+    PlaylistPlanStore.write(
+      projectDir,
+      PlaylistPlan(assignments: {assignment.assignmentKey: assignment}),
+    );
+    final planFile = File(PlaylistPlanStore.configPath(projectDir));
+    expect(planFile.existsSync(), isTrue);
+
+    SharedPreferences.setMockInitialValues({
+      'rm.studio.projectDir': projectDir,
+      'rm.studio.repoRoot': p.dirname(p.current),
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final controller = _DashboardTestController(prefs);
+    controller.setStateForTest(
+      controller.state.copyWith(
+        gameDir: gameDir,
+        sourceLang: 'JP',
+        targetLang: 'EN',
+        gameSourceLang: 'JP',
+        gameTargetLang: 'EN',
+        availableLanguages: const ['EN', 'JP'],
+        preferredLang: 'EN',
+        sourceLanguageExists: true,
+        targetLanguageExists: true,
+        targetMatchesSource: false,
+        preferredMatchesTarget: true,
+        voiceSlotVerified: true,
+        languageReady: true,
+        languageSummary: 'JP 显示 · EN 语音',
+        toolchainStatus: _toolchainReady,
+        lastPackageDir: p.join(projectDir, 'packages', 'current'),
+        lastPackageSummary: _packageSummary(sourceLang: 'JP'),
+        fileIntegrity: _integritySummary(
+          level: GameFileIntegrityLevel.baseline,
+          checkedFiles: 4,
+          baselineMatches: 4,
+        ),
+        log: const ['工具链检查通过'],
+      ),
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+          studioProvider.overrideWith((ref) => controller),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(
+            brightness: Brightness.light,
+            accent: AppAccent.lime,
+          ),
+          home: const Scaffold(body: DashboardScreen(initialFileOpen: true)),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.ensureVisible(find.widgetWithText(RmButton, '强制备份'));
+    await tester.tap(find.widgetWithText(RmButton, '强制备份'));
+    await tester.pumpAndSettle();
+    expect(find.text('用当前游戏文件覆写原始备份？'), findsOneWidget);
+    expect(find.text('危险操作'), findsOneWidget);
+    expect(find.text('DANGER CHECK'), findsOneWidget);
+
+    await tester.tap(find.text('我确认 Forza Horizon 6 没有运行'));
+    await tester.tap(find.text('我理解当前原始备份会被覆盖'));
+    await tester.tap(find.text('我理解准备包和播放列表草稿会被清空'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(RmButton, '强制备份').last);
+    await tester.pumpAndSettle();
+
+    expect(controller.rebuildBaselineCount, 1);
+    expect(planFile.existsSync(), isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('force baseline actions are disabled without original backup', (
+    tester,
+  ) async {
+    GoogleFonts.config.allowRuntimeFetching = false;
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'fh_radio_studio_dashboard_no_baseline_actions_',
+    );
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1365, 900);
+
+    final projectDir = p.join(tempRoot.path, 'project');
+    final gameDir = p.join(tempRoot.path, 'game');
+    FhRadioStudioProject.ensure(projectDir);
+    FhRadioStudioProject.writeSettings(projectDir, gameDir: gameDir);
+
+    SharedPreferences.setMockInitialValues({
+      'rm.studio.projectDir': projectDir,
+      'rm.studio.repoRoot': p.dirname(p.current),
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final controller = _DashboardTestController(prefs);
+    controller.setStateForTest(
+      controller.state.copyWith(
+        gameDir: gameDir,
+        sourceLang: 'JP',
+        targetLang: 'EN',
+        gameSourceLang: 'JP',
+        gameTargetLang: 'EN',
+        availableLanguages: const ['EN', 'JP'],
+        preferredLang: 'EN',
+        sourceLanguageExists: true,
+        targetLanguageExists: true,
+        targetMatchesSource: false,
+        preferredMatchesTarget: true,
+        voiceSlotVerified: true,
+        languageReady: true,
+        languageSummary: 'JP 显示 · EN 语音',
+        toolchainStatus: _toolchainReady,
+        fileIntegrity: _integritySummary(
+          level: GameFileIntegrityLevel.noBaseline,
+          checkedFiles: 0,
+          baselineManifestPath: null,
+          packageManifestPath: null,
+        ),
+        log: const ['缺少原始备份'],
+      ),
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(prefs),
+          studioProvider.overrideWith((ref) => controller),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(
+            brightness: Brightness.light,
+            accent: AppAccent.lime,
+          ),
+          home: const Scaffold(body: DashboardScreen(initialFileOpen: true)),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final forceBackup = find.widgetWithText(RmButton, '强制备份');
+    final forceApplyBaseline = find.widgetWithText(RmButton, '强制写入本地备份至游戏');
+    expect(forceBackup, findsOneWidget);
+    expect(forceApplyBaseline, findsOneWidget);
+    expect(tester.widget<RmButton>(forceBackup).onPressed, isNull);
+    expect(tester.widget<RmButton>(forceApplyBaseline).onPressed, isNull);
     expect(tester.takeException(), isNull);
   });
 
@@ -1300,12 +1501,20 @@ void main() {
 class _DashboardTestController extends StudioController {
   _DashboardTestController(super.prefs);
 
+  int rebuildBaselineCount = 0;
+
   void setStateForTest(StudioState value) {
     state = value;
   }
 
   @override
   Future<void> startupFullCheckOnce() async {}
+
+  @override
+  Future<bool> rebuildBaselineFromCurrentGame() async {
+    rebuildBaselineCount += 1;
+    return true;
+  }
 }
 
 const _toolchainReady = ToolchainStatusSummary(
@@ -1494,6 +1703,7 @@ GameFileIntegritySummary _integritySummary({
   int pendingBaselineMatches = 0,
   int changedFiles = 0,
   bool hasPendingBaseline = false,
+  String? baselineManifestPath = 'baseline_manifest.json',
   String? packageManifestPath = 'fh_radio_studio_package_manifest.json',
   String? lastAppliedPackageManifestPath,
 }) {
@@ -1523,7 +1733,7 @@ GameFileIntegritySummary _integritySummary({
     'changed_files': changedFiles,
     'unknown_files': 0,
     'package_files': checkedFiles,
-    'baseline_manifest_path': 'baseline_manifest.json',
+    'baseline_manifest_path': baselineManifestPath,
     'pending_baseline_manifest_path': hasPendingBaseline
         ? 'pending_baseline_manifest.json'
         : null,

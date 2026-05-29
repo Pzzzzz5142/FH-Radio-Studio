@@ -823,6 +823,50 @@ def test_baseline_apply_overwrites_without_creating_restore_backup(mock_game, fu
     assert "No backup or restore log was created." in apply.stdout
 
 
+def test_baseline_create_overwrite_clears_prepared_package_slots(mock_game, full_project) -> None:
+    baseline_dir = full_project.backups_dir / "baseline-current"
+    create = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--yes",
+    )
+    assert_cli_ok(create)
+
+    current_package = full_project.packages_dir / "current"
+    pending_package = full_project.packages_dir / "pending"
+    last_applied = full_project.metadata_dir / "last_applied_package_manifest.json"
+    for package_dir in (current_package, pending_package):
+        package_dir.mkdir(parents=True)
+        (package_dir / "package-marker.txt").write_text("stale package\n", encoding="utf-8")
+    last_applied.write_text("{}\n", encoding="utf-8")
+
+    overwrite = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--overwrite",
+        "--yes",
+    )
+
+    assert_cli_ok(overwrite)
+    assert (baseline_dir / "baseline_manifest.json").exists()
+    assert not current_package.exists()
+    assert not pending_package.exists()
+    assert not last_applied.exists()
+    assert "cleared package artifact" in overwrite.stdout
+
+
 def test_baseline_apply_rejects_backup_dir_option(mock_game, full_project) -> None:
     baseline_dir = full_project.backups_dir / "baseline-current"
 

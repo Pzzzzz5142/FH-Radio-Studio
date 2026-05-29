@@ -4194,8 +4194,9 @@ class StudioController extends StateNotifier<StudioState> {
     });
   }
 
-  Future<void> rebuildBaselineFromCurrentGame() async {
-    if (state.busy) return;
+  Future<bool> rebuildBaselineFromCurrentGame() async {
+    if (state.busy) return false;
+    var rebuilt = false;
     await _withBusy('用当前游戏文件重建原始备份', () async {
       final running = await _cli.isGameRunning();
       state = state.copyWith(gameRunning: running);
@@ -4203,7 +4204,6 @@ class StudioController extends StateNotifier<StudioState> {
         _append('检测到 FH6 正在运行，已拒绝重建原始备份。请先退出游戏。');
         return;
       }
-      _deleteCurrentBuildArtifacts();
       final outDir = _plannedBaselineDir(
         projectDir: state.projectDir,
         state: 'current',
@@ -4222,17 +4222,18 @@ class StudioController extends StateNotifier<StudioState> {
         '--yes',
       ]);
       if (result.ok) {
-        final packageDir = _latestPackageDir(state.projectDir);
-        final pendingPackageDir = _latestPendingPackageDir(state.projectDir);
         state = state.copyWith(
-          lastPackageDir: packageDir,
-          lastPackageSummary: _readPackageSummary(packageDir),
-          pendingPackageDir: pendingPackageDir,
-          pendingPackageSummary: _readPackageSummary(pendingPackageDir),
+          lastPackageDir: null,
+          lastPackageSummary: null,
+          pendingPackageDir: null,
+          pendingPackageSummary: null,
         );
+        _append('已用当前游戏文件覆写原始备份；准备包记录已清理。');
         await _refreshIntegrityFromCli();
+        rebuilt = true;
       }
     });
+    return rebuilt;
   }
 
   Future<void> createPendingBaselineAndForceDeploy() async {
@@ -4357,21 +4358,6 @@ class StudioController extends StateNotifier<StudioState> {
     return id == null || id.trim().isEmpty || id == 'unknown' ? null : id;
   }
 
-  bool _manifestBelongsToCurrentBuild(File manifestFile) {
-    final currentId = _currentIntegrityBuildId;
-    if (currentId == null || !manifestFile.existsSync()) return false;
-    final data = _readJsonMap(manifestFile);
-    if (data == null) return false;
-    if (_objectString(data['game_version_id']) == currentId) return true;
-    final supported = _objectStringList(data['supported_game_version_ids']);
-    if (supported.contains(currentId)) return true;
-    final gameVersion = _objectMap(data['game_version']);
-    final nested = _objectString(gameVersion?['version_id']);
-    if (nested == currentId) return true;
-    final buildId = _objectString(gameVersion?['build_id']);
-    return buildId != null && currentId == 'steam-b$buildId';
-  }
-
   bool _manifestHasAnyBuildId(File manifestFile, Set<String> buildIds) {
     if (buildIds.isEmpty || !manifestFile.existsSync()) return false;
     final data = _readJsonMap(manifestFile);
@@ -4449,41 +4435,6 @@ class StudioController extends StateNotifier<StudioState> {
       }
     }
     _append('已更新 $updated 个项目 artifact 的 Steam build 兼容记录。');
-  }
-
-  void _deleteCurrentBuildArtifacts() {
-    final backups = Directory(
-      FhRadioStudioProject.backupsDir(state.projectDir),
-    );
-    if (backups.existsSync()) {
-      for (final dir
-          in backups.listSync(followLinks: false).whereType<Directory>()) {
-        final name = p.basename(dir.path);
-        if (name == 'manual' || name == 'automatic' || name == 'baseline-old') {
-          continue;
-        }
-        final manifest = File(p.join(dir.path, 'baseline_manifest.json'));
-        if (_manifestBelongsToCurrentBuild(manifest)) {
-          dir.deleteSync(recursive: true);
-        }
-      }
-    }
-
-    for (final packageDir in [
-      FhRadioStudioProject.currentPackageDir(state.projectDir),
-      FhRadioStudioProject.pendingPackageDir(state.projectDir),
-    ]) {
-      if (_manifestBelongsToCurrentBuild(
-        File(packageManifestPath(packageDir)),
-      )) {
-        _deletePackageDir(packageDir);
-      }
-    }
-
-    final lastApplied = File(state.lastAppliedPackageManifest);
-    if (_manifestBelongsToCurrentBuild(lastApplied)) {
-      lastApplied.deleteSync();
-    }
   }
 
   void _promotePendingPackageToCurrent() {
