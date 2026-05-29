@@ -1095,6 +1095,69 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
     });
 
     test(
+      'rebuilds from package assignments via playlist plan without a draft',
+      () async {
+        // Regression: a loudness-only rebuild with no in-progress draft must not
+        // read the prepared package dir (it is the output dir and gets cleared).
+        // It seeds a plan from the package manifest (sources/siren) and builds
+        // with --playlist-plan.
+        final projectDir = p.join(tempRoot.path, 'project');
+        final paths = _writeIntegrityFixture(
+          projectDir,
+          deployedBytes: 'original',
+        );
+        final source = File(
+          p.join(FhRadioStudioProject.sourcesDir(projectDir), 'kept-song.wav'),
+        )..createSync(recursive: true);
+        _writePackageManifestFile(
+          File(
+            p.join(
+              paths.packageRoot,
+              'package',
+              'fh_radio_studio_package_manifest.json',
+            ),
+          ),
+          source: source.path,
+          radioCode: 'XS',
+          playlistType: 'FreeRoam',
+          slot: 1,
+          loudnessOffsetLu: 0.0,
+        );
+        // Intentionally no PlaylistPlanStore.write here.
+        SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+
+        final prefs = await SharedPreferences.getInstance();
+        final runtime = _testUvRuntime(tempRoot, 'package-loudness-nodraft');
+        final cli = _RecordingCli(runtime);
+        final controller = _RecordingCliStudioController(prefs, cli);
+        controller.setStateForTest(
+          controller.state.copyWith(repoRoot: runtime.projectRoot),
+        );
+
+        final built = await controller.buildPackage(loudnessOffsetLu: 3.0);
+
+        expect(built, isTrue);
+        final buildArgs = cli.commands.singleWhere(
+          (args) => args.isNotEmpty && args.first == 'build-package',
+        );
+        expect(buildArgs, isNot(contains('--playlist-from-package')));
+        expect(
+          buildArgs,
+          containsAllInOrder([
+            '--playlist-plan',
+            PlaylistPlanStore.configPath(projectDir),
+          ]),
+        );
+        expect(buildArgs, contains(source.path));
+        expect(buildArgs, containsAllInOrder(['--loudness-offset-lu', '3']));
+        final plan = PlaylistPlanStore.read(projectDir);
+        expect(plan.assignments.values.map((item) => item.source).toSet(), {
+          source.path,
+        });
+      },
+    );
+
+    test(
       'uses last applied package assignments when current package is missing',
       () async {
         final projectDir = p.join(tempRoot.path, 'project');

@@ -3953,8 +3953,6 @@ class StudioController extends StateNotifier<StudioState> {
         }
       }
     }
-    final draft = _playlistDraftForBuild(planForBuild);
-    final restoresBuiltin = draft.restoresBuiltin;
     final canBuildLanguageChange = !state.languageSelectionMatchesGame;
     final canBuildWithoutCurrentPackage = !state.currentPackageReady;
     final currentPackageSummary = state.currentPackageReady
@@ -3965,11 +3963,21 @@ class StudioController extends StateNotifier<StudioState> {
     final loudnessOffsetChanged =
         currentLoudnessOffsetLu == null ||
         (currentLoudnessOffsetLu - normalizedLoudnessOffsetLu).abs() > 0.001;
-    // 用户只改了响度增益时，沿用当前包的播放列表 + 音乐输入，重新跑一遍 build。
-    final canRebuildForLoudness =
+    // 用户只改了响度增益、且没有正在编辑的草稿时，从当前包 manifest 的 assignments
+    // 重建一份 plan（source 全部指向项目 sources/siren），再走正常的 --playlist-plan
+    // 构建。不能从准备包目录读，因为输出目录就是它、构建前会被清空。
+    if (!planForBuild.hasDraft &&
+        loudnessOffsetChanged &&
         currentPackageSummary != null &&
-        currentPackageSummary.assignments.isNotEmpty &&
-        loudnessOffsetChanged;
+        currentPackageSummary.assignments.isNotEmpty) {
+      final seeded = _planFromPackageSummary(currentPackageSummary);
+      if (seeded.hasDraft) {
+        PlaylistPlanStore.write(state.projectDir, seeded);
+        planForBuild = PlaylistPlanStore.read(state.projectDir);
+      }
+    }
+    final draft = _playlistDraftForBuild(planForBuild);
+    final restoresBuiltin = draft.restoresBuiltin;
     final previousAppliedSummary = !state.currentPackageReady
         ? _readPackageSummaryFromManifest(
             File(state.lastAppliedPackageManifest),
@@ -3982,7 +3990,6 @@ class StudioController extends StateNotifier<StudioState> {
     if (!draft.hasPlan &&
         !canBuildLanguageChange &&
         !canBuildFromPreviousApplied &&
-        !canRebuildForLoudness &&
         !canBuildWithoutCurrentPackage) {
       if (state.currentPackageReady) {
         _append('准备包已经等于当前播放列表和响度；修改分配、语言或响度增益后再重新构建。');
@@ -4000,17 +4007,12 @@ class StudioController extends StateNotifier<StudioState> {
       _append('准备包已经等于当前播放列表和响度；修改分配、语言或响度增益后再重新构建。');
       return false;
     }
-    final loudnessOnlyFallbackSummary = canRebuildForLoudness && !draft.hasPlan
-        ? currentPackageSummary
-        : null;
     final musicInputs = draft.inputs.isNotEmpty
         ? draft.inputs
-        : _musicInputsFromPackageSummary(
-            previousAppliedSummary ?? loudnessOnlyFallbackSummary,
-          );
+        : _musicInputsFromPackageSummary(previousAppliedSummary);
     final playlistFromPackage = canBuildFromPreviousApplied
         ? state.lastAppliedPackageManifest
-        : (loudnessOnlyFallbackSummary != null ? state.lastPackageDir : null);
+        : null;
     if (musicInputs.isEmpty &&
         !canBuildLanguageChange &&
         !restoresBuiltin &&
@@ -4222,6 +4224,25 @@ class StudioController extends StateNotifier<StudioState> {
       if (seen.add(key)) inputs.add(source);
     }
     return inputs;
+  }
+
+  // 把一份已构建准备包的 manifest assignments 还原成 PlaylistPlan。assignment.source
+  // 指向项目 sources/siren 里的原始文件，所以重建出的 plan 不依赖准备包目录本身。
+  PlaylistPlan _planFromPackageSummary(PackageArtifactSummary summary) {
+    var plan = const PlaylistPlan.empty();
+    for (final item in summary.assignments) {
+      if (item.source.trim().isEmpty || item.slot <= 0) continue;
+      if (!isUiSupportedRadio(code: item.radioLabel)) continue;
+      for (final playlistType in item.normalizedPlaylistTypes) {
+        plan = plan.assign(
+          source: item.source,
+          radioCode: item.radioLabel,
+          playlistType: playlistType,
+          slot: item.slot,
+        );
+      }
+    }
+    return plan;
   }
 
   Future<bool> createPendingBaselineOnly() async {
