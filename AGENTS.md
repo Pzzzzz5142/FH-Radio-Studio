@@ -23,6 +23,22 @@
 - Release defaults to wheel/offline/bundled-cache execution. Release `UvRuntime` uses `<app>/runtime`, `<app>/runtime/wheels`, `<app>/toolchain/python`, `<app>/toolchain/uv/cache`, `--no-editable`, `--offline`, and `--no-python-downloads`; do not relax these guards unless explicitly debugging with `FH_RADIO_STUDIO_ALLOW_RELEASE_OVERRIDES=1`.
 - Release builds should bundle uv, prepared Python runtime inputs, and core audio tools instead of requiring users to install uv or ffmpeg/vgmstream/fsbankcl globally. Prepare inputs with `uv run python tools/prepare_release_runtime.py`; Windows CMake can copy `.fh-radio-studio-dev/release-inputs/runtime` into `<app>/runtime`, `.fh-radio-studio-dev/release-inputs/toolchain` into `<app>/toolchain`, and `.fh-radio-studio-dev/release-inputs/uv/windows/uv.exe` into `<app>/tools/uv/uv.exe`. The prepared toolchain must include `tools/audio/ffmpeg/ffmpeg.exe`, `tools/audio/vgmstream/vgmstream-cli.exe`, and `tools/audio/fmod/fsbankcl.exe`; `fh-radio-studio install-tools --force` remains the repair fallback if a user's local bundled tools are deleted or damaged. Release/CI packaging should set `FH_RADIO_STUDIO_REQUIRE_BUNDLED_UV=ON`, `FH_RADIO_STUDIO_REQUIRE_RELEASE_RUNTIME=ON`, `FH_RADIO_STUDIO_REQUIRE_RELEASE_TOOLCHAIN=ON`, and `FH_RADIO_STUDIO_REQUIRE_RELEASE_AUDIO_TOOLS=ON` so missing artifacts fail the build. Do not revive `third_party/` just for uv release inputs.
 
+## Frontend/Backend Separation
+
+- The Python CLI is the single source of truth for track metadata and FH6 file
+  parsing. Anything that reads `RadioInfo_*.xml`, resolves track title/artist,
+  maps tracks back to project sources, or rebuilds a playlist plan belongs in the
+  CLI and is surfaced through a structured command output (JSON or a written
+  file). Do not reimplement that logic in the Flutter app.
+- The UI calls the CLI and consumes its result; it must not maintain a second
+  metadata mechanism (XML parsing, filename guessing, `title|artist` matching) in
+  Dart. Example: reconstructing a playlist from the live game vs. baseline diff is
+  the `reconstruct-plan` subcommand, whose output the UI reads through
+  `PlaylistPlanStore`. See `docs/design-decisions.md`.
+- Dart helpers like `isUiSupportedRadio` / `_radioAssignmentLabel` are for
+  presentation only; keep their authoritative counterparts
+  (`is_ui_supported_radio`, `radio_code_for_station`) in the CLI.
+
 ## AI Timepoint Debugging
 
 - When debugging or validating point-selection rules, focus on `analyze-audio --profile local-heavy` results only. `local-base` may be used for narrow baseline unit isolation, but it should not be treated as the product-quality selection result.
