@@ -108,7 +108,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('→ -18.0 LUFS'), findsOneWidget);
-    expect(find.text('听感差不多翻倍'), findsOneWidget);
+    expect(find.text('听感差不多翻倍！'), findsOneWidget);
   });
 
   testWidgets('builtin playlist header uses visible original track count', (
