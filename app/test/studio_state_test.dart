@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:fh_radio_studio/core/fh_radio_studio_cli.dart';
 import 'package:fh_radio_studio/core/playlist_plan.dart';
 import 'package:fh_radio_studio/core/project_workspace.dart';
+import 'package:fh_radio_studio/core/track_metadata_cache.dart';
 import 'package:fh_radio_studio/state/studio_state.dart';
 import 'package:fh_radio_studio/state/playlist_plan_state.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -805,7 +806,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
       },
     );
 
-    test('does not build from sources when playlist draft is empty', () async {
+    test('builds current package when no prepared package exists', () async {
       final projectDir = p.join(tempRoot.path, 'project');
       final paths = _writeIntegrityFixture(
         projectDir,
@@ -819,17 +820,127 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
       SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
 
       final prefs = await SharedPreferences.getInstance();
-      final controller = StudioController(prefs);
+      final runtime = _testUvRuntime(tempRoot, 'package-no-current');
+      final cli = _RecordingCli(runtime);
+      final controller = _RecordingCliStudioController(prefs, cli);
+      controller.setStateForTest(
+        controller.state.copyWith(repoRoot: runtime.projectRoot),
+      );
 
       final built = await controller.buildPackage();
 
-      expect(built, isFalse);
-      expect(controller.state.lastPackageDir, isNull);
-      expect(
-        controller.state.log,
-        contains('播放列表还没有分配曲目。请先在“播放列表”里把自建歌曲拖到目标电台。'),
+      expect(built, isTrue);
+      expect(controller.state.lastPackageDir, isNotNull);
+      final buildArgs = cli.commands.singleWhere(
+        (args) => args.isNotEmpty && args.first == 'build-package',
       );
+      expect(buildArgs, isNot(contains(source.path)));
     });
+
+    test(
+      'seeds playlist from game and baseline diff when no package exists',
+      () async {
+        final projectDir = p.join(tempRoot.path, 'project');
+        final gameDir = p.join(projectDir, 'game');
+        FhRadioStudioProject.ensure(projectDir);
+        FhRadioStudioProject.writeSettings(projectDir, gameDir: gameDir);
+        final source = File(
+          p.join(
+            FhRadioStudioProject.sourcesDir(projectDir),
+            'Local Artist - Diff Song.wav',
+          ),
+        )..createSync(recursive: true);
+        final metadataFile = File(TrackMetadataCache.configPath(projectDir));
+        metadataFile.parent.createSync(recursive: true);
+        metadataFile.writeAsStringSync(
+          const JsonEncoder.withIndent('  ')
+              .convert({
+                'schema_version': 1,
+                'tracks': [
+                  {
+                    'source': '',
+                    'artist': 'Local Artist',
+                    'title': 'Diff Song',
+                    'from_tags': true,
+                  },
+                ],
+              })
+              .replaceFirst(
+                '"source": ""',
+                '"source": "${_jsonPath(source.path)}"',
+              ),
+          encoding: utf8,
+        );
+        final gameAudio = Directory(p.join(gameDir, 'media', 'audio'))
+          ..createSync(recursive: true);
+        final baselineAudio = Directory(
+          p.join(projectDir, 'backups', 'baseline-current', 'media', 'audio'),
+        )..createSync(recursive: true);
+        File(
+            p.join(
+              projectDir,
+              'backups',
+              'baseline-current',
+              'baseline_manifest.json',
+            ),
+          )
+          ..createSync(recursive: true)
+          ..writeAsStringSync(
+            '{"kind":"game_baseline","state":"current"}',
+            encoding: utf8,
+          );
+        File(p.join(baselineAudio.path, 'RadioInfo_CHS.xml')).writeAsStringSync(
+          _radioInfoXml(
+            [('HZ6_R4_BASE', 'Base Song', 'Base Artist')],
+            ['HZ6_R4_BASE'],
+          ),
+          encoding: utf8,
+        );
+        File(p.join(gameAudio.path, 'RadioInfo_CHS.xml')).writeAsStringSync(
+          _radioInfoXml(
+            [
+              ('HZ6_R4_BASE', 'Base Song', 'Base Artist'),
+              ('HZ6_R4_CUSTOM', 'Diff Song', 'Local Artist'),
+            ],
+            ['HZ6_R4_CUSTOM'],
+          ),
+          encoding: utf8,
+        );
+        SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+
+        final prefs = await SharedPreferences.getInstance();
+        final runtime = _testUvRuntime(tempRoot, 'package-game-diff');
+        final cli = _RecordingCli(runtime);
+        final controller = _RecordingCliStudioController(prefs, cli);
+        controller.setStateForTest(
+          controller.state.copyWith(repoRoot: runtime.projectRoot),
+        );
+
+        final built = await controller.buildPackage();
+
+        expect(built, isTrue);
+        final plan = PlaylistPlanStore.read(projectDir);
+        expect(plan.assignments, hasLength(2));
+        expect(plan.assignments.values.map((item) => item.source).toSet(), {
+          source.path,
+        });
+        final buildArgs = cli.commands.singleWhere(
+          (args) => args.isNotEmpty && args.first == 'build-package',
+        );
+        expect(
+          buildArgs,
+          containsAllInOrder([
+            '--playlist-plan',
+            PlaylistPlanStore.configPath(projectDir),
+          ]),
+        );
+        expect(buildArgs, contains(source.path));
+        expect(
+          controller.state.log.join('\n'),
+          contains('已根据当前游戏文件与原始备份差分初始化播放列表草稿：2 首自建曲目。'),
+        );
+      },
+    );
 
     test(
       'does not rebuild when current package already matches playlist draft',
@@ -854,6 +965,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
           radioCode: 'XS',
           playlistType: 'FreeRoam',
           slot: 1,
+          loudnessOffsetLu: kDefaultPackageLoudnessOffsetLu,
         );
         PlaylistPlanStore.write(
           projectDir,
@@ -872,9 +984,119 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         final built = await controller.buildPackage();
 
         expect(built, isFalse);
-        expect(controller.state.log, contains('准备包已经等于当前播放列表；修改分配或语言后再重新构建。'));
+        expect(
+          controller.state.log,
+          contains('准备包已经等于当前播放列表和响度；修改分配、语言或响度增益后再重新构建。'),
+        );
       },
     );
+
+    test(
+      'rebuilds current package when only the loudness offset changed',
+      () async {
+        final projectDir = p.join(tempRoot.path, 'project');
+        final paths = _writeIntegrityFixture(
+          projectDir,
+          deployedBytes: 'original',
+        );
+        final source = File(
+          p.join(FhRadioStudioProject.sourcesDir(projectDir), 'same-song.wav'),
+        )..createSync(recursive: true);
+        _writePackageManifestFile(
+          File(
+            p.join(
+              paths.packageRoot,
+              'package',
+              'fh_radio_studio_package_manifest.json',
+            ),
+          ),
+          source: source.path,
+          radioCode: 'XS',
+          playlistType: 'FreeRoam',
+          slot: 1,
+          loudnessOffsetLu: 0.0,
+        );
+        PlaylistPlanStore.write(
+          projectDir,
+          const PlaylistPlan.empty().assign(
+            source: source.path,
+            radioCode: 'XS',
+            playlistType: 'FreeRoam',
+            slot: 1,
+          ),
+        );
+        SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+
+        final prefs = await SharedPreferences.getInstance();
+        final runtime = _testUvRuntime(tempRoot, 'package-loudness-rebuild');
+        final cli = _RecordingCli(runtime);
+        final controller = _RecordingCliStudioController(prefs, cli);
+        controller.setStateForTest(
+          controller.state.copyWith(repoRoot: runtime.projectRoot),
+        );
+
+        final preview = controller.buildPackageLoudnessPreview();
+        final built = await controller.buildPackage(loudnessOffsetLu: 3.0);
+
+        expect(preview.initialOffsetLu, 0.0);
+        expect(preview.currentPackageOffsetLu, 0.0);
+        expect(built, isTrue);
+        final buildArgs = cli.commands.singleWhere(
+          (args) => args.isNotEmpty && args.first == 'build-package',
+        );
+        expect(buildArgs, containsAllInOrder(['--loudness-offset-lu', '3']));
+      },
+    );
+
+    test('rebuilds current package when loudness offset is missing', () async {
+      final projectDir = p.join(tempRoot.path, 'project');
+      final paths = _writeIntegrityFixture(
+        projectDir,
+        deployedBytes: 'original',
+      );
+      final source = File(
+        p.join(FhRadioStudioProject.sourcesDir(projectDir), 'same-song.wav'),
+      )..createSync(recursive: true);
+      _writePackageManifestFile(
+        File(
+          p.join(
+            paths.packageRoot,
+            'package',
+            'fh_radio_studio_package_manifest.json',
+          ),
+        ),
+        source: source.path,
+        radioCode: 'XS',
+        playlistType: 'FreeRoam',
+        slot: 1,
+      );
+      PlaylistPlanStore.write(
+        projectDir,
+        const PlaylistPlan.empty().assign(
+          source: source.path,
+          radioCode: 'XS',
+          playlistType: 'FreeRoam',
+          slot: 1,
+        ),
+      );
+      SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+
+      final prefs = await SharedPreferences.getInstance();
+      final runtime = _testUvRuntime(tempRoot, 'package-loudness-missing');
+      final cli = _RecordingCli(runtime);
+      final controller = _RecordingCliStudioController(prefs, cli);
+      controller.setStateForTest(
+        controller.state.copyWith(repoRoot: runtime.projectRoot),
+      );
+
+      final built = await controller.buildPackage(loudnessOffsetLu: 3.0);
+
+      expect(built, isTrue);
+      final buildArgs = cli.commands.singleWhere(
+        (args) => args.isNotEmpty && args.first == 'build-package',
+      );
+      expect(buildArgs, containsAllInOrder(['--loudness-offset-lu', '3']));
+    });
 
     test(
       'uses last applied package assignments when current package is missing',
@@ -911,6 +1133,64 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         expect(controller.state.log.join('\n'), contains('previous-song.wav'));
       },
     );
+
+    test('passes selected loudness offset to package build command', () async {
+      final projectDir = p.join(tempRoot.path, 'project');
+      _writeIntegrityFixture(projectDir, deployedBytes: 'original');
+      final source = File(
+        p.join(FhRadioStudioProject.sourcesDir(projectDir), 'loud-song.wav'),
+      )..createSync(recursive: true);
+      PlaylistPlanStore.write(
+        projectDir,
+        PlaylistPlan.empty().assign(
+          source: source.path,
+          radioCode: 'XS',
+          playlistType: 'FreeRoam',
+          slot: 1,
+        ),
+      );
+      final cacheFile = File(TrackMetadataCache.configPath(projectDir));
+      cacheFile.parent.createSync(recursive: true);
+      cacheFile.writeAsStringSync(
+        const JsonEncoder.withIndent('  ').convert({
+          'schema_version': 1,
+          'tracks': [
+            {
+              'source': source.path,
+              'artist': 'CLI Artist',
+              'title': 'CLI Title',
+              'from_tags': true,
+            },
+          ],
+        }),
+        encoding: utf8,
+      );
+      SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+
+      final prefs = await SharedPreferences.getInstance();
+      final runtime = _testUvRuntime(tempRoot, 'package-loudness');
+      final cli = _RecordingCli(runtime);
+      final controller = _RecordingCliStudioController(prefs, cli);
+      controller.setStateForTest(
+        controller.state.copyWith(repoRoot: runtime.projectRoot),
+      );
+
+      final preview = controller.buildPackageLoudnessPreview();
+      final built = await controller.buildPackage(loudnessOffsetLu: 6.0);
+
+      final buildArgs = cli.commands.singleWhere(
+        (args) => args.isNotEmpty && args.first == 'build-package',
+      );
+      expect(built, isTrue);
+      expect(preview.source, source.path);
+      expect(preview.referenceMedianLufs, kFallbackPackageReferenceMedianLufs);
+      expect(preview.initialOffsetLu, kDefaultPackageLoudnessOffsetLu);
+      expect(preview.previewInputLufs, kFallbackPackageReferenceMedianLufs);
+      expect(preview.previewInputLufsHeuristic, isTrue);
+      expect(preview.previewTitle, 'CLI Title');
+      expect(preview.previewArtist, 'CLI Artist');
+      expect(buildArgs, containsAllInOrder(['--loudness-offset-lu', '6']));
+    });
 
     test(
       'cleans missing playlist sources after package build preflight',
@@ -1578,8 +1858,12 @@ void _writePackageManifestFile(
   required String radioCode,
   required String playlistType,
   required int slot,
+  double? loudnessOffsetLu,
 }) {
   final slotIndex = slot - 1;
+  final loudnessLine = loudnessOffsetLu == null
+      ? ''
+      : '  "loudness_offset_lu": $loudnessOffsetLu,\n';
   manifest.createSync(recursive: true);
   manifest.writeAsStringSync('''
 {
@@ -1591,7 +1875,7 @@ void _writePackageManifestFile(
   "bank_slots": 4,
   "playlist_mode": "only",
   "skip_bank": true,
-  "radios": [
+$loudnessLine  "radios": [
     {
       "radio": 4,
       "radio_code": "$radioCode",
@@ -1789,3 +2073,35 @@ List<int> _le32(int value) => [
 ];
 
 String _jsonPath(String path) => path.replaceAll(r'\', r'\\');
+
+String _radioInfoXml(
+  List<(String soundName, String title, String artist)> samples,
+  List<String> playlist,
+) {
+  final sampleXml = samples
+      .map(
+        (sample) =>
+            '<Sample SoundName="${sample.$1}" DisplayName="${sample.$2}" Artist="${sample.$3}" />',
+      )
+      .join('\n');
+  final entryXml = playlist
+      .map((soundName) => '<Entry Name="$soundName" />')
+      .join('\n');
+  return '''
+<RadioInfo>
+  <RadioStations>
+    <RadioStation Number="4" Name="Horizon XS">
+      <SampleList Type="Track">
+$sampleXml
+      </SampleList>
+      <PlayList Type="FreeRoam">
+$entryXml
+      </PlayList>
+      <PlayList Type="Event">
+$entryXml
+      </PlayList>
+    </RadioStation>
+  </RadioStations>
+</RadioInfo>
+''';
+}

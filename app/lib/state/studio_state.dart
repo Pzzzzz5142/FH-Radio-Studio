@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:xml/xml.dart';
 
 import '../core/project_workspace.dart';
 import '../core/playlist_plan.dart';
@@ -51,6 +52,29 @@ const kAiPipelineProfiles = ['local-base', 'local-deep', 'local-heavy'];
 const kDefaultAiPipelineProfile = 'local-heavy';
 
 const kAiWarmupProviders = ['beat_this', 'songformer', 'mert', 'demucs'];
+
+const kDefaultPackageLoudnessOffsetLu = 3.0;
+
+const kPackageLoudnessOffsetOptions = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+const kFallbackPackageReferenceMedianLufs = -24.0;
+
+double normalizePackageLoudnessOffsetLu(double value) {
+  if (!value.isFinite) return kDefaultPackageLoudnessOffsetLu;
+  return value
+      .clamp(
+        kPackageLoudnessOffsetOptions.first,
+        kPackageLoudnessOffsetOptions.last,
+      )
+      .toDouble();
+}
+
+String formatPackageLoudnessOffsetLu(double value) {
+  final normalized = normalizePackageLoudnessOffsetLu(value);
+  return normalized == normalized.roundToDouble()
+      ? normalized.toStringAsFixed(0)
+      : normalized.toStringAsFixed(2);
+}
 
 const kDefaultPipIndexMirror = 'https://mirrors.aliyun.com/pypi/simple/';
 
@@ -659,6 +683,7 @@ class PackageArtifactSummary {
     this.baselineRestore = false,
     required this.sourceLang,
     required this.targetLang,
+    this.loudnessOffsetLu,
     required this.previewTracks,
     required this.assignments,
   });
@@ -676,6 +701,7 @@ class PackageArtifactSummary {
   final bool baselineRestore;
   final String? sourceLang;
   final String? targetLang;
+  final double? loudnessOffsetLu;
   final List<String> previewTracks;
   final List<PackageTrackAssignment> assignments;
 
@@ -728,7 +754,7 @@ class PackageArtifactSummary {
           ? '语言设置'
           : '$sourceLang 显示 / $targetLang 语音';
       final slots = _slotDetail;
-      return '当前游戏 radio 原样打包$slots · $language';
+      return '原始备份 radio 原样打包$slots · $language';
     }
     final slots = _slotDetail;
     final mode = playlistMode == 'add' ? '保留原播放列表' : '替换播放列表';
@@ -744,7 +770,7 @@ class PackageArtifactSummary {
       return 'RadioInfo 与 bank 来自原始备份';
     }
     if (currentRadioPassthrough && previewTracks.isEmpty) {
-      return 'RadioInfo 与 bank 保持当前游戏内容';
+      return 'RadioInfo 与 bank 来自原始备份';
     }
     if (previewTracks.isEmpty) return '未读取到曲目信息';
     final names = previewTracks.take(3).join(', ');
@@ -761,6 +787,29 @@ class PackageArtifactSummary {
     }
     return null;
   }
+}
+
+@immutable
+class PackageBuildLoudnessPreview {
+  const PackageBuildLoudnessPreview({
+    required this.referenceMedianLufs,
+    required this.initialOffsetLu,
+    required this.previewInputLufs,
+    required this.previewInputLufsHeuristic,
+    this.source,
+    this.previewTitle,
+    this.previewArtist,
+    this.currentPackageOffsetLu,
+  });
+
+  final double referenceMedianLufs;
+  final double initialOffsetLu;
+  final double previewInputLufs;
+  final bool previewInputLufsHeuristic;
+  final String? source;
+  final String? previewTitle;
+  final String? previewArtist;
+  final double? currentPackageOffsetLu;
 }
 
 @immutable
@@ -2278,9 +2327,33 @@ PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
     baselineRestore: _objectBool(data['baseline_restore']) ?? false,
     sourceLang: _objectString(language?['source_lang']),
     targetLang: _objectString(language?['target_lang']),
+    loudnessOffsetLu: _packageLoudnessOffsetLu(data),
     previewTracks: previews,
     assignments: assignments,
   );
+}
+
+double? _packageLoudnessOffsetLu(Map<String, dynamic> data) {
+  final direct = _objectDouble(data['loudness_offset_lu']);
+  if (direct != null) return direct;
+  final radios = data['radios'];
+  if (radios is List) {
+    for (final item in radios) {
+      final unit = _objectMap(item);
+      final profile = _objectMap(unit?['loudness_profile']);
+      final offset = _objectDouble(profile?['target_offset_lu']);
+      if (offset != null) return offset;
+    }
+  }
+  return null;
+}
+
+double _baselineReferenceMedianLufs(String manifestPath) {
+  final data = _readJsonMap(File(manifestPath));
+  final derivedValues = _objectMap(data?['derived_values']);
+  final envelope = _objectMap(derivedValues?['loudness_envelope']);
+  return _objectDouble(envelope?['reference_median_lufs']) ??
+      kFallbackPackageReferenceMedianLufs;
 }
 
 void _writePendingPackageFailureMarker(String packageDir, CliRunResult result) {
@@ -2512,6 +2585,145 @@ int? _objectInt(Object? value) {
   if (value is num) return value.round();
   if (value is String) return int.tryParse(value);
   return null;
+}
+
+double? _objectDouble(Object? value) {
+  if (value is num && value.isFinite) return value.toDouble();
+  if (value is String) {
+    final parsed = double.tryParse(value);
+    return parsed == null || !parsed.isFinite ? null : parsed;
+  }
+  return null;
+}
+
+@immutable
+class _DiffTrack {
+  const _DiffTrack({
+    required this.soundName,
+    required this.title,
+    required this.artist,
+  });
+
+  final String soundName;
+  final String title;
+  final String artist;
+
+  String get signature =>
+      '${soundName.trim().toLowerCase()}|${_diffMetaKey(title, artist)}';
+}
+
+File? _radioInfoFileForDiff(
+  Directory audioDir,
+  String sourceLang,
+  String targetLang,
+) {
+  if (!audioDir.existsSync()) return null;
+  final candidates = [sourceLang, targetLang, 'EN', 'GB', 'CHS', 'CN']
+      .map((lang) => lang.trim().toUpperCase())
+      .where((lang) => lang.isNotEmpty)
+      .toSet()
+      .map((lang) => File(p.join(audioDir.path, 'RadioInfo_$lang.xml')));
+  for (final file in candidates) {
+    if (file.existsSync()) return file;
+  }
+  final files =
+      audioDir
+          .listSync(followLinks: false)
+          .whereType<File>()
+          .where((file) => p.basename(file.path).startsWith('RadioInfo_'))
+          .toList()
+        ..sort((a, b) => a.path.toLowerCase().compareTo(b.path.toLowerCase()));
+  return files.firstOrNull;
+}
+
+Map<String, Map<String, List<_DiffTrack>>> _readRadioInfoPlaylistsForDiff(
+  File xmlFile,
+) {
+  try {
+    final document = XmlDocument.parse(
+      xmlFile.readAsStringSync(encoding: utf8),
+    );
+    final out = <String, Map<String, List<_DiffTrack>>>{};
+    for (final station in document.findAllElements('RadioStation')) {
+      final number = _objectInt(station.getAttribute('Number'));
+      final name = station.getAttribute('Name')?.trim() ?? '';
+      final radioCode = _radioAssignmentLabel(number, name);
+      if (!isUiSupportedRadio(number: number, code: radioCode, name: name)) {
+        continue;
+      }
+      final samples = <String, _DiffTrack>{};
+      final sampleOrder = <_DiffTrack>[];
+      for (final sample in station.findAllElements('Sample')) {
+        final soundName = sample.getAttribute('SoundName')?.trim() ?? '';
+        if (soundName.isEmpty) continue;
+        final track = _DiffTrack(
+          soundName: soundName,
+          title: sample.getAttribute('DisplayName')?.trim() ?? soundName,
+          artist: sample.getAttribute('Artist')?.trim() ?? 'Unknown Artist',
+        );
+        samples[soundName] = track;
+        sampleOrder.add(track);
+      }
+      final lists = <String, List<_DiffTrack>>{};
+      for (final playlistType in const ['FreeRoam', 'Event']) {
+        final tracks = <_DiffTrack>[];
+        final playlists = station.findElements('PlayList').where((element) {
+          final type = element.getAttribute('Type') ?? 'FreeRoam';
+          return PlaylistAssignment.normalizePlaylistType(type) == playlistType;
+        });
+        for (final playlist in playlists) {
+          for (final entry in playlist.findElements('Entry')) {
+            final name = entry.getAttribute('Name')?.trim() ?? '';
+            final track = samples[name];
+            if (track != null) tracks.add(track);
+          }
+        }
+        lists[playlistType] = tracks.isEmpty ? sampleOrder : tracks;
+      }
+      out[radioCode] = lists;
+    }
+    return out;
+  } on FormatException {
+    return const {};
+  } on FileSystemException {
+    return const {};
+  }
+}
+
+bool _sameDiffTrackList(List<_DiffTrack> a, List<_DiffTrack> b) {
+  if (a.length != b.length) return false;
+  for (var index = 0; index < a.length; index++) {
+    if (a[index].signature != b[index].signature) return false;
+  }
+  return true;
+}
+
+String _diffMetaKey(String title, String artist) {
+  return '${artist.trim().toLowerCase()}|${title.trim().toLowerCase()}';
+}
+
+String _guessTrackTitle(File file) {
+  final parts = _guessTrackMetadata(file);
+  return parts.$2;
+}
+
+String _guessTrackArtist(File file) {
+  final parts = _guessTrackMetadata(file);
+  return parts.$1;
+}
+
+(String, String) _guessTrackMetadata(File file) {
+  final stem = p
+      .basenameWithoutExtension(file.path)
+      .replaceFirst(RegExp(r'^\s*\d+\s*[-_. ]+\s*'), '');
+  final parts = stem.split(RegExp(r'\s+-\s+'));
+  if (parts.length >= 2 && parts.first.trim().isNotEmpty) {
+    return (parts.first.trim(), parts.sublist(1).join(' - ').trim());
+  }
+  return (
+    'Unknown Artist',
+    stem.trim().isEmpty ? p.basename(file.path) : stem.trim(),
+  );
 }
 
 String _defaultGameDir() {
@@ -3777,18 +3989,97 @@ class StudioController extends StateNotifier<StudioState> {
     return installed;
   }
 
-  Future<bool> buildPackage() async {
+  String? _previewSourceFromInputs(List<String> inputs) {
+    if (inputs.isEmpty) return null;
+    final files = FhRadioStudioProject.collectAudioFiles(inputs);
+    return files.isEmpty ? null : files.first.path;
+  }
+
+  PackageBuildLoudnessPreview buildPackageLoudnessPreview() {
+    final draft = _playlistDraftForBuild();
+    final currentSummary =
+        state.lastPackageSummary ?? _readPackageSummary(state.lastPackageDir);
+    final previousAppliedSummary = !state.currentPackageReady
+        ? _readPackageSummaryFromManifest(
+            File(state.lastAppliedPackageManifest),
+          )
+        : null;
+    final initialSummary = currentSummary ?? previousAppliedSummary;
+    final musicInputs = draft.inputs.isNotEmpty
+        ? draft.inputs
+        : _musicInputsFromPackageSummary(previousAppliedSummary);
+    final referenceMedianLufs = _baselineReferenceMedianLufs(
+      state.currentBaselineManifest,
+    );
+    final previewSource =
+        _previewSourceFromInputs(musicInputs) ??
+        _previewSourceFromInputs(state.musicPaths);
+    final metadata = TrackMetadataCache.read(state.projectDir);
+    final previewMetadata = previewSource == null
+        ? null
+        : metadata[canonicalPathKey(previewSource)];
+    final measuredLufs = previewMetadata?.integratedLufs;
+    return PackageBuildLoudnessPreview(
+      referenceMedianLufs: referenceMedianLufs,
+      initialOffsetLu: normalizePackageLoudnessOffsetLu(
+        initialSummary?.loudnessOffsetLu ?? kDefaultPackageLoudnessOffsetLu,
+      ),
+      previewInputLufs: measuredLufs ?? referenceMedianLufs,
+      previewInputLufsHeuristic: measuredLufs == null,
+      source: previewSource,
+      previewTitle: previewMetadata?.title,
+      previewArtist: previewMetadata?.artist,
+      currentPackageOffsetLu: currentSummary?.loudnessOffsetLu == null
+          ? null
+          : normalizePackageLoudnessOffsetLu(currentSummary!.loudnessOffsetLu!),
+    );
+  }
+
+  Future<bool> buildPackage({
+    double loudnessOffsetLu = kDefaultPackageLoudnessOffsetLu,
+  }) async {
     if (state.busy) return false;
+    final normalizedLoudnessOffsetLu = normalizePackageLoudnessOffsetLu(
+      loudnessOffsetLu,
+    );
     if (_rejectProjectEditWhenBaselineBroken('准备电台包')) return false;
     FhRadioStudioProject.ensure(state.projectDir);
     if (_canCreatePendingPackage) {
       _append('当前游戏文件还没确认。请先在概览里保存新文件记录、生成测试准备包，或写回旧的基线；确认或放弃后再准备普通电台包。');
       return false;
     }
-    final planForBuild = PlaylistPlanStore.read(state.projectDir);
-    final draft = _playlistDraftForBuild();
+    if (!File(state.currentBaselineManifest).existsSync()) {
+      _append('还没有可信原始备份，不能生成准备包。请先在概览里创建原始备份。');
+      return false;
+    }
+    var planForBuild = PlaylistPlanStore.read(state.projectDir);
+    if (!state.currentPackageReady && !planForBuild.hasDraft) {
+      final detected = _playlistPlanFromGameDiff();
+      if (detected.hasDraft) {
+        planForBuild = detected;
+        PlaylistPlanStore.write(state.projectDir, planForBuild);
+        _append(
+          '已根据当前游戏文件与原始备份差分初始化播放列表草稿：${planForBuild.assignments.length} 首自建曲目。',
+        );
+      }
+    }
+    final draft = _playlistDraftForBuild(planForBuild);
     final restoresBuiltin = draft.restoresBuiltin;
     final canBuildLanguageChange = !state.languageSelectionMatchesGame;
+    final canBuildWithoutCurrentPackage = !state.currentPackageReady;
+    final currentPackageSummary = state.currentPackageReady
+        ? (state.lastPackageSummary ??
+              _readPackageSummary(state.lastPackageDir))
+        : null;
+    final currentLoudnessOffsetLu = currentPackageSummary?.loudnessOffsetLu;
+    final loudnessOffsetChanged =
+        currentLoudnessOffsetLu == null ||
+        (currentLoudnessOffsetLu - normalizedLoudnessOffsetLu).abs() > 0.001;
+    // 用户只改了响度增益时，沿用当前包的播放列表 + 音乐输入，重新跑一遍 build。
+    final canRebuildForLoudness =
+        currentPackageSummary != null &&
+        currentPackageSummary.assignments.isNotEmpty &&
+        loudnessOffsetChanged;
     final previousAppliedSummary = !state.currentPackageReady
         ? _readPackageSummaryFromManifest(
             File(state.lastAppliedPackageManifest),
@@ -3800,9 +4091,11 @@ class StudioController extends StateNotifier<StudioState> {
         previousAppliedSummary.assignments.isNotEmpty;
     if (!draft.hasPlan &&
         !canBuildLanguageChange &&
-        !canBuildFromPreviousApplied) {
+        !canBuildFromPreviousApplied &&
+        !canRebuildForLoudness &&
+        !canBuildWithoutCurrentPackage) {
       if (state.currentPackageReady) {
-        _append('准备包已经等于当前播放列表；修改分配或语言后再重新构建。');
+        _append('准备包已经等于当前播放列表和响度；修改分配、语言或响度增益后再重新构建。');
       } else {
         _append('播放列表还没有分配曲目。请先在“播放列表”里把自建歌曲拖到目标电台。');
       }
@@ -3811,21 +4104,27 @@ class StudioController extends StateNotifier<StudioState> {
     if (draft.hasPlan &&
         !canBuildLanguageChange &&
         !restoresBuiltin &&
+        !loudnessOffsetChanged &&
         state.currentPackageReady &&
-        _packageAssignmentsMatchPlan(
-          state.lastPackageSummary ?? _readPackageSummary(state.lastPackageDir),
-          planForBuild,
-        )) {
-      _append('准备包已经等于当前播放列表；修改分配或语言后再重新构建。');
+        _packageAssignmentsMatchPlan(currentPackageSummary, planForBuild)) {
+      _append('准备包已经等于当前播放列表和响度；修改分配、语言或响度增益后再重新构建。');
       return false;
     }
+    final loudnessOnlyFallbackSummary = canRebuildForLoudness && !draft.hasPlan
+        ? currentPackageSummary
+        : null;
     final musicInputs = draft.inputs.isNotEmpty
         ? draft.inputs
-        : _musicInputsFromPackageSummary(previousAppliedSummary);
+        : _musicInputsFromPackageSummary(
+            previousAppliedSummary ?? loudnessOnlyFallbackSummary,
+          );
     final playlistFromPackage = canBuildFromPreviousApplied
         ? state.lastAppliedPackageManifest
-        : null;
-    if (musicInputs.isEmpty && !canBuildLanguageChange && !restoresBuiltin) {
+        : (loudnessOnlyFallbackSummary != null ? state.lastPackageDir : null);
+    if (musicInputs.isEmpty &&
+        !canBuildLanguageChange &&
+        !restoresBuiltin &&
+        !canBuildWithoutCurrentPackage) {
       _append('播放列表草稿为空。请先在“播放列表”里分配至少一首自建歌曲。');
       return false;
     }
@@ -3884,6 +4183,8 @@ class StudioController extends StateNotifier<StudioState> {
         if (timingManifest != null) ...['--timing-manifest', timingManifest],
         '--metadata-cache',
         TrackMetadataCache.configPath(state.projectDir),
+        '--loudness-offset-lu',
+        formatPackageLoudnessOffsetLu(normalizedLoudnessOffsetLu),
         '--out-dir',
         outDir,
         '--progress-jsonl',
@@ -3955,6 +4256,11 @@ class StudioController extends StateNotifier<StudioState> {
         projectDir: state.projectDir,
         musicInputs: musicInputs,
       );
+      final packageSummary =
+          state.lastPackageSummary ?? _readPackageSummary(state.lastPackageDir);
+      final loudnessOffsetLu = normalizePackageLoudnessOffsetLu(
+        packageSummary?.loudnessOffsetLu ?? kDefaultPackageLoudnessOffsetLu,
+      );
       final result = await _run([
         'build-package',
         '--game-dir',
@@ -3978,6 +4284,8 @@ class StudioController extends StateNotifier<StudioState> {
         if (timingManifest != null) ...['--timing-manifest', timingManifest],
         '--metadata-cache',
         TrackMetadataCache.configPath(state.projectDir),
+        '--loudness-offset-lu',
+        formatPackageLoudnessOffsetLu(loudnessOffsetLu),
         '--out-dir',
         outDir,
         '--progress-jsonl',
@@ -4026,6 +4334,63 @@ class StudioController extends StateNotifier<StudioState> {
     return inputs;
   }
 
+  PlaylistPlan _playlistPlanFromGameDiff() {
+    final gameXml = _radioInfoFileForDiff(
+      Directory(p.join(state.gameDir, 'media', 'audio')),
+      state.sourceLang,
+      state.targetLang,
+    );
+    final baselineXml = _radioInfoFileForDiff(
+      Directory(state.currentBaselineAudioDir),
+      state.sourceLang,
+      state.targetLang,
+    );
+    if (gameXml == null || baselineXml == null)
+      return const PlaylistPlan.empty();
+    final game = _readRadioInfoPlaylistsForDiff(gameXml);
+    final baseline = _readRadioInfoPlaylistsForDiff(baselineXml);
+    if (game.isEmpty || baseline.isEmpty) return const PlaylistPlan.empty();
+
+    final sourceByMeta = _projectSourcesByMetadata();
+    var plan = const PlaylistPlan.empty();
+    for (final radioEntry in game.entries) {
+      final radioCode = radioEntry.key;
+      final baselineLists = baseline[radioCode] ?? const {};
+      for (final playlistType in const ['FreeRoam', 'Event']) {
+        final gameTracks =
+            radioEntry.value[playlistType] ?? const <_DiffTrack>[];
+        final baselineTracks =
+            baselineLists[playlistType] ?? const <_DiffTrack>[];
+        if (_sameDiffTrackList(gameTracks, baselineTracks)) continue;
+        for (var index = 0; index < gameTracks.length; index++) {
+          final track = gameTracks[index];
+          final source = sourceByMeta[_diffMetaKey(track.title, track.artist)];
+          if (source == null || source.trim().isEmpty) continue;
+          plan = plan.assign(
+            source: source,
+            radioCode: radioCode,
+            playlistType: playlistType,
+            slot: index + 1,
+          );
+        }
+      }
+    }
+    return plan;
+  }
+
+  Map<String, String> _projectSourcesByMetadata() {
+    final metadata = TrackMetadataCache.read(state.projectDir);
+    final out = <String, String>{};
+    for (final path in _projectMusicPaths(state.projectDir)) {
+      final file = File(path);
+      final cached = metadata[canonicalPathKey(path)];
+      final title = cached?.title ?? _guessTrackTitle(file);
+      final artist = cached?.artist ?? _guessTrackArtist(file);
+      out.putIfAbsent(_diffMetaKey(title, artist), () => file.absolute.path);
+    }
+    return out;
+  }
+
   Future<bool> createPendingBaselineOnly() async {
     if (state.busy) return false;
     if (_rejectProjectEditWhenBaselineBroken('保存新文件记录')) return false;
@@ -4052,8 +4417,8 @@ class StudioController extends StateNotifier<StudioState> {
     bool hasPlan,
     bool restoresBuiltin,
   })
-  _playlistDraftForBuild() {
-    final plan = PlaylistPlanStore.read(state.projectDir);
+  _playlistDraftForBuild([PlaylistPlan? planOverride]) {
+    final plan = planOverride ?? PlaylistPlanStore.read(state.projectDir);
     if (!plan.hasDraft) {
       return (
         inputs: const [],
@@ -4453,6 +4818,10 @@ class StudioController extends StateNotifier<StudioState> {
       _append('已存在新文件记录，继续使用它。');
       return true;
     }
+    return _createPendingBaseline(overwrite: false);
+  }
+
+  Future<bool> _createPendingBaseline({required bool overwrite}) async {
     await _refreshBaselinePlan();
     final outDir = _plannedBaselineDir(
       projectDir: state.projectDir,
@@ -4468,6 +4837,7 @@ class StudioController extends StateNotifier<StudioState> {
       outDir,
       '--state',
       'pending-verify',
+      if (overwrite) '--overwrite',
       '--yes',
     ]);
     if (baseline.ok) await _refreshIntegrityFromCli();

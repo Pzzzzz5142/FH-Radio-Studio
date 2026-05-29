@@ -27,6 +27,7 @@ import 'package:fh_radio_studio/state/siren_import_queue_state.dart';
 import 'package:fh_radio_studio/theme/accents.dart';
 import 'package:fh_radio_studio/theme/app_theme.dart';
 import 'package:fh_radio_studio/widgets/package_build_notice_dialog.dart';
+import 'package:fh_radio_studio/widgets/package_loudness_dialog.dart';
 import 'package:fh_radio_studio/widgets/rm_button.dart';
 import 'package:fh_radio_studio/widgets/rm_panel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -68,6 +69,46 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('MSR'), findsOneWidget);
     expect(find.text('0/4'), findsOneWidget);
+  });
+
+  testWidgets('package loudness dialog uses discrete offset choices', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildAppTheme(
+          brightness: Brightness.light,
+          accent: AppAccent.lime,
+        ),
+        home: const Scaffold(
+          body: PackageLoudnessDialog(
+            referenceMedianLufs: -24,
+            initialOffsetLu: 3,
+            previewInputLufs: -24,
+            currentPackageOffsetLu: 1,
+          ),
+        ),
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('+0'), findsOneWidget);
+    expect(find.text('+1'), findsOneWidget);
+    expect(find.text('+2'), findsOneWidget);
+    expect(find.text('+3 LU'), findsOneWidget);
+    expect(find.text('+3'), findsOneWidget);
+    expect(find.text('+4'), findsOneWidget);
+    expect(find.text('+5'), findsOneWidget);
+    expect(find.text('+6'), findsOneWidget);
+    expect(find.text('当前准备包'), findsOneWidget);
+    expect(find.text('推荐起步'), findsOneWidget);
+    expect(find.text('目标文件 LUFS'), findsOneWidget);
+
+    await tester.tap(find.text('+6'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('→ -18.0 LUFS'), findsOneWidget);
+    expect(find.text('听感差不多翻倍'), findsOneWidget);
   });
 
   testWidgets('builtin playlist header uses visible original track count', (

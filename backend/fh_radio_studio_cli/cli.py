@@ -15,6 +15,11 @@ from .import_audio import cmd_import_audio
 from .inspect_bank import cmd_inspect_bank
 from .integrity import cmd_verify_integrity
 from .language import cmd_language_swap
+from .loudness import (
+    DEFAULT_CUSTOM_LOUDNESS_OFFSET_LU,
+    MAX_CUSTOM_LOUDNESS_OFFSET_LU,
+    MIN_CUSTOM_LOUDNESS_OFFSET_LU,
+)
 from .metadata import cmd_scan_metadata
 from .package import cmd_build_package
 from .prepare import cmd_prepare_track
@@ -316,6 +321,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Parallel song-level workers for cache-miss loudness analysis; default auto",
+    )
+    package.add_argument(
+        "--loudness-offset-lu",
+        type=float,
+        default=DEFAULT_CUSTOM_LOUDNESS_OFFSET_LU,
+        help=(
+            "LU offset added to the baseline median loudness target; "
+            f"valid range +{MIN_CUSTOM_LOUDNESS_OFFSET_LU:g}..+{MAX_CUSTOM_LOUDNESS_OFFSET_LU:g}, "
+            f"default +{DEFAULT_CUSTOM_LOUDNESS_OFFSET_LU:g}"
+        ),
     )
     package.add_argument(
         "--playlist-plan",

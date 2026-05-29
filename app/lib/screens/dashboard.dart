@@ -17,6 +17,7 @@ import '../theme/text_styles.dart';
 import '../theme/tokens.dart';
 import '../widgets/ai_environment_dialog.dart';
 import '../widgets/package_build_notice_dialog.dart';
+import '../widgets/package_loudness_dialog.dart';
 import '../widgets/rm_button.dart';
 import '../widgets/rm_icon.dart';
 
@@ -345,7 +346,20 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     BuildContext context,
     StudioController c,
   ) async {
-    final built = await c.buildPackage();
+    final preview = c.buildPackageLoudnessPreview();
+    final loudnessOffsetLu = await showPackageLoudnessDialog(
+      context,
+      referenceMedianLufs: preview.referenceMedianLufs,
+      initialOffsetLu: preview.initialOffsetLu,
+      previewInputLufs: preview.previewInputLufs,
+      previewSource: preview.source,
+      previewTitle: preview.previewTitle,
+      previewArtist: preview.previewArtist,
+      currentPackageOffsetLu: preview.currentPackageOffsetLu,
+    );
+    if (loudnessOffsetLu == null) return;
+    if (!context.mounted) return;
+    final built = await c.buildPackage(loudnessOffsetLu: loudnessOffsetLu);
     if (!context.mounted) return;
     final latest = ref.read(studioProvider);
     if (built) {

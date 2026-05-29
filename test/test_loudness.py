@@ -9,12 +9,15 @@ import soundfile as sf
 from conftest import assert_cli_ok, run_cli, write_test_tone
 
 from backend.fh_radio_studio_cli.loudness import (
+    DEFAULT_CUSTOM_LOUDNESS_OFFSET_LU,
     DEFAULT_TRUE_PEAK_CEILING_DBTP,
     LOUDNESS_ALGORITHM_VERSION,
+    MAX_CUSTOM_LOUDNESS_OFFSET_LU,
     analyze_loudness_file,
     build_custom_set_loudness_profile,
     ensure_baseline_loudness_envelope,
     loudness_worker_count,
+    normalize_custom_loudness_offset_lu,
     prepare_loudness_matched_audio,
 )
 
@@ -62,6 +65,38 @@ def test_loudness_matching_uses_baseline_reference_median_target(tmp_path: Path)
         item["output_true_peak_dbtp"] <= DEFAULT_TRUE_PEAK_CEILING_DBTP + 0.1 for item in outputs
     )
     assert any(item["requested_gain_db"] > 0 for item in outputs)
+
+
+def test_loudness_matching_applies_custom_target_offset(tmp_path: Path) -> None:
+    source = tmp_path / "song.wav"
+    _write_tone(source, amplitude=0.2)
+    analysis = analyze_loudness_file(source)
+
+    profile = build_custom_set_loudness_profile(
+        [analysis],
+        {
+            "source": "heuristic",
+            "reference_median_lufs": -24.0,
+            "safe_min_lufs": -28.0,
+            "safe_max_lufs": -16.0,
+            "true_peak_ceiling_dbtp": DEFAULT_TRUE_PEAK_CEILING_DBTP,
+            "max_positive_gain_db": 8.0,
+        },
+        radio=4,
+        target_offset_lu=3.0,
+    )
+
+    assert profile["reference_median_lufs"] == -24.0
+    assert profile["base_target_lufs"] == -24.0
+    assert profile["target_offset_lu"] == 3.0
+    assert profile["unclamped_target_lufs"] == -21.0
+    assert profile["target_lufs"] == -21.0
+    assert profile["target_basis"] == "baseline-reference-median-plus-offset"
+
+
+def test_loudness_offset_accepts_plus_six_upper_choice() -> None:
+    assert MAX_CUSTOM_LOUDNESS_OFFSET_LU == 6.0
+    assert normalize_custom_loudness_offset_lu(6.0) == 6.0
 
 
 def test_loudness_positive_gain_is_capped_before_peak_check(tmp_path: Path) -> None:
@@ -212,9 +247,19 @@ def test_build_package_writes_loudness_manifest_and_baseline_envelope(mock_game,
     assert "gain_db" not in package_payload
     radio_payload = package_payload["radios"][0]
     assert radio_payload["loudness_profile"]["mode"] == "custom-set"
+    assert package_payload["loudness_offset_lu"] == DEFAULT_CUSTOM_LOUDNESS_OFFSET_LU
     assert (
-        radio_payload["loudness_profile"]["target_lufs"]
-        == radio_payload["loudness_profile"]["reference_median_lufs"]
+        radio_payload["loudness_profile"]["target_offset_lu"] == DEFAULT_CUSTOM_LOUDNESS_OFFSET_LU
+    )
+    reference_median = radio_payload["loudness_profile"]["reference_median_lufs"]
+    safe_min, safe_max = radio_payload["loudness_profile"]["game_safe_range_lufs"]
+    expected_target = min(
+        max(reference_median + DEFAULT_CUSTOM_LOUDNESS_OFFSET_LU, safe_min),
+        safe_max,
+    )
+    assert radio_payload["loudness_profile"]["target_lufs"] == round(
+        expected_target,
+        3,
     )
     track = radio_payload["music"][0]
     assert track["loudness"]["mode"] == "custom-set"
