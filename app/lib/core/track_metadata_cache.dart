@@ -15,6 +15,7 @@ class TrackMetadata {
     this.sampleRate,
     this.channels,
     this.samples,
+    this.integratedLufs,
     this.coverArtPath,
   });
 
@@ -25,6 +26,7 @@ class TrackMetadata {
   final int? sampleRate;
   final int? channels;
   final int? samples;
+  final double? integratedLufs;
   final String? coverArtPath;
 }
 
@@ -53,6 +55,9 @@ class TrackMetadataCache {
         final title = _readString(item, 'title');
         final artist = _readString(item, 'artist');
         if (source == null || title == null || artist == null) continue;
+        final loudness = item['loudness_analysis'] is Map
+            ? item['loudness_analysis'] as Map
+            : null;
         out[_trackKey(source)] = TrackMetadata(
           artist: artist,
           title: title,
@@ -61,6 +66,9 @@ class TrackMetadataCache {
           sampleRate: _readInt(item, 'sample_rate'),
           channels: _readInt(item, 'channels'),
           samples: _readInt(item, 'samples'),
+          integratedLufs: loudness?['status'] == 'ok'
+              ? _readDouble(loudness!, 'integrated_lufs')
+              : null,
           coverArtPath: _readString(item, 'cover_art_path'),
         );
       }

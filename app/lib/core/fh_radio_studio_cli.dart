@@ -130,6 +130,7 @@ class FhRadioStudioCli {
     CliLineHandler? onStdout,
     CliLineHandler? onStderr,
     CliCancellationToken? cancellationToken,
+    String? stdinInput,
   }) async {
     return _runUv(
       uvRuntime.cliRunInvocation(
@@ -140,6 +141,7 @@ class FhRadioStudioCli {
       onStdout: onStdout,
       onStderr: onStderr,
       cancellationToken: cancellationToken,
+      stdinInput: stdinInput,
     );
   }
 
@@ -149,6 +151,7 @@ class FhRadioStudioCli {
     CliLineHandler? onStdout,
     CliLineHandler? onStderr,
     CliCancellationToken? cancellationToken,
+    String? stdinInput,
   }) async {
     return _runUv(
       uvRuntime.baseCliRunInvocation(
@@ -159,6 +162,7 @@ class FhRadioStudioCli {
       onStdout: onStdout,
       onStderr: onStderr,
       cancellationToken: cancellationToken,
+      stdinInput: stdinInput,
     );
   }
 
@@ -189,6 +193,7 @@ class FhRadioStudioCli {
     CliLineHandler? onStdout,
     CliLineHandler? onStderr,
     CliCancellationToken? cancellationToken,
+    String? stdinInput,
   }) async {
     return _runUv(
       uvRuntime.cliRunInvocation(
@@ -199,6 +204,7 @@ class FhRadioStudioCli {
       onStdout: onStdout,
       onStderr: onStderr,
       cancellationToken: cancellationToken,
+      stdinInput: stdinInput,
     );
   }
 
@@ -208,6 +214,7 @@ class FhRadioStudioCli {
     CliLineHandler? onStdout,
     CliLineHandler? onStderr,
     CliCancellationToken? cancellationToken,
+    String? stdinInput,
   }) async {
     return _runUv(
       uvRuntime.baseCliRunInvocation(
@@ -218,6 +225,7 @@ class FhRadioStudioCli {
       onStdout: onStdout,
       onStderr: onStderr,
       cancellationToken: cancellationToken,
+      stdinInput: stdinInput,
     );
   }
 
@@ -247,6 +255,7 @@ class FhRadioStudioCli {
     CliLineHandler? onStdout,
     CliLineHandler? onStderr,
     CliCancellationToken? cancellationToken,
+    String? stdinInput,
   }) async {
     final process = await Process.start(
       invocation.executable,
@@ -286,6 +295,18 @@ class FhRadioStudioCli {
       err.writeln(line);
       onStderr?.call(line);
     }).asFuture<void>();
+
+    // Feed stdin only after the stdout/stderr drains are wired up, so a child
+    // that writes back while we write in cannot deadlock on a full pipe.
+    if (stdinInput != null) {
+      try {
+        process.stdin.add(utf8.encode(stdinInput));
+        await process.stdin.flush();
+        await process.stdin.close();
+      } catch (_) {
+        // Process may have already exited or been killed; ignore broken pipe.
+      }
+    }
 
     int exitCode;
     try {

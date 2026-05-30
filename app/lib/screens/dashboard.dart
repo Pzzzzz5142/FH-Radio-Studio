@@ -9,13 +9,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:path/path.dart' as p;
 
-import '../core/playlist_plan.dart';
+import '../state/playlist_plan_state.dart';
 import '../state/studio_state.dart';
 import '../theme/app_theme.dart';
 import '../theme/text_styles.dart';
 import '../theme/tokens.dart';
 import '../widgets/ai_environment_dialog.dart';
 import '../widgets/package_build_notice_dialog.dart';
+import '../widgets/package_loudness_dialog.dart';
 import '../widgets/rm_button.dart';
 import '../widgets/rm_icon.dart';
 
@@ -154,6 +155,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   onDeploy: () => _confirmDeploy(context, s, c),
                   onBackupPending: () =>
                       _confirmBackupPendingBaseline(context, c),
+                  onForceBackup: () =>
+                      _confirmForceBackupPendingBaseline(context, c),
                   onPreparePending: () =>
                       _confirmPreparePendingPackage(context, c),
                   onPromotePending: () =>
@@ -161,6 +164,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   onDiscardPending: () => _confirmDiscardPending(context, c),
                   onApplyCurrentBaseline: () =>
                       _confirmApplyBaseline(context, c, usePending: false),
+                  onForceApplyCurrentBaseline: () =>
+                      _confirmForceApplyCurrentBaseline(context, c),
                   onApplyPendingBaseline: () =>
                       _confirmApplyBaseline(context, c, usePending: true),
                   onDeployOldPackage: () =>
@@ -340,7 +345,23 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     BuildContext context,
     StudioController c,
   ) async {
-    final built = await c.buildPackage();
+    final preview = c.buildPackageLoudnessPreview();
+    final loudnessOffsetLu = await showPackageLoudnessDialog(
+      context,
+      referenceMedianLufs: preview.referenceMedianLufs,
+      initialOffsetLu: preview.initialOffsetLu,
+      previewInputLufs: preview.previewInputLufs,
+      previewSource: preview.source,
+      previewTitle: preview.previewTitle,
+      previewArtist: preview.previewArtist,
+      currentPackageOffsetLu: preview.currentPackageOffsetLu,
+    );
+    if (loudnessOffsetLu == null) return;
+    if (!context.mounted) return;
+    final built = await c.buildPackage(
+      loudnessOffsetLu: loudnessOffsetLu,
+      plan: ref.read(effectivePlaylistPlanProvider),
+    );
     if (!context.mounted) return;
     final latest = ref.read(studioProvider);
     if (built) {
@@ -374,7 +395,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     StudioController c,
     StudioState latest,
   ) async {
-    final missing = PlaylistPlanStore.read(latest.projectDir).missingSources();
+    final missing = ref.read(effectivePlaylistPlanProvider).missingSources();
     if (missing.isEmpty) return false;
     final action = await showMissingPlaylistSourcesDialog(
       context,
@@ -384,6 +405,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     if (action != MissingPlaylistSourcesAction.cleanup) return true;
     final cleaned = await c.cleanupMissingPlaylistSources(missing);
     if (!context.mounted) return true;
+    ref.read(playlistPlanProvider.notifier).removeDeletedSources(missing);
     _toast(context, cleaned > 0 ? '已删除 $cleaned 首失效歌曲。' : '没有发现需要删除的失效歌曲。');
     return true;
   }
@@ -478,6 +500,28 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       ],
     );
     if (ok) await c.createPendingBaselineOnly();
+  }
+
+  Future<void> _confirmForceBackupPendingBaseline(
+    BuildContext context,
+    StudioController c,
+  ) async {
+    final ok = await _confirmChecklist(
+      context,
+      title: '用当前游戏文件覆写原始备份？',
+      body:
+          '这会把当前游戏目录里的受保护文件直接保存成新的原始备份。CLI 会同步清理当前准备包和测试准备包；App 会清空播放列表草稿，避免旧包和旧分配继续参与后续构建。',
+      action: '强制备份',
+      danger: true,
+      checks: const [
+        '我确认 Forza Horizon 6 没有运行',
+        '我理解当前原始备份会被覆盖',
+        '我理解准备包和播放列表草稿会被清空',
+      ],
+    );
+    if (!ok) return;
+    if (!context.mounted) return;
+    await _rebuildBaselineFromGameAndClearPlaylist(context, c);
   }
 
   Future<void> _confirmPreparePendingPackage(
@@ -589,6 +633,25 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     }
   }
 
+  Future<void> _confirmForceApplyCurrentBaseline(
+    BuildContext context,
+    StudioController c,
+  ) async {
+    final ok = await _confirmChecklist(
+      context,
+      title: '强制写入本地备份至游戏？',
+      body: '这会把当前原始备份直接覆盖到 FH6。不会创建新的恢复日志。',
+      action: '强制写入本地备份至游戏',
+      danger: true,
+      checks: const [
+        '我确认 Forza Horizon 6 没有运行',
+        '我理解这会覆盖本地游戏文件',
+        '我确认要用原始备份替换当前游戏文件',
+      ],
+    );
+    if (ok) await c.applyCurrentBaseline();
+  }
+
   Future<void> _confirmDeployChoice(
     BuildContext context,
     StudioController c, {
@@ -632,16 +695,27 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     final ok = await _confirmChecklist(
       context,
       title: '用当前游戏文件重建原始备份？',
-      body: '这会删除当前 Steam build 对应的原始备份、候选备份、准备包和上次写入记录，然后把当前游戏文件设为新的可信原始备份。',
+      body: '这会把当前游戏目录里的受保护文件设为新的可信原始备份。CLI 会清理当前准备包和测试准备包；App 会清空播放列表草稿。',
       action: '重建原始备份',
       danger: true,
       checks: const [
         '我确认当前游戏文件可以作为新的可信起点',
-        '我理解对应 build 的原始备份、准备包和上次写入记录会被删除',
-        '我理解旧原始备份会保留，用于之后人工追溯',
+        '我理解当前原始备份会被覆盖',
+        '我理解准备包和播放列表草稿会被清空',
       ],
     );
-    if (ok) await c.rebuildBaselineFromCurrentGame();
+    if (!ok) return;
+    if (!context.mounted) return;
+    await _rebuildBaselineFromGameAndClearPlaylist(context, c);
+  }
+
+  Future<void> _rebuildBaselineFromGameAndClearPlaylist(
+    BuildContext context,
+    StudioController c,
+  ) async {
+    final rebuilt = await c.rebuildBaselineFromCurrentGame();
+    if (!context.mounted || !rebuilt) return;
+    ref.read(playlistPlanProvider.notifier).reload();
   }
 
   Future<bool> _confirmChecklist(
@@ -2903,10 +2977,12 @@ class _DetailsStack extends StatelessWidget {
     required this.onCreateBaseline,
     required this.onDeploy,
     required this.onBackupPending,
+    required this.onForceBackup,
     required this.onPreparePending,
     required this.onPromotePending,
     required this.onDiscardPending,
     required this.onApplyCurrentBaseline,
+    required this.onForceApplyCurrentBaseline,
     required this.onApplyPendingBaseline,
     required this.onDeployOldPackage,
     required this.onDeployPendingPackage,
@@ -2930,10 +3006,12 @@ class _DetailsStack extends StatelessWidget {
   final VoidCallback onCreateBaseline;
   final VoidCallback onDeploy;
   final VoidCallback onBackupPending;
+  final VoidCallback onForceBackup;
   final VoidCallback onPreparePending;
   final VoidCallback onPromotePending;
   final VoidCallback onDiscardPending;
   final VoidCallback onApplyCurrentBaseline;
+  final VoidCallback onForceApplyCurrentBaseline;
   final VoidCallback onApplyPendingBaseline;
   final VoidCallback onDeployOldPackage;
   final VoidCallback onDeployPendingPackage;
@@ -2989,10 +3067,12 @@ class _DetailsStack extends StatelessWidget {
             onCreateBaseline: onCreateBaseline,
             onDeploy: onDeploy,
             onBackupPending: onBackupPending,
+            onForceBackup: onForceBackup,
             onPreparePending: onPreparePending,
             onPromotePending: onPromotePending,
             onDiscardPending: onDiscardPending,
             onApplyCurrentBaseline: onApplyCurrentBaseline,
+            onForceApplyCurrentBaseline: onForceApplyCurrentBaseline,
             onApplyPendingBaseline: onApplyPendingBaseline,
             onDeployOldPackage: onDeployOldPackage,
             onDeployPendingPackage: onDeployPendingPackage,
@@ -3343,10 +3423,12 @@ class _FileVerificationDetail extends StatelessWidget {
     required this.onCreateBaseline,
     required this.onDeploy,
     required this.onBackupPending,
+    required this.onForceBackup,
     required this.onPreparePending,
     required this.onPromotePending,
     required this.onDiscardPending,
     required this.onApplyCurrentBaseline,
+    required this.onForceApplyCurrentBaseline,
     required this.onApplyPendingBaseline,
     required this.onDeployOldPackage,
     required this.onDeployPendingPackage,
@@ -3359,10 +3441,12 @@ class _FileVerificationDetail extends StatelessWidget {
   final VoidCallback onCreateBaseline;
   final VoidCallback onDeploy;
   final VoidCallback onBackupPending;
+  final VoidCallback onForceBackup;
   final VoidCallback onPreparePending;
   final VoidCallback onPromotePending;
   final VoidCallback onDiscardPending;
   final VoidCallback onApplyCurrentBaseline;
+  final VoidCallback onForceApplyCurrentBaseline;
   final VoidCallback onApplyPendingBaseline;
   final VoidCallback onDeployOldPackage;
   final VoidCallback onDeployPendingPackage;
@@ -3432,6 +3516,28 @@ class _FileVerificationDetail extends StatelessWidget {
               size: RmButtonSize.sm,
               leading: const RmIcon('copy', size: 12),
               label: '复制校验报告',
+            ),
+            RmButton(
+              onPressed: state.busy || scanning || !integrity.hasCurrentBaseline
+                  ? null
+                  : onForceBackup,
+              size: RmButtonSize.sm,
+              variant: RmButtonVariant.dangerOutline,
+              leading: const RmIcon('shield', size: 12),
+              label: '强制备份',
+            ),
+            RmButton(
+              onPressed:
+                  state.busy ||
+                      scanning ||
+                      !integrity.hasCurrentBaseline ||
+                      state.baselineIntegrityBroken
+                  ? null
+                  : onForceApplyCurrentBaseline,
+              size: RmButtonSize.sm,
+              variant: RmButtonVariant.dangerPrimary,
+              leading: const RmIcon('danger', size: 12),
+              label: '强制写入本地备份至游戏',
             ),
           ],
         ),
@@ -5179,7 +5285,13 @@ class _ChecklistDialogState extends State<_ChecklistDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _ModalHead(title: widget.title, eyebrow: 'CHECKLIST'),
+            _ModalHead(
+              title: widget.title,
+              eyebrow: widget.danger ? 'DANGER CHECK' : 'CHECKLIST',
+              overline: widget.danger ? '危险操作' : '安全确认',
+              icon: widget.danger ? 'danger' : 'check',
+              danger: widget.danger,
+            ),
             Padding(
               padding: const EdgeInsets.all(22),
               child: Column(
@@ -5265,7 +5377,12 @@ class _DeployPreflightDialogState extends State<_DeployPreflightDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const _ModalHead(title: '写入游戏前请确认', eyebrow: 'PRE-FLIGHT'),
+            const _ModalHead(
+              title: '写入游戏前请确认',
+              eyebrow: 'PRE-FLIGHT',
+              overline: '写入前检查',
+              icon: 'export',
+            ),
             Padding(
               padding: const EdgeInsets.all(22),
               child: Column(
@@ -5332,25 +5449,79 @@ class _DeployPreflightDialogState extends State<_DeployPreflightDialog> {
 }
 
 class _ModalHead extends StatelessWidget {
-  const _ModalHead({required this.title, required this.eyebrow});
+  const _ModalHead({
+    required this.title,
+    required this.eyebrow,
+    this.overline,
+    this.icon = 'check',
+    this.danger = false,
+  });
 
   final String title;
   final String eyebrow;
+  final String? overline;
+  final String icon;
+  final bool danger;
 
   @override
   Widget build(BuildContext context) {
     final rm = context.rm;
+    final tone = danger ? rm.danger : rm.accent.base;
+    final toneBg = danger ? rm.dangerBg : rm.accent.bg;
+    final toneBorder = danger ? rm.danger.withAlpha(77) : rm.accent.ring;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(22, 18, 16, 14),
+      padding: const EdgeInsets.fromLTRB(22, 20, 16, 14),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Container(
+            width: 36,
+            height: 36,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: toneBg,
+              border: Border.all(color: toneBorder),
+              borderRadius: BorderRadius.circular(RmTokens.rMd),
+            ),
+            child: RmIcon(icon, size: 18, color: tone),
+          ),
+          const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  eyebrow,
-                  style: RmText.mono(10.5, color: rm.fg3, letterSpacing: 1.45),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (overline != null) ...[
+                      Text(
+                        overline!,
+                        style: RmText.sans(
+                          11,
+                          color: tone,
+                          weight: FontWeight.w600,
+                        ),
+                      ),
+                      Container(
+                        width: 3,
+                        height: 3,
+                        margin: const EdgeInsets.symmetric(horizontal: 8),
+                        decoration: BoxDecoration(
+                          color: tone.withAlpha(150),
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ],
+                    Text(
+                      eyebrow,
+                      style: RmText.mono(
+                        10.5,
+                        color: tone,
+                        weight: FontWeight.w500,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 4),
                 Text(
@@ -5360,6 +5531,7 @@ class _ModalHead extends StatelessWidget {
               ],
             ),
           ),
+          const SizedBox(width: 10),
           RmButton.icon(
             onPressed: () => Navigator.of(context).pop(false),
             icon: const RmIcon('x', size: 13),

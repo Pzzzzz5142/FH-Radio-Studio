@@ -15,10 +15,16 @@ from .import_audio import cmd_import_audio
 from .inspect_bank import cmd_inspect_bank
 from .integrity import cmd_verify_integrity
 from .language import cmd_language_swap
+from .loudness import (
+    DEFAULT_CUSTOM_LOUDNESS_OFFSET_LU,
+    MAX_CUSTOM_LOUDNESS_OFFSET_LU,
+    MIN_CUSTOM_LOUDNESS_OFFSET_LU,
+)
 from .metadata import cmd_scan_metadata
 from .package import cmd_build_package
 from .prepare import cmd_prepare_track
 from .radio_xml import cmd_patch_xml
+from .reconstruct_plan import cmd_reconstruct_plan
 from .status import cmd_status
 from .toolchain import PROFILES as TOOLCHAIN_PROFILES
 from .toolchain import cmd_toolchain_status
@@ -230,6 +236,34 @@ def build_parser() -> argparse.ArgumentParser:
     scan_metadata.add_argument("--json", action="store_true", help="Print JSON summary only")
     scan_metadata.set_defaults(func=cmd_scan_metadata)
 
+    reconstruct_plan = sub.add_parser(
+        "reconstruct-plan",
+        help="Diff the current game RadioInfo against the baseline and rebuild a playlist plan",
+    )
+    reconstruct_plan.add_argument(
+        "--game-dir", help="FH6 game directory; auto-detected when omitted"
+    )
+    reconstruct_plan.add_argument(
+        "--baseline-manifest", required=True, help="Trusted baseline manifest JSON"
+    )
+    reconstruct_plan.add_argument(
+        "--metadata-cache", help="Project track_metadata.json used to resolve sources"
+    )
+    reconstruct_plan.add_argument(
+        "--music-dir",
+        action="append",
+        default=[],
+        help="Project music root (sources/siren); repeatable",
+    )
+    reconstruct_plan.add_argument("--source", help="Source display language (RadioInfo preference)")
+    reconstruct_plan.add_argument("--target", help="Target voice language (RadioInfo preference)")
+    reconstruct_plan.add_argument(
+        "--out",
+        required=True,
+        help="Path to write the reconstructed playlist_plan.json, or '-' to emit it on stdout",
+    )
+    reconstruct_plan.set_defaults(func=cmd_reconstruct_plan)
+
     check_ai = sub.add_parser(
         "check-ai-tools", help="Check local AI timepoint provider/runtime readiness"
     )
@@ -318,8 +352,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Parallel song-level workers for cache-miss loudness analysis; default auto",
     )
     package.add_argument(
+        "--loudness-offset-lu",
+        type=float,
+        default=DEFAULT_CUSTOM_LOUDNESS_OFFSET_LU,
+        help=(
+            "LU offset added to the baseline median loudness target; "
+            f"valid range +{MIN_CUSTOM_LOUDNESS_OFFSET_LU:g}..+{MAX_CUSTOM_LOUDNESS_OFFSET_LU:g}, "
+            f"default +{DEFAULT_CUSTOM_LOUDNESS_OFFSET_LU:g}"
+        ),
+    )
+    package.add_argument(
         "--playlist-plan",
-        help="FH Radio Studio playlist_plan.json; when present, build all assigned radios in one package",
+        help="FH Radio Studio playlist_plan.json (or '-' to read from stdin); when present, build all assigned radios in one package",
     )
     package.add_argument(
         "--playlist-from-package",

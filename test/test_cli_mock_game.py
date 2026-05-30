@@ -244,6 +244,47 @@ def test_verify_integrity_reports_current_baseline_without_package(mock_game, fu
     assert integrity["changed_files"] == 0
 
 
+def test_verify_integrity_tolerates_empty_current_package_dir(mock_game, full_project) -> None:
+    # Regression: an existing packages/current directory that has not had a
+    # package prepared into it (no media/ subtree) must be treated as "no
+    # prepared package", not abort the whole run.
+    baseline_dir = full_project.backups_dir / "baseline-current"
+    create = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--yes",
+    )
+    assert_cli_ok(create)
+
+    current_package = full_project.packages_dir / "current"
+    current_package.mkdir(parents=True)
+
+    result = run_cli(
+        "verify-integrity",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--baseline-manifest",
+        str(baseline_dir / "baseline_manifest.json"),
+        "--package-dir",
+        str(current_package),
+        "--json",
+    )
+
+    assert_cli_ok(result)
+    payload = json.loads(result.stdout)
+    integrity = payload["integrity"]
+    assert integrity["level"] == "no_package"
+    assert integrity["package_manifest_path"] is None
+    assert integrity["baseline_matches"] == 6
+    assert integrity["changed_files"] == 0
+
+
 def test_verify_integrity_reports_package_applied_from_cli(mock_game, full_project) -> None:
     baseline_dir = full_project.backups_dir / "baseline-current"
     create = run_cli(
@@ -823,6 +864,50 @@ def test_baseline_apply_overwrites_without_creating_restore_backup(mock_game, fu
     assert "No backup or restore log was created." in apply.stdout
 
 
+def test_baseline_create_overwrite_clears_prepared_package_slots(mock_game, full_project) -> None:
+    baseline_dir = full_project.backups_dir / "baseline-current"
+    create = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--yes",
+    )
+    assert_cli_ok(create)
+
+    current_package = full_project.packages_dir / "current"
+    pending_package = full_project.packages_dir / "pending"
+    last_applied = full_project.metadata_dir / "last_applied_package_manifest.json"
+    for package_dir in (current_package, pending_package):
+        package_dir.mkdir(parents=True)
+        (package_dir / "package-marker.txt").write_text("stale package\n", encoding="utf-8")
+    last_applied.write_text("{}\n", encoding="utf-8")
+
+    overwrite = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--overwrite",
+        "--yes",
+    )
+
+    assert_cli_ok(overwrite)
+    assert (baseline_dir / "baseline_manifest.json").exists()
+    assert not current_package.exists()
+    assert not pending_package.exists()
+    assert not last_applied.exists()
+    assert "cleared package artifact" in overwrite.stdout
+
+
 def test_baseline_apply_rejects_backup_dir_option(mock_game, full_project) -> None:
     baseline_dir = full_project.backups_dir / "baseline-current"
 
@@ -883,6 +968,24 @@ def test_full_project_flow_builds_baseline_and_deploys_to_mock(mock_game, full_p
     write_test_tone(source)
     mock_game.preferred_path.write_text("CHS", encoding="utf-8")
 
+    baseline = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--yes",
+    )
+    assert_cli_ok(baseline)
+    baseline_manifest = baseline_dir / "baseline_manifest.json"
+    baseline_payload = json.loads(baseline_manifest.read_text(encoding="utf-8"))
+    assert baseline_payload["file_count"] == 6
+    assert baseline_payload["game_version_id"] == "steam-b99000001"
+    assert baseline_payload["backup_name"] == "fh6-steam-b99000001-baseline-current"
+
     build = run_cli(
         "build-package",
         str(source),
@@ -894,6 +997,8 @@ def test_full_project_flow_builds_baseline_and_deploys_to_mock(mock_game, full_p
         "CHS",
         "--target",
         "EN",
+        "--baseline-manifest",
+        str(baseline_manifest),
         "--out-dir",
         str(package_dir),
         "--playlist-mode",
@@ -904,26 +1009,6 @@ def test_full_project_flow_builds_baseline_and_deploys_to_mock(mock_game, full_p
     assert (package_dir / "package" / "fh_radio_studio_package_manifest.json").exists()
     assert (package_dir / "package" / "media" / "audio" / "RadioInfo_CN.xml").exists()
     assert (package_dir / "package" / "media" / "Stripped" / "StringTables" / "EN.zip").exists()
-
-    baseline = run_cli(
-        "baseline",
-        "create",
-        "--game-dir",
-        str(mock_game.game_dir),
-        "--package-dir",
-        str(package_dir / "package"),
-        "--out-dir",
-        str(baseline_dir),
-        "--state",
-        "current",
-        "--yes",
-    )
-    assert_cli_ok(baseline)
-    baseline_manifest = baseline_dir / "baseline_manifest.json"
-    baseline_payload = json.loads(baseline_manifest.read_text(encoding="utf-8"))
-    assert baseline_payload["file_count"] == 3
-    assert baseline_payload["game_version_id"] == "steam-b99000001"
-    assert baseline_payload["backup_name"] == "fh6-steam-b99000001-baseline-current"
 
     deploy = run_cli(
         "deploy-package",
@@ -943,7 +1028,7 @@ def test_full_project_flow_builds_baseline_and_deploys_to_mock(mock_game, full_p
     assert not deploy_manifest.exists()
     last_applied_payload = json.loads(last_applied.read_text(encoding="utf-8"))
     assert last_applied_payload["game_version_id"] == "steam-b99000001"
-    assert len(last_applied_payload["package_files"]) == 3
+    assert len(last_applied_payload["package_files"]) == 6
     assert md5_file(target_table) == md5_file(chs_table)
     assert mock_game.preferred_path.read_text(encoding="utf-8") == "EN"
 
@@ -1000,11 +1085,34 @@ def test_build_package_matches_unnamed_bank_order_by_sample_length(mock_game, tm
     source_b = tmp_path / "sources" / "FH Radio Studio Dev - Second.wav"
     source_c = tmp_path / "sources" / "FH Radio Studio Dev - Third.wav"
     package_dir = tmp_path / "packages" / "unnamed-bank-order"
+    baseline_dir = tmp_path / "backups" / "baseline-current"
     for source in (source_a, source_b, source_c):
         write_test_tone(source)
 
     bank_path = mock_game.game_dir / "media" / "audio" / "FMODBanks" / "R4_Tracks_CU1.assets.bank"
     bank_path.write_bytes(b"MOCKFH6BANK\x00" + _build_unnamed_mock_fsb5_in_order((2, 0, 1)))
+    baseline = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--yes",
+    )
+    assert_cli_ok(baseline)
+    baseline_manifest = baseline_dir / "baseline_manifest.json"
+    bank_order_path = baseline_dir / "derived" / "bank_order.json"
+    if bank_order_path.exists():
+        bank_order_path.unlink()
+    baseline_payload = json.loads(baseline_manifest.read_text(encoding="utf-8"))
+    baseline_payload.pop("derived_indexes", None)
+    baseline_payload["files"] = [
+        item for item in baseline_payload["files"] if item.get("scope") != "radio_bank"
+    ]
+    baseline_manifest.write_text(json.dumps(baseline_payload, indent=2) + "\n", encoding="utf-8")
 
     build = run_cli(
         "build-package",
@@ -1017,6 +1125,8 @@ def test_build_package_matches_unnamed_bank_order_by_sample_length(mock_game, tm
         "4",
         "--out-dir",
         str(package_dir),
+        "--baseline-manifest",
+        str(baseline_manifest),
         "--playlist-mode",
         "only",
         "--skip-bank",
@@ -1177,7 +1287,6 @@ def test_baseline_bank_order_index_is_derived_and_used_for_build(mock_game, tmp_
 def test_build_package_can_stage_language_change_without_playlist(mock_game, tmp_path) -> None:
     package_dir = tmp_path / "packages" / "language-change-current-radio"
     baseline_dir = tmp_path / "backups" / "baseline-current"
-    deploy_log_dir = tmp_path / "backups" / "deploy-language-change"
     last_applied = tmp_path / ".fh-radio-studio" / "last_applied_package_manifest.json"
     radio_info_cn = mock_game.game_dir / "media" / "audio" / "RadioInfo_CN.xml"
     radio_info_en = mock_game.game_dir / "media" / "audio" / "RadioInfo_EN.xml"
@@ -1189,6 +1298,20 @@ def test_build_package_can_stage_language_change_without_playlist(mock_game, tmp
     original_bank_md5 = md5_file(target_bank)
     mock_game.preferred_path.write_text("CHS", encoding="utf-8")
 
+    baseline = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--yes",
+    )
+    assert_cli_ok(baseline)
+    baseline_manifest = baseline_dir / "baseline_manifest.json"
+
     build = run_cli(
         "build-package",
         "--game-dir",
@@ -1199,6 +1322,8 @@ def test_build_package_can_stage_language_change_without_playlist(mock_game, tmp
         "CHS",
         "--target",
         "EN",
+        "--baseline-manifest",
+        str(baseline_manifest),
         "--out-dir",
         str(package_dir),
     )
@@ -1224,36 +1349,14 @@ def test_build_package_can_stage_language_change_without_playlist(mock_game, tmp
     assert md5_file(package_radio_info_en) == original_radio_info_en_md5
     assert md5_file(package_bank) == original_bank_md5
     assert (package_dir / "package" / "media" / "Stripped" / "StringTables" / "EN.zip").exists()
-    assert [item["install_relative_path"] for item in payload["package_files"]] == [
+    assert {item["install_relative_path"] for item in payload["package_files"]} == {
         "media/audio/RadioInfo_CN.xml",
         "media/audio/RadioInfo_EN.xml",
         "media/audio/FMODBanks/R4_Tracks_CU1.assets.bank",
+        "media/Stripped/StringTables/CHS.zip",
         "media/Stripped/StringTables/EN.zip",
-    ]
-
-    baseline = run_cli(
-        "baseline",
-        "create",
-        "--game-dir",
-        str(mock_game.game_dir),
-        "--package-dir",
-        str(package_dir / "package"),
-        "--out-dir",
-        str(baseline_dir),
-        "--state",
-        "current",
-        "--yes",
-    )
-    assert_cli_ok(baseline)
-    baseline_manifest = baseline_dir / "baseline_manifest.json"
-    baseline_payload = json.loads(baseline_manifest.read_text(encoding="utf-8"))
-    assert baseline_payload["file_count"] == 4
-    assert [item["install_relative_path"] for item in baseline_payload["files"]] == [
-        "media/audio/RadioInfo_CN.xml",
-        "media/audio/RadioInfo_EN.xml",
-        "media/audio/FMODBanks/R4_Tracks_CU1.assets.bank",
-        "media/Stripped/StringTables/EN.zip",
-    ]
+        "media/Stripped/StringTables/JP.zip",
+    }
 
     deploy = run_cli(
         "deploy-package",
@@ -1269,9 +1372,8 @@ def test_build_package_can_stage_language_change_without_playlist(mock_game, tmp
         "--yes",
     )
     assert_cli_ok(deploy)
-    assert not (deploy_log_dir / "deploy_manifest.json").exists()
     last_applied_payload = json.loads(last_applied.read_text(encoding="utf-8"))
-    assert len(last_applied_payload["package_files"]) == 4
+    assert len(last_applied_payload["package_files"]) == 6
     assert md5_file(radio_info_cn) == original_radio_info_cn_md5
     assert md5_file(radio_info_en) == original_radio_info_en_md5
     assert md5_file(target_bank) == original_bank_md5
@@ -1283,6 +1385,7 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
     source_xs = tmp_path / "sources" / "FH Radio Studio Dev - XS Draft.wav"
     source_r5 = tmp_path / "sources" / "FH Radio Studio Dev - R5 Draft.wav"
     package_dir = tmp_path / "packages" / "multi-radio-plan"
+    baseline_dir = tmp_path / "backups" / "baseline-current"
     plan_path = tmp_path / ".fh-radio-studio" / "playlist_plan.json"
     write_test_tone(source_xs)
     write_test_tone(source_r5, duration_sec=1.0)
@@ -1290,6 +1393,19 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
     bank_dir = mock_game.game_dir / "media" / "audio" / "FMODBanks"
     r5_bank = bank_dir / "R5_Tracks_Disk.assets.bank"
     r5_bank.write_bytes(b"MOCKFH6BANK\x00" + build_mock_fsb5(("HZ6_R5_MOCK_REFERENCE",)))
+    baseline = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--yes",
+    )
+    assert_cli_ok(baseline)
+    baseline_manifest = baseline_dir / "baseline_manifest.json"
 
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_text(
@@ -1327,6 +1443,8 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
         "4",
         "--playlist-plan",
         str(plan_path),
+        "--baseline-manifest",
+        str(baseline_manifest),
         "--out-dir",
         str(package_dir),
         "--playlist-mode",
@@ -1407,6 +1525,70 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
     ]
     assert playlist_names(by_number["5"], "FreeRoam") == ["HZ6_R5_MOCK_REFERENCE"]
     assert playlist_names(by_number["5"], "Event") == ["HZ6_R5_MOCK_REFERENCE"]
+
+
+def test_build_package_reads_playlist_plan_from_stdin(mock_game, tmp_path) -> None:
+    source_xs = tmp_path / "sources" / "FH Radio Studio Dev - Stdin Draft.wav"
+    package_dir = tmp_path / "packages" / "stdin-plan"
+    baseline_dir = tmp_path / "backups" / "baseline-current"
+    write_test_tone(source_xs)
+
+    baseline = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--yes",
+    )
+    assert_cli_ok(baseline)
+    baseline_manifest = baseline_dir / "baseline_manifest.json"
+
+    # Same schema_version 2 document the file mode uses, piped over stdin via "-".
+    plan_json = json.dumps(
+        {
+            "schema_version": 2,
+            "assignments": [
+                {
+                    "source": str(source_xs),
+                    "radio_code": "XS",
+                    "playlist_type": "FreeRoam",
+                    "slot": 1,
+                }
+            ],
+            "builtin_targets": [],
+        }
+    )
+
+    build = run_cli(
+        "build-package",
+        str(source_xs),
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--radio",
+        "4",
+        "--playlist-plan",
+        "-",
+        "--baseline-manifest",
+        str(baseline_manifest),
+        "--out-dir",
+        str(package_dir),
+        "--playlist-mode",
+        "only",
+        "--skip-bank",
+        stdin=plan_json,
+    )
+    assert_cli_ok(build)
+
+    manifest_path = package_dir / "package" / "fh_radio_studio_package_manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    by_radio = {item["radio"]: item for item in payload["radios"]}
+    assert by_radio[4]["radio_code"] == "XS"
+    assert by_radio[4]["assignments"][0]["source"] == str(source_xs.resolve())
+    assert by_radio[4]["assignments"][0]["playlist_types"] == ["FreeRoam"]
 
 
 def test_baseline_loudness_plan_reports_parallel_processes(tmp_path: Path) -> None:
@@ -1642,6 +1824,7 @@ def test_build_package_enforces_baseline_playlist_entry_cap(mock_game, tmp_path)
     first = tmp_path / "sources" / "FH Radio Studio Dev - Hospital One.wav"
     second = tmp_path / "sources" / "FH Radio Studio Dev - Hospital Two.wav"
     package_dir = tmp_path / "packages" / "hospital-over-cap"
+    baseline_dir = tmp_path / "backups" / "baseline-current"
     write_test_tone(first)
     write_test_tone(second)
 
@@ -1657,6 +1840,19 @@ def test_build_package_enforces_baseline_playlist_entry_cap(mock_game, tmp_path)
             )
         )
     )
+    baseline = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--yes",
+    )
+    assert_cli_ok(baseline)
+    baseline_manifest = baseline_dir / "baseline_manifest.json"
 
     build = run_cli(
         "build-package",
@@ -1670,6 +1866,8 @@ def test_build_package_enforces_baseline_playlist_entry_cap(mock_game, tmp_path)
         "only",
         "--out-dir",
         str(package_dir),
+        "--baseline-manifest",
+        str(baseline_manifest),
         "--skip-bank",
     )
 
@@ -1689,6 +1887,8 @@ def test_build_package_enforces_baseline_playlist_entry_cap(mock_game, tmp_path)
         "only",
         "--out-dir",
         str(capped_package_dir),
+        "--baseline-manifest",
+        str(baseline_manifest),
         "--skip-bank",
         "--allow-truncate",
     )
@@ -1715,6 +1915,7 @@ def test_build_package_reuses_package_playlist_without_music_args(mock_game, tmp
     source_r5 = tmp_path / "sources" / "FH Radio Studio Dev - R5 Current.wav"
     current_package_dir = tmp_path / "packages" / "current"
     pending_package_dir = tmp_path / "packages" / "pending"
+    baseline_dir = tmp_path / "backups" / "baseline-current"
     plan_path = tmp_path / ".fh-radio-studio" / "playlist_plan.json"
     write_test_tone(source_xs)
     write_test_tone(source_r5, duration_sec=1.0)
@@ -1722,6 +1923,19 @@ def test_build_package_reuses_package_playlist_without_music_args(mock_game, tmp
     bank_dir = mock_game.game_dir / "media" / "audio" / "FMODBanks"
     r5_bank = bank_dir / "R5_Tracks_Disk.assets.bank"
     r5_bank.write_bytes(b"MOCKFH6BANK\x00" + build_mock_fsb5(("HZ6_R5_MOCK_REFERENCE",)))
+    baseline = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--yes",
+    )
+    assert_cli_ok(baseline)
+    baseline_manifest = baseline_dir / "baseline_manifest.json"
 
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_text(
@@ -1757,6 +1971,8 @@ def test_build_package_reuses_package_playlist_without_music_args(mock_game, tmp
         "4",
         "--playlist-plan",
         str(plan_path),
+        "--baseline-manifest",
+        str(baseline_manifest),
         "--out-dir",
         str(current_package_dir),
         "--playlist-mode",
@@ -1773,6 +1989,8 @@ def test_build_package_reuses_package_playlist_without_music_args(mock_game, tmp
         "4",
         "--playlist-from-package",
         str(current_package_dir),
+        "--baseline-manifest",
+        str(baseline_manifest),
         "--out-dir",
         str(pending_package_dir),
         "--playlist-mode",
@@ -1799,9 +2017,23 @@ def test_build_package_preflights_all_playlist_radios_before_writing(mock_game, 
     source_xs = tmp_path / "sources" / "FH Radio Studio Dev - XS Draft.wav"
     source_r6 = tmp_path / "sources" / "FH Radio Studio Dev - R6 Draft.wav"
     package_dir = tmp_path / "packages" / "missing-radio-bank"
+    baseline_dir = tmp_path / "backups" / "baseline-current"
     plan_path = tmp_path / ".fh-radio-studio" / "playlist_plan.json"
     write_test_tone(source_xs)
     write_test_tone(source_r6)
+    baseline = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--yes",
+    )
+    assert_cli_ok(baseline)
+    baseline_manifest = baseline_dir / "baseline_manifest.json"
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_text(
         json.dumps(
@@ -1838,6 +2070,8 @@ def test_build_package_preflights_all_playlist_radios_before_writing(mock_game, 
         "4",
         "--playlist-plan",
         str(plan_path),
+        "--baseline-manifest",
+        str(baseline_manifest),
         "--out-dir",
         str(package_dir),
         "--playlist-mode",

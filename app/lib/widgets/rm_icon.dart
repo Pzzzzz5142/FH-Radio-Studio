@@ -88,6 +88,8 @@ class RmIcon extends StatelessWidget {
         return LucideIcons.sparkles;
       case 'music':
         return LucideIcons.music;
+      case 'volume':
+        return LucideIcons.volume2;
       case 'file':
         return LucideIcons.fileText;
       case 'chevron-up':

@@ -284,8 +284,12 @@ Rules:
 Types:
 
 ```text
-feat, fix, perf, refactor, build, ci, test, docs, style, chore, revert
+feat, fix, perf, refactor, build, ci, test, docs, agents, style, chore, revert
 ```
+
+Use `agents` for changes to agent-guidance files such as `AGENTS.md` (instructions
+that steer Claude Code or other coding agents), as distinct from `docs`, which is
+for human-facing documentation.
 
 The only supported compound type is:
 

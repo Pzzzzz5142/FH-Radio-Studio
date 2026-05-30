@@ -34,12 +34,14 @@ from .game import (
 )
 from .language import normalize_text_language, string_tables_dir_for
 from .loudness import (
+    DEFAULT_CUSTOM_LOUDNESS_OFFSET_LU,
     LOUDNESS_ALGORITHM_VERSION,
     analyze_loudness_file,
     baseline_loudness_bank_count,
     build_custom_set_loudness_profile,
     ensure_baseline_loudness_envelope,
     loudness_worker_count,
+    normalize_custom_loudness_offset_lu,
     prepare_loudness_matched_audio,
 )
 from .metadata import (
@@ -60,6 +62,12 @@ CORE_TIMING_MARKERS = (
     "PostRaceLoopStart",
     "PostRaceLoopEnd",
 )
+
+
+def _args_loudness_offset_lu(args: argparse.Namespace) -> float:
+    return normalize_custom_loudness_offset_lu(
+        getattr(args, "loudness_offset_lu", DEFAULT_CUSTOM_LOUDNESS_OFFSET_LU)
+    )
 
 
 class _PackageProgressReporter:
@@ -371,9 +379,9 @@ def _package_progress_plan(
     if current_radio_passthrough:
         steps.append(
             _progress_step(
-                "copy_current_radio",
-                "复制当前电台文件",
-                "语言-only 包会保留当前 RadioInfo 和 bank 内容，只写入语言设置。",
+                "copy_baseline_radio",
+                "复制原始备份电台文件",
+                "语言-only 包会保留原始备份 RadioInfo 和 bank 内容，只写入语言设置。",
                 weight=3,
             )
         )
@@ -1141,15 +1149,39 @@ def _resolve_playlist_plan_radio(
     return radio
 
 
-def load_playlist_plan_builtin_targets(
-    plan_path: Optional[str], root: ET.Element
-) -> List[Dict[str, object]]:
+_STDIN_PLAN_CACHE: Optional[Dict[str, object]] = None
+_STDIN_PLAN_LOADED = False
+
+
+def load_plan_document(plan_path: Optional[str]) -> Optional[Dict[str, object]]:
+    """Load a playlist plan document from a file path, or from stdin when
+    ``plan_path == "-"``. build-package reads the plan twice (builtin targets +
+    groups), so the stdin payload is read once and cached for the second read."""
+    global _STDIN_PLAN_CACHE, _STDIN_PLAN_LOADED
     if not plan_path:
-        return []
+        return None
+    if plan_path == "-":
+        if not _STDIN_PLAN_LOADED:
+            _STDIN_PLAN_LOADED = True
+            raw = sys.stdin.buffer.read()
+            if raw.strip():
+                try:
+                    decoded = json.loads(raw.decode("utf-8"))
+                except json.JSONDecodeError as exc:
+                    die(f"Playlist plan parse failed from stdin: {exc}")
+                _STDIN_PLAN_CACHE = decoded if isinstance(decoded, dict) else None
+        return _STDIN_PLAN_CACHE
     path = Path(plan_path).expanduser()
     if not path.exists():
         die(f"Playlist plan not found: {path}")
     data = load_manifest(path)
+    return data if isinstance(data, dict) else None
+
+
+def load_playlist_plan_builtin_targets(
+    plan_path: Optional[str], root: ET.Element
+) -> List[Dict[str, object]]:
+    data = load_plan_document(plan_path)
     items = data.get("builtin_targets") if isinstance(data, dict) else None
     if not isinstance(items, list):
         return []
@@ -1193,12 +1225,7 @@ def load_playlist_plan_groups(
     *,
     skip_radios: Optional[set[int]] = None,
 ) -> List[Dict[str, object]]:
-    if not plan_path:
-        return []
-    path = Path(plan_path).expanduser()
-    if not path.exists():
-        die(f"Playlist plan not found: {path}")
-    data = load_manifest(path)
+    data = load_plan_document(plan_path)
     items = data.get("assignments") if isinstance(data, dict) else None
     if not isinstance(items, list):
         return []
@@ -1452,6 +1479,7 @@ def prepare_music_tracks(
         loudness_analyses,
         envelope,
         radio=radio,
+        target_offset_lu=_args_loudness_offset_lu(args),
     )
     print("  Loudness matching: custom set profile ready.")
     if precomputed_loudness_by_source is not None:
@@ -1812,6 +1840,11 @@ def validate_language_settings(args: argparse.Namespace, game_dir: Path) -> None
         return
     if not args.source or not args.target:
         die("Pass both --source and --target when packaging language settings.")
+    if not args.source_string_tables_dir:
+        die(
+            "Packaging language settings requires trusted baseline string tables. "
+            "Pass --source-string-tables-dir from the baseline directory."
+        )
     source_lang = normalize_text_language(args.source)
     target_lang = normalize_text_language(args.target)
     source_string_dir = (
@@ -1865,13 +1898,13 @@ def cmd_build_current_radio_package(
         if language_manifest is None:
             die(
                 "No music files or playlist assignments were provided. Assign at least one track, "
-                "or pass --source and --target to build a current-radio package."
+                "or pass --source and --target to build a baseline-radio package."
             )
 
-    with progress.stage("copy_current_radio", summary=target_bank.name):
+    with progress.stage("copy_baseline_radio", summary=target_bank.name):
         packaged_bank = package_bank_dir / target_bank.name
         shutil.copy2(target_bank, packaged_bank)
-        print(f"Packaged current bank: {target_bank.name}")
+        print(f"Packaged baseline bank: {target_bank.name}")
 
         copied_radio_info: List[str] = []
         for source_xml in radio_info_files(audio_dir):
@@ -1934,14 +1967,14 @@ def cmd_build_current_radio_package(
         manifest_path = package_root / "fh_radio_studio_package_manifest.json"
         write_json(manifest_path, package_manifest)
         instructions = [
-            "FH Radio Studio current-radio package",
+            "FH Radio Studio baseline-radio package",
             "=" * 35,
             f"Radio  : R{args.radio} {station.get('Name')}",
             f"Bank   : {target_bank.name}",
             f"Display: {language_manifest['source_lang']}",
             f"Voice  : {language_manifest['target_lang']}",
             "",
-            "RadioInfo and the selected bank are copied from the current game unchanged.",
+            "RadioInfo and the selected bank are copied from the trusted baseline unchanged.",
             "Deploy also writes UserPreferredLang when language settings are present.",
             "",
             "Package files:",
@@ -1952,7 +1985,7 @@ def cmd_build_current_radio_package(
         write_text(package_root / "INSTALL_README.txt", "\n".join(instructions) + "\n")
 
     print(f"Package manifest: {manifest_path}")
-    print(f"Current-radio package built with {len(copied_radio_info)} RadioInfo file(s).")
+    print(f"Baseline-radio package built with {len(copied_radio_info)} RadioInfo file(s).")
     return 0
 
 
@@ -1962,6 +1995,14 @@ def _baseline_audio_dir_from_manifest(baseline_manifest: Optional[str]) -> Optio
     manifest_path = Path(baseline_manifest).expanduser()
     audio_dir = manifest_path.parent / "media" / "audio"
     return audio_dir if audio_dir.is_dir() else None
+
+
+def _baseline_string_tables_dir_from_manifest(baseline_manifest: Optional[str]) -> Optional[Path]:
+    if not baseline_manifest:
+        return None
+    manifest_path = Path(baseline_manifest).expanduser()
+    string_dir = manifest_path.parent / "media" / "Stripped" / "StringTables"
+    return string_dir if string_dir.is_dir() else None
 
 
 def cmd_build_baseline_restore_package(
@@ -2042,7 +2083,7 @@ def cmd_build_baseline_restore_package(
     with progress.stage("package_language"):
         language_manifest = package_language_settings(args, game_dir, package_string_dir)
 
-    with progress.stage("copy_current_radio", summary=f"{len(restored_units)} radio(s)"):
+    with progress.stage("copy_baseline_radio", summary=f"{len(restored_units)} radio(s)"):
         copied_radio_info: List[str] = []
         for source_xml in radio_info_files(baseline_audio):
             target_xml = package_audio / source_xml.name
@@ -2296,6 +2337,7 @@ def cmd_build_package_from_plan(
     print(f"Source audio: {audio_dir}")
     print(f"Playlist    : {args.playlist_plan or args.playlist_from_package}")
     print(f"Radios      : {len(groups)}")
+    print(f"Loudness    : baseline median +{_args_loudness_offset_lu(args):g} LU")
     if timing_overrides:
         print(f"Timing cfg  : {len(timing_overrides)} saved track config(s)")
     print(f"Out dir     : {out_dir}")
@@ -2352,6 +2394,7 @@ def cmd_build_package_from_plan(
         "playlist_mode": args.playlist_mode,
         "quality": args.quality,
         "loudness_mode": "custom-set",
+        "loudness_offset_lu": round(_args_loudness_offset_lu(args), 3),
         "skip_bank": args.skip_bank,
         "timing_manifest": (
             str(Path(args.timing_manifest).expanduser().resolve()) if args.timing_manifest else None
@@ -2435,11 +2478,26 @@ def cmd_build_package_from_plan(
 def cmd_build_package(args: argparse.Namespace) -> int:
     progress = _PackageProgressReporter(bool(getattr(args, "progress_jsonl", False)))
     game_dir = resolve_game_dir(args.game_dir)
-    audio_dir = (
-        Path(args.source_audio_dir).expanduser()
-        if args.source_audio_dir
-        else audio_dir_for(game_dir)
-    )
+    if not getattr(args, "baseline_manifest", None):
+        die(
+            "A trusted baseline manifest is required to build a package. "
+            "Current game files are not used as package source."
+        )
+    baseline_manifest = Path(args.baseline_manifest).expanduser()
+    if not baseline_manifest.is_file():
+        die(f"Baseline manifest not found: {baseline_manifest}")
+    audio_dir = Path(args.source_audio_dir).expanduser() if args.source_audio_dir else None
+    if audio_dir is None:
+        audio_dir = _baseline_audio_dir_from_manifest(str(baseline_manifest))
+    if audio_dir is None:
+        die(
+            "Trusted baseline audio directory not found. Pass --source-audio-dir "
+            "pointing at the baseline media/audio directory."
+        )
+    if not args.source_string_tables_dir:
+        string_tables_dir = _baseline_string_tables_dir_from_manifest(str(baseline_manifest))
+        if string_tables_dir is not None:
+            args.source_string_tables_dir = str(string_tables_dir)
     if not audio_dir.is_dir():
         die(f"Source audio directory not found: {audio_dir}")
     radio_info = default_radio_info(audio_dir)
@@ -2540,6 +2598,7 @@ def cmd_build_package(args: argparse.Namespace) -> int:
     print(f"Bank        : {target_bank}")
     print(f"Bank slots  : {bank_info.num_samples}")
     print(f"Music files : {len(music_files)}")
+    print(f"Loudness    : baseline median +{_args_loudness_offset_lu(args):g} LU")
     if timing_overrides:
         print(f"Timing cfg  : {len(timing_overrides)} saved track config(s)")
     print(f"Out dir     : {out_dir}")
@@ -2658,6 +2717,7 @@ def cmd_build_package(args: argparse.Namespace) -> int:
         "playlist_mode": args.playlist_mode,
         "quality": args.quality,
         "loudness_mode": "custom-set",
+        "loudness_offset_lu": round(_args_loudness_offset_lu(args), 3),
         "skip_bank": args.skip_bank,
         "timing_manifest": (
             str(Path(args.timing_manifest).expanduser().resolve()) if args.timing_manifest else None

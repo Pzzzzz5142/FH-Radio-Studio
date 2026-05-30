@@ -4,7 +4,14 @@ import '../theme/app_theme.dart';
 import '../theme/text_styles.dart';
 import '../theme/tokens.dart';
 
-enum RmButtonVariant { defaultBtn, primary, ghost, danger, dangerPrimary }
+enum RmButtonVariant {
+  defaultBtn,
+  primary,
+  ghost,
+  danger,
+  dangerOutline,
+  dangerPrimary,
+}
 
 enum RmButtonSize { sm, md, lg, icon }
 
@@ -101,6 +108,10 @@ class _RmButtonState extends State<RmButton> {
         bg = _hover ? rm.dangerBg : rm.raised;
         fg = rm.danger;
         border = _hover ? rm.danger : rm.border;
+      case RmButtonVariant.dangerOutline:
+        bg = _hover ? rm.dangerBg : rm.panel;
+        fg = rm.danger;
+        border = rm.danger;
       case RmButtonVariant.dangerPrimary:
         bg = rm.danger;
         fg = Colors.white;
@@ -121,6 +132,7 @@ class _RmButtonState extends State<RmButton> {
               fontSize,
               weight:
                   widget.variant == RmButtonVariant.primary ||
+                      widget.variant == RmButtonVariant.dangerOutline ||
                       widget.variant == RmButtonVariant.dangerPrimary
                   ? FontWeight.w600
                   : FontWeight.w500,

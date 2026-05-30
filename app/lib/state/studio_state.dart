@@ -45,12 +45,36 @@ const _pendingBaselineSelectionFileName =
     'fh_radio_studio_pending_baseline_selected.json';
 
 const _cliProgressPrefix = 'FH_RADIO_STUDIO_PROGRESS ';
+const _cliPlanPrefix = 'FH_RADIO_STUDIO_PLAN ';
 
 const kAiPipelineProfiles = ['local-base', 'local-deep', 'local-heavy'];
 
 const kDefaultAiPipelineProfile = 'local-heavy';
 
 const kAiWarmupProviders = ['beat_this', 'songformer', 'mert', 'demucs'];
+
+const kDefaultPackageLoudnessOffsetLu = 3.0;
+
+const kPackageLoudnessOffsetOptions = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+const kFallbackPackageReferenceMedianLufs = -24.0;
+
+double normalizePackageLoudnessOffsetLu(double value) {
+  if (!value.isFinite) return kDefaultPackageLoudnessOffsetLu;
+  return value
+      .clamp(
+        kPackageLoudnessOffsetOptions.first,
+        kPackageLoudnessOffsetOptions.last,
+      )
+      .toDouble();
+}
+
+String formatPackageLoudnessOffsetLu(double value) {
+  final normalized = normalizePackageLoudnessOffsetLu(value);
+  return normalized == normalized.roundToDouble()
+      ? normalized.toStringAsFixed(0)
+      : normalized.toStringAsFixed(2);
+}
 
 const kDefaultPipIndexMirror = 'https://mirrors.aliyun.com/pypi/simple/';
 
@@ -659,6 +683,7 @@ class PackageArtifactSummary {
     this.baselineRestore = false,
     required this.sourceLang,
     required this.targetLang,
+    this.loudnessOffsetLu,
     required this.previewTracks,
     required this.assignments,
   });
@@ -676,6 +701,7 @@ class PackageArtifactSummary {
   final bool baselineRestore;
   final String? sourceLang;
   final String? targetLang;
+  final double? loudnessOffsetLu;
   final List<String> previewTracks;
   final List<PackageTrackAssignment> assignments;
 
@@ -728,7 +754,7 @@ class PackageArtifactSummary {
           ? '语言设置'
           : '$sourceLang 显示 / $targetLang 语音';
       final slots = _slotDetail;
-      return '当前游戏 radio 原样打包$slots · $language';
+      return '原始备份 radio 原样打包$slots · $language';
     }
     final slots = _slotDetail;
     final mode = playlistMode == 'add' ? '保留原播放列表' : '替换播放列表';
@@ -744,7 +770,7 @@ class PackageArtifactSummary {
       return 'RadioInfo 与 bank 来自原始备份';
     }
     if (currentRadioPassthrough && previewTracks.isEmpty) {
-      return 'RadioInfo 与 bank 保持当前游戏内容';
+      return 'RadioInfo 与 bank 来自原始备份';
     }
     if (previewTracks.isEmpty) return '未读取到曲目信息';
     final names = previewTracks.take(3).join(', ');
@@ -761,6 +787,29 @@ class PackageArtifactSummary {
     }
     return null;
   }
+}
+
+@immutable
+class PackageBuildLoudnessPreview {
+  const PackageBuildLoudnessPreview({
+    required this.referenceMedianLufs,
+    required this.initialOffsetLu,
+    required this.previewInputLufs,
+    required this.previewInputLufsHeuristic,
+    this.source,
+    this.previewTitle,
+    this.previewArtist,
+    this.currentPackageOffsetLu,
+  });
+
+  final double referenceMedianLufs;
+  final double initialOffsetLu;
+  final double previewInputLufs;
+  final bool previewInputLufsHeuristic;
+  final String? source;
+  final String? previewTitle;
+  final String? previewArtist;
+  final double? currentPackageOffsetLu;
 }
 
 @immutable
@@ -2278,9 +2327,33 @@ PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
     baselineRestore: _objectBool(data['baseline_restore']) ?? false,
     sourceLang: _objectString(language?['source_lang']),
     targetLang: _objectString(language?['target_lang']),
+    loudnessOffsetLu: _packageLoudnessOffsetLu(data),
     previewTracks: previews,
     assignments: assignments,
   );
+}
+
+double? _packageLoudnessOffsetLu(Map<String, dynamic> data) {
+  final direct = _objectDouble(data['loudness_offset_lu']);
+  if (direct != null) return direct;
+  final radios = data['radios'];
+  if (radios is List) {
+    for (final item in radios) {
+      final unit = _objectMap(item);
+      final profile = _objectMap(unit?['loudness_profile']);
+      final offset = _objectDouble(profile?['target_offset_lu']);
+      if (offset != null) return offset;
+    }
+  }
+  return null;
+}
+
+double _baselineReferenceMedianLufs(String manifestPath) {
+  final data = _readJsonMap(File(manifestPath));
+  final derivedValues = _objectMap(data?['derived_values']);
+  final envelope = _objectMap(derivedValues?['loudness_envelope']);
+  return _objectDouble(envelope?['reference_median_lufs']) ??
+      kFallbackPackageReferenceMedianLufs;
 }
 
 void _writePendingPackageFailureMarker(String packageDir, CliRunResult result) {
@@ -2511,6 +2584,15 @@ int? _objectInt(Object? value) {
   if (value is int) return value;
   if (value is num) return value.round();
   if (value is String) return int.tryParse(value);
+  return null;
+}
+
+double? _objectDouble(Object? value) {
+  if (value is num && value.isFinite) return value.toDouble();
+  if (value is String) {
+    final parsed = double.tryParse(value);
+    return parsed == null || !parsed.isFinite ? null : parsed;
+  }
   return null;
 }
 
@@ -2891,11 +2973,8 @@ class StudioController extends StateNotifier<StudioState> {
       if (isSirenSource) {
         SirenImportRegistry.removeByPath(state.projectDir, source);
       }
-      final planFile = File(PlaylistPlanStore.configPath(state.projectDir));
-      final plan = PlaylistPlanStore.read(state.projectDir);
-      if (plan.hasDraft || planFile.existsSync()) {
-        PlaylistPlanStore.write(state.projectDir, plan.unassign(source));
-      }
+      // 播放列表草稿是内存权威（playlistPlanProvider），删歌时由 UI 同步调用
+      // removeDeletedSource 维护，这里不再写盘。
 
       final next = <String>[];
       final seen = <String>{};
@@ -2935,14 +3014,8 @@ class StudioController extends StateNotifier<StudioState> {
         cleaned += 1;
       }
 
-      final planFile = File(PlaylistPlanStore.configPath(state.projectDir));
-      final plan = PlaylistPlanStore.read(state.projectDir);
-      if (plan.hasDraft || planFile.existsSync()) {
-        PlaylistPlanStore.write(
-          state.projectDir,
-          plan.unassignSources(sources),
-        );
-      }
+      // 播放列表草稿是内存权威；失效歌曲的清理由 UI 同步调用
+      // removeDeletedSources 维护，这里不再写盘。
 
       final sourceKeys = {
         for (final source in sources) TrackTimingConfig.keyForPath(source),
@@ -3777,18 +3850,127 @@ class StudioController extends StateNotifier<StudioState> {
     return installed;
   }
 
-  Future<bool> buildPackage() async {
+  String? _previewSourceFromInputs(List<String> inputs) {
+    if (inputs.isEmpty) return null;
+    final files = FhRadioStudioProject.collectAudioFiles(inputs);
+    return files.isEmpty ? null : files.first.path;
+  }
+
+  PackageBuildLoudnessPreview buildPackageLoudnessPreview() {
+    final draft = _playlistDraftForBuild();
+    final currentSummary =
+        state.lastPackageSummary ?? _readPackageSummary(state.lastPackageDir);
+    final previousAppliedSummary = !state.currentPackageReady
+        ? _readPackageSummaryFromManifest(
+            File(state.lastAppliedPackageManifest),
+          )
+        : null;
+    final initialSummary = currentSummary ?? previousAppliedSummary;
+    final musicInputs = draft.inputs.isNotEmpty
+        ? draft.inputs
+        : _musicInputsFromPackageSummary(previousAppliedSummary);
+    final referenceMedianLufs = _baselineReferenceMedianLufs(
+      state.currentBaselineManifest,
+    );
+    final previewSource =
+        _previewSourceFromInputs(musicInputs) ??
+        _previewSourceFromInputs(state.musicPaths);
+    final metadata = TrackMetadataCache.read(state.projectDir);
+    final previewMetadata = previewSource == null
+        ? null
+        : metadata[canonicalPathKey(previewSource)];
+    final measuredLufs = previewMetadata?.integratedLufs;
+    return PackageBuildLoudnessPreview(
+      referenceMedianLufs: referenceMedianLufs,
+      initialOffsetLu: normalizePackageLoudnessOffsetLu(
+        initialSummary?.loudnessOffsetLu ?? kDefaultPackageLoudnessOffsetLu,
+      ),
+      previewInputLufs: measuredLufs ?? referenceMedianLufs,
+      previewInputLufsHeuristic: measuredLufs == null,
+      source: previewSource,
+      previewTitle: previewMetadata?.title,
+      previewArtist: previewMetadata?.artist,
+      currentPackageOffsetLu: currentSummary?.loudnessOffsetLu == null
+          ? null
+          : normalizePackageLoudnessOffsetLu(currentSummary!.loudnessOffsetLu!),
+    );
+  }
+
+  Future<bool> buildPackage({
+    double loudnessOffsetLu = kDefaultPackageLoudnessOffsetLu,
+    PlaylistPlan? plan,
+  }) async {
     if (state.busy) return false;
+    final normalizedLoudnessOffsetLu = normalizePackageLoudnessOffsetLu(
+      loudnessOffsetLu,
+    );
     if (_rejectProjectEditWhenBaselineBroken('准备电台包')) return false;
     FhRadioStudioProject.ensure(state.projectDir);
     if (_canCreatePendingPackage) {
       _append('当前游戏文件还没确认。请先在概览里保存新文件记录、生成测试准备包，或写回旧的基线；确认或放弃后再准备普通电台包。');
       return false;
     }
-    final planForBuild = PlaylistPlanStore.read(state.projectDir);
-    final draft = _playlistDraftForBuild();
-    final restoresBuiltin = draft.restoresBuiltin;
+    if (!File(state.currentBaselineManifest).existsSync()) {
+      _append('还没有可信原始备份，不能生成准备包。请先在概览里创建原始备份。');
+      return false;
+    }
+    var planForBuild = plan ?? const PlaylistPlan.empty();
+    if (!state.currentPackageReady && !planForBuild.hasDraft) {
+      // CLI 才是 track metadata 的 true source：差分游戏与原始备份、把自建曲逆向
+      // 匹配回项目源文件、重建播放列表草稿，都交给 reconstruct-plan 完成。结果直接
+      // 从 stdout 读回内存（--out -），不落任何文件。
+      final reconstruct = await _run([
+        'reconstruct-plan',
+        '--game-dir',
+        state.gameDir,
+        '--baseline-manifest',
+        state.currentBaselineManifest,
+        '--metadata-cache',
+        TrackMetadataCache.configPath(state.projectDir),
+        '--music-dir',
+        FhRadioStudioProject.sourcesDir(state.projectDir),
+        '--music-dir',
+        FhRadioStudioProject.sirenDir(state.projectDir),
+        '--source',
+        state.sourceLang,
+        '--target',
+        state.targetLang,
+        '--out',
+        '-',
+      ], streamOutput: false);
+      if (reconstruct.ok) {
+        planForBuild = _planFromReconstructStdout(reconstruct.stdout);
+        if (planForBuild.hasDraft) {
+          _append(
+            '已根据当前游戏文件与原始备份差分初始化播放列表草稿：${planForBuild.assignments.length} 首自建曲目。',
+          );
+        }
+      }
+    }
     final canBuildLanguageChange = !state.languageSelectionMatchesGame;
+    final canBuildWithoutCurrentPackage = !state.currentPackageReady;
+    final currentPackageSummary = state.currentPackageReady
+        ? (state.lastPackageSummary ??
+              _readPackageSummary(state.lastPackageDir))
+        : null;
+    final currentLoudnessOffsetLu = currentPackageSummary?.loudnessOffsetLu;
+    final loudnessOffsetChanged =
+        currentLoudnessOffsetLu == null ||
+        (currentLoudnessOffsetLu - normalizedLoudnessOffsetLu).abs() > 0.001;
+    // 用户只改了响度增益、且没有正在编辑的草稿时，从当前包 manifest 的 assignments
+    // 重建一份 plan（source 全部指向项目 sources/siren），再走正常的 --playlist-plan
+    // 构建。不能从准备包目录读，因为输出目录就是它、构建前会被清空。
+    if (!planForBuild.hasDraft &&
+        loudnessOffsetChanged &&
+        currentPackageSummary != null &&
+        currentPackageSummary.assignments.isNotEmpty) {
+      final seeded = _planFromPackageSummary(currentPackageSummary);
+      if (seeded.hasDraft) {
+        planForBuild = seeded;
+      }
+    }
+    final draft = _playlistDraftForBuild(planForBuild);
+    final restoresBuiltin = draft.restoresBuiltin;
     final previousAppliedSummary = !state.currentPackageReady
         ? _readPackageSummaryFromManifest(
             File(state.lastAppliedPackageManifest),
@@ -3800,9 +3982,10 @@ class StudioController extends StateNotifier<StudioState> {
         previousAppliedSummary.assignments.isNotEmpty;
     if (!draft.hasPlan &&
         !canBuildLanguageChange &&
-        !canBuildFromPreviousApplied) {
+        !canBuildFromPreviousApplied &&
+        !canBuildWithoutCurrentPackage) {
       if (state.currentPackageReady) {
-        _append('准备包已经等于当前播放列表；修改分配或语言后再重新构建。');
+        _append('准备包已经等于当前播放列表和响度；修改分配、语言或响度增益后再重新构建。');
       } else {
         _append('播放列表还没有分配曲目。请先在“播放列表”里把自建歌曲拖到目标电台。');
       }
@@ -3811,12 +3994,10 @@ class StudioController extends StateNotifier<StudioState> {
     if (draft.hasPlan &&
         !canBuildLanguageChange &&
         !restoresBuiltin &&
+        !loudnessOffsetChanged &&
         state.currentPackageReady &&
-        _packageAssignmentsMatchPlan(
-          state.lastPackageSummary ?? _readPackageSummary(state.lastPackageDir),
-          planForBuild,
-        )) {
-      _append('准备包已经等于当前播放列表；修改分配或语言后再重新构建。');
+        _packageAssignmentsMatchPlan(currentPackageSummary, planForBuild)) {
+      _append('准备包已经等于当前播放列表和响度；修改分配、语言或响度增益后再重新构建。');
       return false;
     }
     final musicInputs = draft.inputs.isNotEmpty
@@ -3825,7 +4006,10 @@ class StudioController extends StateNotifier<StudioState> {
     final playlistFromPackage = canBuildFromPreviousApplied
         ? state.lastAppliedPackageManifest
         : null;
-    if (musicInputs.isEmpty && !canBuildLanguageChange && !restoresBuiltin) {
+    if (musicInputs.isEmpty &&
+        !canBuildLanguageChange &&
+        !restoresBuiltin &&
+        !canBuildWithoutCurrentPackage) {
       _append('播放列表草稿为空。请先在“播放列表”里分配至少一首自建歌曲。');
       return false;
     }
@@ -3852,6 +4036,8 @@ class StudioController extends StateNotifier<StudioState> {
       if (canBuildLanguageChange && musicInputs.isEmpty && !restoresBuiltin) {
         _append('播放列表草稿为空；将把当前 radio 原样准备进包，并加入语言设置。');
       }
+      final usePlanStdin =
+          draft.hasPlan && (musicInputs.isNotEmpty || restoresBuiltin);
       final result = await _run([
         'build-package',
         ...musicInputs,
@@ -3873,10 +4059,9 @@ class StudioController extends StateNotifier<StudioState> {
         ],
         '--playlist-mode',
         'only',
-        if (draft.playlistPlanPath != null &&
-            (musicInputs.isNotEmpty || restoresBuiltin)) ...[
+        if (usePlanStdin) ...[
           '--playlist-plan',
-          draft.playlistPlanPath!,
+          '-',
         ] else if (playlistFromPackage != null) ...[
           '--playlist-from-package',
           playlistFromPackage,
@@ -3884,10 +4069,12 @@ class StudioController extends StateNotifier<StudioState> {
         if (timingManifest != null) ...['--timing-manifest', timingManifest],
         '--metadata-cache',
         TrackMetadataCache.configPath(state.projectDir),
+        '--loudness-offset-lu',
+        formatPackageLoudnessOffsetLu(normalizedLoudnessOffsetLu),
         '--out-dir',
         outDir,
         '--progress-jsonl',
-      ]);
+      ], stdinInput: usePlanStdin ? planForBuild.encodeForCli() : null);
       if (result.ok) {
         final packageDir = File(outDir).absolute.path;
         state = state.copyWith(
@@ -3955,6 +4142,11 @@ class StudioController extends StateNotifier<StudioState> {
         projectDir: state.projectDir,
         musicInputs: musicInputs,
       );
+      final packageSummary =
+          state.lastPackageSummary ?? _readPackageSummary(state.lastPackageDir);
+      final loudnessOffsetLu = normalizePackageLoudnessOffsetLu(
+        packageSummary?.loudnessOffsetLu ?? kDefaultPackageLoudnessOffsetLu,
+      );
       final result = await _run([
         'build-package',
         '--game-dir',
@@ -3978,6 +4170,8 @@ class StudioController extends StateNotifier<StudioState> {
         if (timingManifest != null) ...['--timing-manifest', timingManifest],
         '--metadata-cache',
         TrackMetadataCache.configPath(state.projectDir),
+        '--loudness-offset-lu',
+        formatPackageLoudnessOffsetLu(loudnessOffsetLu),
         '--out-dir',
         outDir,
         '--progress-jsonl',
@@ -4026,6 +4220,38 @@ class StudioController extends StateNotifier<StudioState> {
     return inputs;
   }
 
+  // 从 reconstruct-plan 的 stdout（--out -）里提取 marker 行并解析成内存 plan。
+  PlaylistPlan _planFromReconstructStdout(String stdout) {
+    for (final line in const LineSplitter().convert(stdout)) {
+      final trimmed = line.trimLeft();
+      if (trimmed.startsWith(_cliPlanPrefix)) {
+        return PlaylistPlanCodec.decodeJson(
+          trimmed.substring(_cliPlanPrefix.length),
+        );
+      }
+    }
+    return const PlaylistPlan.empty();
+  }
+
+  // 把一份已构建准备包的 manifest assignments 还原成 PlaylistPlan。assignment.source
+  // 指向项目 sources/siren 里的原始文件，所以重建出的 plan 不依赖准备包目录本身。
+  PlaylistPlan _planFromPackageSummary(PackageArtifactSummary summary) {
+    var plan = const PlaylistPlan.empty();
+    for (final item in summary.assignments) {
+      if (item.source.trim().isEmpty || item.slot <= 0) continue;
+      if (!isUiSupportedRadio(code: item.radioLabel)) continue;
+      for (final playlistType in item.normalizedPlaylistTypes) {
+        plan = plan.assign(
+          source: item.source,
+          radioCode: item.radioLabel,
+          playlistType: playlistType,
+          slot: item.slot,
+        );
+      }
+    }
+    return plan;
+  }
+
   Future<bool> createPendingBaselineOnly() async {
     if (state.busy) return false;
     if (_rejectProjectEditWhenBaselineBroken('保存新文件记录')) return false;
@@ -4046,21 +4272,11 @@ class StudioController extends StateNotifier<StudioState> {
     return created;
   }
 
-  ({
-    List<String> inputs,
-    String? playlistPlanPath,
-    bool hasPlan,
-    bool restoresBuiltin,
-  })
-  _playlistDraftForBuild() {
-    final plan = PlaylistPlanStore.read(state.projectDir);
+  ({List<String> inputs, bool hasPlan, bool restoresBuiltin})
+  _playlistDraftForBuild([PlaylistPlan? planOverride]) {
+    final plan = planOverride ?? PlaylistPlanStore.read(state.projectDir);
     if (!plan.hasDraft) {
-      return (
-        inputs: const [],
-        playlistPlanPath: null,
-        hasPlan: false,
-        restoresBuiltin: false,
-      );
+      return (inputs: const [], hasPlan: false, restoresBuiltin: false);
     }
     final ordered = plan.assignments.values.toList()
       ..sort((a, b) {
@@ -4080,7 +4296,6 @@ class StudioController extends StateNotifier<StudioState> {
     }
     return (
       inputs: inputs,
-      playlistPlanPath: PlaylistPlanStore.configPath(state.projectDir),
       hasPlan: true,
       restoresBuiltin: plan.builtinTargets.isNotEmpty,
     );
@@ -4194,8 +4409,9 @@ class StudioController extends StateNotifier<StudioState> {
     });
   }
 
-  Future<void> rebuildBaselineFromCurrentGame() async {
-    if (state.busy) return;
+  Future<bool> rebuildBaselineFromCurrentGame() async {
+    if (state.busy) return false;
+    var rebuilt = false;
     await _withBusy('用当前游戏文件重建原始备份', () async {
       final running = await _cli.isGameRunning();
       state = state.copyWith(gameRunning: running);
@@ -4203,7 +4419,6 @@ class StudioController extends StateNotifier<StudioState> {
         _append('检测到 FH6 正在运行，已拒绝重建原始备份。请先退出游戏。');
         return;
       }
-      _deleteCurrentBuildArtifacts();
       final outDir = _plannedBaselineDir(
         projectDir: state.projectDir,
         state: 'current',
@@ -4222,17 +4437,18 @@ class StudioController extends StateNotifier<StudioState> {
         '--yes',
       ]);
       if (result.ok) {
-        final packageDir = _latestPackageDir(state.projectDir);
-        final pendingPackageDir = _latestPendingPackageDir(state.projectDir);
         state = state.copyWith(
-          lastPackageDir: packageDir,
-          lastPackageSummary: _readPackageSummary(packageDir),
-          pendingPackageDir: pendingPackageDir,
-          pendingPackageSummary: _readPackageSummary(pendingPackageDir),
+          lastPackageDir: null,
+          lastPackageSummary: null,
+          pendingPackageDir: null,
+          pendingPackageSummary: null,
         );
+        _append('已用当前游戏文件覆写原始备份；准备包记录已清理。');
         await _refreshIntegrityFromCli();
+        rebuilt = true;
       }
     });
+    return rebuilt;
   }
 
   Future<void> createPendingBaselineAndForceDeploy() async {
@@ -4357,21 +4573,6 @@ class StudioController extends StateNotifier<StudioState> {
     return id == null || id.trim().isEmpty || id == 'unknown' ? null : id;
   }
 
-  bool _manifestBelongsToCurrentBuild(File manifestFile) {
-    final currentId = _currentIntegrityBuildId;
-    if (currentId == null || !manifestFile.existsSync()) return false;
-    final data = _readJsonMap(manifestFile);
-    if (data == null) return false;
-    if (_objectString(data['game_version_id']) == currentId) return true;
-    final supported = _objectStringList(data['supported_game_version_ids']);
-    if (supported.contains(currentId)) return true;
-    final gameVersion = _objectMap(data['game_version']);
-    final nested = _objectString(gameVersion?['version_id']);
-    if (nested == currentId) return true;
-    final buildId = _objectString(gameVersion?['build_id']);
-    return buildId != null && currentId == 'steam-b$buildId';
-  }
-
   bool _manifestHasAnyBuildId(File manifestFile, Set<String> buildIds) {
     if (buildIds.isEmpty || !manifestFile.existsSync()) return false;
     final data = _readJsonMap(manifestFile);
@@ -4451,41 +4652,6 @@ class StudioController extends StateNotifier<StudioState> {
     _append('已更新 $updated 个项目 artifact 的 Steam build 兼容记录。');
   }
 
-  void _deleteCurrentBuildArtifacts() {
-    final backups = Directory(
-      FhRadioStudioProject.backupsDir(state.projectDir),
-    );
-    if (backups.existsSync()) {
-      for (final dir
-          in backups.listSync(followLinks: false).whereType<Directory>()) {
-        final name = p.basename(dir.path);
-        if (name == 'manual' || name == 'automatic' || name == 'baseline-old') {
-          continue;
-        }
-        final manifest = File(p.join(dir.path, 'baseline_manifest.json'));
-        if (_manifestBelongsToCurrentBuild(manifest)) {
-          dir.deleteSync(recursive: true);
-        }
-      }
-    }
-
-    for (final packageDir in [
-      FhRadioStudioProject.currentPackageDir(state.projectDir),
-      FhRadioStudioProject.pendingPackageDir(state.projectDir),
-    ]) {
-      if (_manifestBelongsToCurrentBuild(
-        File(packageManifestPath(packageDir)),
-      )) {
-        _deletePackageDir(packageDir);
-      }
-    }
-
-    final lastApplied = File(state.lastAppliedPackageManifest);
-    if (_manifestBelongsToCurrentBuild(lastApplied)) {
-      lastApplied.deleteSync();
-    }
-  }
-
   void _promotePendingPackageToCurrent() {
     final pendingDir = FhRadioStudioProject.pendingPackageDir(state.projectDir);
     if (_packageManifestPath(pendingDir) == null) {
@@ -4502,6 +4668,10 @@ class StudioController extends StateNotifier<StudioState> {
       _append('已存在新文件记录，继续使用它。');
       return true;
     }
+    return _createPendingBaseline(overwrite: false);
+  }
+
+  Future<bool> _createPendingBaseline({required bool overwrite}) async {
     await _refreshBaselinePlan();
     final outDir = _plannedBaselineDir(
       projectDir: state.projectDir,
@@ -4517,6 +4687,7 @@ class StudioController extends StateNotifier<StudioState> {
       outDir,
       '--state',
       'pending-verify',
+      if (overwrite) '--overwrite',
       '--yes',
     ]);
     if (baseline.ok) await _refreshIntegrityFromCli();
@@ -4903,6 +5074,7 @@ class StudioController extends StateNotifier<StudioState> {
     bool repairNetwork = false,
     CliCancellationToken? cancellationToken,
     bool autoDowngrade = true,
+    String? stdinInput,
   }) async {
     if (autoDowngrade) {
       final profile = UvRuntime.profileFromCliArgs(args);
@@ -4916,6 +5088,7 @@ class StudioController extends StateNotifier<StudioState> {
           extraEnvironment: extraEnvironment,
           repairNetwork: repairNetwork,
           cancellationToken: cancellationToken,
+          stdinInput: stdinInput,
         );
       }
     }
@@ -4940,6 +5113,7 @@ class StudioController extends StateNotifier<StudioState> {
             cancellationToken: cancellationToken,
             onStdout: stdout,
             onStderr: stderr,
+            stdinInput: stdinInput,
           )
         : await cli.run(
             args,
@@ -4947,6 +5121,7 @@ class StudioController extends StateNotifier<StudioState> {
             cancellationToken: cancellationToken,
             onStdout: stdout,
             onStderr: stderr,
+            stdinInput: stdinInput,
           );
     if (!streamOutput && !result.ok) {
       _appendCompact(result.stdout);
@@ -4969,6 +5144,7 @@ class StudioController extends StateNotifier<StudioState> {
     Map<String, String>? extraEnvironment,
     bool repairNetwork = false,
     CliCancellationToken? cancellationToken,
+    String? stdinInput,
   }) async {
     final cli = _cli;
     final action = '执行：${_describeAction(args)}';
@@ -4991,6 +5167,7 @@ class StudioController extends StateNotifier<StudioState> {
             cancellationToken: cancellationToken,
             onStdout: stdout,
             onStderr: stderr,
+            stdinInput: stdinInput,
           )
         : await cli.runBase(
             args,
@@ -4998,6 +5175,7 @@ class StudioController extends StateNotifier<StudioState> {
             cancellationToken: cancellationToken,
             onStdout: stdout,
             onStderr: stderr,
+            stdinInput: stdinInput,
           );
     if (!streamOutput && !result.ok) {
       _appendCompact(result.stdout);

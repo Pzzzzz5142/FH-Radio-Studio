@@ -13,6 +13,7 @@ import '../../theme/app_theme.dart';
 import '../../theme/text_styles.dart';
 import '../../theme/tokens.dart';
 import '../../widgets/package_build_notice_dialog.dart';
+import '../../widgets/package_loudness_dialog.dart';
 import '../../widgets/rm_banner.dart';
 import '../../widgets/rm_button.dart';
 import '../../widgets/rm_chip.dart';
@@ -449,7 +450,24 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
 
   Future<void> _preparePackageFromUi(BuildContext context) async {
     final cli = ref.read(studioProvider.notifier);
-    final built = await cli.buildPackage();
+    final preview = cli.buildPackageLoudnessPreview();
+    final loudnessOffsetLu = await showPackageLoudnessDialog(
+      context,
+      referenceMedianLufs: preview.referenceMedianLufs,
+      initialOffsetLu: preview.initialOffsetLu,
+      previewInputLufs: preview.previewInputLufs,
+      previewSource: preview.source,
+      previewTitle: preview.previewTitle,
+      previewArtist: preview.previewArtist,
+      currentPackageOffsetLu: preview.currentPackageOffsetLu,
+    );
+    if (loudnessOffsetLu == null) return;
+    if (!mounted) return;
+    if (!context.mounted) return;
+    final built = await cli.buildPackage(
+      loudnessOffsetLu: loudnessOffsetLu,
+      plan: ref.read(effectivePlaylistPlanProvider),
+    );
     if (!mounted) return;
     if (!context.mounted) return;
     final latest = ref.read(studioProvider);
@@ -478,7 +496,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     BuildContext context,
     StudioState latest,
   ) async {
-    final missing = PlaylistPlanStore.read(latest.projectDir).missingSources();
+    final missing = ref.read(effectivePlaylistPlanProvider).missingSources();
     if (missing.isEmpty) return false;
     final action = await showMissingPlaylistSourcesDialog(
       context,

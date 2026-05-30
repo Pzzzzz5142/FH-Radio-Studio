@@ -12,9 +12,24 @@ LOUDNESS_ALGORITHM_VERSION = "fh-radio-studio-loudness-v2"
 HEURISTIC_SAFE_MIN_LUFS = -28.0
 HEURISTIC_SAFE_MAX_LUFS = -16.0
 HEURISTIC_REFERENCE_MEDIAN_LUFS = -24.0
+DEFAULT_CUSTOM_LOUDNESS_OFFSET_LU = 3.0
+MIN_CUSTOM_LOUDNESS_OFFSET_LU = 0.0
+MAX_CUSTOM_LOUDNESS_OFFSET_LU = 6.0
 DEFAULT_TRUE_PEAK_CEILING_DBTP = -1.5
 DEFAULT_MAX_POSITIVE_GAIN_DB = 8.0
 MIN_ACTIVE_DURATION_SEC = 1.0
+
+
+def normalize_custom_loudness_offset_lu(value: object) -> float:
+    offset = _finite_float(value, None)
+    if offset is None:
+        die("Loudness offset must be a finite LU value.")
+    if offset < MIN_CUSTOM_LOUDNESS_OFFSET_LU or offset > MAX_CUSTOM_LOUDNESS_OFFSET_LU:
+        die(
+            "Loudness offset must be between "
+            f"+{MIN_CUSTOM_LOUDNESS_OFFSET_LU:g} and +{MAX_CUSTOM_LOUDNESS_OFFSET_LU:g} LU."
+        )
+    return float(offset)
 
 
 def ensure_baseline_loudness_envelope(
@@ -133,6 +148,7 @@ def build_custom_set_loudness_profile(
     envelope: Dict[str, object],
     *,
     radio: Optional[int] = None,
+    target_offset_lu: object = 0.0,
 ) -> Dict[str, object]:
     valid = [
         float(item["integrated_lufs"])
@@ -155,16 +171,21 @@ def build_custom_set_loudness_profile(
     if safe_max < safe_min:
         safe_min, safe_max = HEURISTIC_SAFE_MIN_LUFS, HEURISTIC_SAFE_MAX_LUFS
     reference_median = _finite_float(envelope.get("reference_median_lufs"), None)
+    offset_lu = normalize_custom_loudness_offset_lu(target_offset_lu)
     warnings: List[str] = []
     if reference_median is None:
-        reference_target = raw_target
+        base_target = raw_target
         reason_prefix = "custom_set_center"
         target_basis = "custom-set-center"
         warnings.append("reference_median_lufs_missing")
     else:
-        reference_target = reference_median
+        base_target = reference_median
         reason_prefix = "baseline_reference_median"
         target_basis = "baseline-reference-median"
+    reference_target = base_target + offset_lu
+    if abs(offset_lu) > 0.001:
+        reason_prefix = f"{reason_prefix}_plus_offset"
+        target_basis = f"{target_basis}-plus-offset"
 
     target = min(max(reference_target, safe_min), safe_max)
     if target == reference_target:
@@ -186,6 +207,9 @@ def build_custom_set_loudness_profile(
         "reference_median_lufs": (
             round(reference_median, 3) if reference_median is not None else None
         ),
+        "base_target_lufs": round(base_target, 3),
+        "target_offset_lu": round(offset_lu, 3),
+        "unclamped_target_lufs": round(reference_target, 3),
         "target_lufs": round(target, 3),
         "target_basis": target_basis,
         "target_reason": reason,
