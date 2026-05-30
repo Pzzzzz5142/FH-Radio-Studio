@@ -33,8 +33,12 @@
 - The UI calls the CLI and consumes its result; it must not maintain a second
   metadata mechanism (XML parsing, filename guessing, `title|artist` matching) in
   Dart. Example: reconstructing a playlist from the live game vs. baseline diff is
-  the `reconstruct-plan` subcommand, whose output the UI reads through
-  `PlaylistPlanStore`. See `docs/design-decisions.md`.
+  the `reconstruct-plan` subcommand; its plan is streamed back over stdout
+  (`--out -`, a marker-prefixed schema_version 2 JSON line) into memory and handed
+  to `build-package` over stdin (`--playlist-plan -`), so the draft lives in the
+  Dart `playlistPlanProvider` and is never persisted to a shared file. The CLI's
+  file-path modes (`--out <path>` / `--playlist-plan <path>`) remain for
+  compatibility. See `docs/design-decisions.md`.
 - Dart helpers like `isUiSupportedRadio` / `_radioAssignmentLabel` are for
   presentation only; keep their authoritative counterparts
   (`is_ui_supported_radio`, `radio_code_for_station`) in the CLI.
