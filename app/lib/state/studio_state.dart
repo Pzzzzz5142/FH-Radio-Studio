@@ -45,6 +45,7 @@ const _pendingBaselineSelectionFileName =
     'fh_radio_studio_pending_baseline_selected.json';
 
 const _cliProgressPrefix = 'FH_RADIO_STUDIO_PROGRESS ';
+const _cliPlanPrefix = 'FH_RADIO_STUDIO_PLAN ';
 
 const kAiPipelineProfiles = ['local-base', 'local-deep', 'local-heavy'];
 
@@ -2972,11 +2973,8 @@ class StudioController extends StateNotifier<StudioState> {
       if (isSirenSource) {
         SirenImportRegistry.removeByPath(state.projectDir, source);
       }
-      final planFile = File(PlaylistPlanStore.configPath(state.projectDir));
-      final plan = PlaylistPlanStore.read(state.projectDir);
-      if (plan.hasDraft || planFile.existsSync()) {
-        PlaylistPlanStore.write(state.projectDir, plan.unassign(source));
-      }
+      // 播放列表草稿是内存权威（playlistPlanProvider），删歌时由 UI 同步调用
+      // removeDeletedSource 维护，这里不再写盘。
 
       final next = <String>[];
       final seen = <String>{};
@@ -3016,14 +3014,8 @@ class StudioController extends StateNotifier<StudioState> {
         cleaned += 1;
       }
 
-      final planFile = File(PlaylistPlanStore.configPath(state.projectDir));
-      final plan = PlaylistPlanStore.read(state.projectDir);
-      if (plan.hasDraft || planFile.existsSync()) {
-        PlaylistPlanStore.write(
-          state.projectDir,
-          plan.unassignSources(sources),
-        );
-      }
+      // 播放列表草稿是内存权威；失效歌曲的清理由 UI 同步调用
+      // removeDeletedSources 维护，这里不再写盘。
 
       final sourceKeys = {
         for (final source in sources) TrackTimingConfig.keyForPath(source),
@@ -3906,6 +3898,7 @@ class StudioController extends StateNotifier<StudioState> {
 
   Future<bool> buildPackage({
     double loudnessOffsetLu = kDefaultPackageLoudnessOffsetLu,
+    PlaylistPlan? plan,
   }) async {
     if (state.busy) return false;
     final normalizedLoudnessOffsetLu = normalizePackageLoudnessOffsetLu(
@@ -3921,10 +3914,11 @@ class StudioController extends StateNotifier<StudioState> {
       _append('还没有可信原始备份，不能生成准备包。请先在概览里创建原始备份。');
       return false;
     }
-    var planForBuild = PlaylistPlanStore.read(state.projectDir);
+    var planForBuild = plan ?? const PlaylistPlan.empty();
     if (!state.currentPackageReady && !planForBuild.hasDraft) {
       // CLI 才是 track metadata 的 true source：差分游戏与原始备份、把自建曲逆向
-      // 匹配回项目源文件、重建播放列表草稿，都交给 reconstruct-plan 完成，UI 只读结果。
+      // 匹配回项目源文件、重建播放列表草稿，都交给 reconstruct-plan 完成。结果直接
+      // 从 stdout 读回内存（--out -），不落任何文件。
       final reconstruct = await _run([
         'reconstruct-plan',
         '--game-dir',
@@ -3942,10 +3936,10 @@ class StudioController extends StateNotifier<StudioState> {
         '--target',
         state.targetLang,
         '--out',
-        PlaylistPlanStore.configPath(state.projectDir),
+        '-',
       ], streamOutput: false);
       if (reconstruct.ok) {
-        planForBuild = PlaylistPlanStore.read(state.projectDir);
+        planForBuild = _planFromReconstructStdout(reconstruct.stdout);
         if (planForBuild.hasDraft) {
           _append(
             '已根据当前游戏文件与原始备份差分初始化播放列表草稿：${planForBuild.assignments.length} 首自建曲目。',
@@ -3972,8 +3966,7 @@ class StudioController extends StateNotifier<StudioState> {
         currentPackageSummary.assignments.isNotEmpty) {
       final seeded = _planFromPackageSummary(currentPackageSummary);
       if (seeded.hasDraft) {
-        PlaylistPlanStore.write(state.projectDir, seeded);
-        planForBuild = PlaylistPlanStore.read(state.projectDir);
+        planForBuild = seeded;
       }
     }
     final draft = _playlistDraftForBuild(planForBuild);
@@ -4043,6 +4036,8 @@ class StudioController extends StateNotifier<StudioState> {
       if (canBuildLanguageChange && musicInputs.isEmpty && !restoresBuiltin) {
         _append('播放列表草稿为空；将把当前 radio 原样准备进包，并加入语言设置。');
       }
+      final usePlanStdin =
+          draft.hasPlan && (musicInputs.isNotEmpty || restoresBuiltin);
       final result = await _run([
         'build-package',
         ...musicInputs,
@@ -4064,10 +4059,9 @@ class StudioController extends StateNotifier<StudioState> {
         ],
         '--playlist-mode',
         'only',
-        if (draft.playlistPlanPath != null &&
-            (musicInputs.isNotEmpty || restoresBuiltin)) ...[
+        if (usePlanStdin) ...[
           '--playlist-plan',
-          draft.playlistPlanPath!,
+          '-',
         ] else if (playlistFromPackage != null) ...[
           '--playlist-from-package',
           playlistFromPackage,
@@ -4080,7 +4074,7 @@ class StudioController extends StateNotifier<StudioState> {
         '--out-dir',
         outDir,
         '--progress-jsonl',
-      ]);
+      ], stdinInput: usePlanStdin ? planForBuild.encodeForCli() : null);
       if (result.ok) {
         final packageDir = File(outDir).absolute.path;
         state = state.copyWith(
@@ -4226,6 +4220,19 @@ class StudioController extends StateNotifier<StudioState> {
     return inputs;
   }
 
+  // 从 reconstruct-plan 的 stdout（--out -）里提取 marker 行并解析成内存 plan。
+  PlaylistPlan _planFromReconstructStdout(String stdout) {
+    for (final line in const LineSplitter().convert(stdout)) {
+      final trimmed = line.trimLeft();
+      if (trimmed.startsWith(_cliPlanPrefix)) {
+        return PlaylistPlanCodec.decodeJson(
+          trimmed.substring(_cliPlanPrefix.length),
+        );
+      }
+    }
+    return const PlaylistPlan.empty();
+  }
+
   // 把一份已构建准备包的 manifest assignments 还原成 PlaylistPlan。assignment.source
   // 指向项目 sources/siren 里的原始文件，所以重建出的 plan 不依赖准备包目录本身。
   PlaylistPlan _planFromPackageSummary(PackageArtifactSummary summary) {
@@ -4265,21 +4272,11 @@ class StudioController extends StateNotifier<StudioState> {
     return created;
   }
 
-  ({
-    List<String> inputs,
-    String? playlistPlanPath,
-    bool hasPlan,
-    bool restoresBuiltin,
-  })
+  ({List<String> inputs, bool hasPlan, bool restoresBuiltin})
   _playlistDraftForBuild([PlaylistPlan? planOverride]) {
     final plan = planOverride ?? PlaylistPlanStore.read(state.projectDir);
     if (!plan.hasDraft) {
-      return (
-        inputs: const [],
-        playlistPlanPath: null,
-        hasPlan: false,
-        restoresBuiltin: false,
-      );
+      return (inputs: const [], hasPlan: false, restoresBuiltin: false);
     }
     final ordered = plan.assignments.values.toList()
       ..sort((a, b) {
@@ -4299,7 +4296,6 @@ class StudioController extends StateNotifier<StudioState> {
     }
     return (
       inputs: inputs,
-      playlistPlanPath: PlaylistPlanStore.configPath(state.projectDir),
       hasPlan: true,
       restoresBuiltin: plan.builtinTargets.isNotEmpty,
     );
@@ -5078,6 +5074,7 @@ class StudioController extends StateNotifier<StudioState> {
     bool repairNetwork = false,
     CliCancellationToken? cancellationToken,
     bool autoDowngrade = true,
+    String? stdinInput,
   }) async {
     if (autoDowngrade) {
       final profile = UvRuntime.profileFromCliArgs(args);
@@ -5091,6 +5088,7 @@ class StudioController extends StateNotifier<StudioState> {
           extraEnvironment: extraEnvironment,
           repairNetwork: repairNetwork,
           cancellationToken: cancellationToken,
+          stdinInput: stdinInput,
         );
       }
     }
@@ -5115,6 +5113,7 @@ class StudioController extends StateNotifier<StudioState> {
             cancellationToken: cancellationToken,
             onStdout: stdout,
             onStderr: stderr,
+            stdinInput: stdinInput,
           )
         : await cli.run(
             args,
@@ -5122,6 +5121,7 @@ class StudioController extends StateNotifier<StudioState> {
             cancellationToken: cancellationToken,
             onStdout: stdout,
             onStderr: stderr,
+            stdinInput: stdinInput,
           );
     if (!streamOutput && !result.ok) {
       _appendCompact(result.stdout);
@@ -5144,6 +5144,7 @@ class StudioController extends StateNotifier<StudioState> {
     Map<String, String>? extraEnvironment,
     bool repairNetwork = false,
     CliCancellationToken? cancellationToken,
+    String? stdinInput,
   }) async {
     final cli = _cli;
     final action = '执行：${_describeAction(args)}';
@@ -5166,6 +5167,7 @@ class StudioController extends StateNotifier<StudioState> {
             cancellationToken: cancellationToken,
             onStdout: stdout,
             onStderr: stderr,
+            stdinInput: stdinInput,
           )
         : await cli.runBase(
             args,
@@ -5173,6 +5175,7 @@ class StudioController extends StateNotifier<StudioState> {
             cancellationToken: cancellationToken,
             onStdout: stdout,
             onStderr: stderr,
+            stdinInput: stdinInput,
           );
     if (!streamOutput && !result.ok) {
       _appendCompact(result.stdout);

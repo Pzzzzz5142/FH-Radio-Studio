@@ -900,13 +900,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
             controller.state.currentBaselineManifest,
           ]),
         );
-        expect(
-          reconstructArgs,
-          containsAllInOrder([
-            '--out',
-            PlaylistPlanStore.configPath(projectDir),
-          ]),
-        );
+        expect(reconstructArgs, containsAllInOrder(['--out', '-']));
         expect(
           reconstructArgs,
           containsAllInOrder([
@@ -915,7 +909,10 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
           ]),
         );
 
-        final plan = PlaylistPlanStore.read(projectDir);
+        // The reconstructed plan rides into build-package over stdin, never a file.
+        final buildStdin = cli.stdinForCommand('build-package');
+        expect(buildStdin, isNotNull);
+        final plan = PlaylistPlanCodec.decodeJson(buildStdin!);
         expect(plan.assignments, hasLength(2));
         expect(plan.assignments.values.map((item) => item.source).toSet(), {
           source.path,
@@ -923,13 +920,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         final buildArgs = cli.commands.singleWhere(
           (args) => args.isNotEmpty && args.first == 'build-package',
         );
-        expect(
-          buildArgs,
-          containsAllInOrder([
-            '--playlist-plan',
-            PlaylistPlanStore.configPath(projectDir),
-          ]),
-        );
+        expect(buildArgs, containsAllInOrder(['--playlist-plan', '-']));
         expect(buildArgs, contains(source.path));
         expect(
           controller.state.log.join('\n'),
@@ -977,7 +968,9 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         final prefs = await SharedPreferences.getInstance();
         final controller = StudioController(prefs);
 
-        final built = await controller.buildPackage();
+        final built = await controller.buildPackage(
+          plan: PlaylistPlanStore.read(projectDir),
+        );
 
         expect(built, isFalse);
         expect(
@@ -1032,7 +1025,10 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         );
 
         final preview = controller.buildPackageLoudnessPreview();
-        final built = await controller.buildPackage(loudnessOffsetLu: 3.0);
+        final built = await controller.buildPackage(
+          loudnessOffsetLu: 3.0,
+          plan: PlaylistPlanStore.read(projectDir),
+        );
 
         expect(preview.initialOffsetLu, 0.0);
         expect(preview.currentPackageOffsetLu, 0.0);
@@ -1085,7 +1081,10 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         controller.state.copyWith(repoRoot: runtime.projectRoot),
       );
 
-      final built = await controller.buildPackage(loudnessOffsetLu: 3.0);
+      final built = await controller.buildPackage(
+        loudnessOffsetLu: 3.0,
+        plan: PlaylistPlanStore.read(projectDir),
+      );
 
       expect(built, isTrue);
       final buildArgs = cli.commands.singleWhere(
@@ -1141,16 +1140,12 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
           (args) => args.isNotEmpty && args.first == 'build-package',
         );
         expect(buildArgs, isNot(contains('--playlist-from-package')));
-        expect(
-          buildArgs,
-          containsAllInOrder([
-            '--playlist-plan',
-            PlaylistPlanStore.configPath(projectDir),
-          ]),
-        );
+        expect(buildArgs, containsAllInOrder(['--playlist-plan', '-']));
         expect(buildArgs, contains(source.path));
         expect(buildArgs, containsAllInOrder(['--loudness-offset-lu', '3']));
-        final plan = PlaylistPlanStore.read(projectDir);
+        final plan = PlaylistPlanCodec.decodeJson(
+          cli.stdinForCommand('build-package')!,
+        );
         expect(plan.assignments.values.map((item) => item.source).toSet(), {
           source.path,
         });
@@ -1235,7 +1230,10 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
       );
 
       final preview = controller.buildPackageLoudnessPreview();
-      final built = await controller.buildPackage(loudnessOffsetLu: 6.0);
+      final built = await controller.buildPackage(
+        loudnessOffsetLu: 6.0,
+        plan: PlaylistPlanStore.read(projectDir),
+      );
 
       final buildArgs = cli.commands.singleWhere(
         (args) => args.isNotEmpty && args.first == 'build-package',
@@ -1278,12 +1276,11 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         final prefs = await SharedPreferences.getInstance();
         final controller = StudioController(prefs);
 
-        final built = await controller.buildPackage();
+        final draftPlan = PlaylistPlanStore.read(projectDir);
+        final built = await controller.buildPackage(plan: draftPlan);
 
         expect(built, isFalse);
-        expect(PlaylistPlanStore.read(projectDir).missingSources(), [
-          source.absolute.path,
-        ]);
+        expect(draftPlan.missingSources(), [source.absolute.path]);
         expect(controller.state.log.join('\n'), contains('播放列表草稿引用的项目源文件已不存在'));
 
         final cleaned = await controller.cleanupMissingPlaylistSources([
@@ -1291,7 +1288,10 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         ]);
 
         expect(cleaned, 1);
-        expect(PlaylistPlanStore.read(projectDir).assignments, isEmpty);
+        // Plan removal is the provider's job now; the controller cleanup only
+        // drops timing/metadata and logs. The plan itself no longer round-trips
+        // through a file, so we assert the in-memory removal instead.
+        expect(draftPlan.unassignSources([source.path]).assignments, isEmpty);
         expect(
           controller.state.log.join('\n'),
           contains('已删除失效歌曲引用：deleted-song.wav。'),
@@ -1629,18 +1629,32 @@ class _RecordingCliStudioController extends StudioController {
   }
 }
 
+const _planMarkerPrefix = 'FH_RADIO_STUDIO_PLAN ';
+
 class _RecordingCli extends FhRadioStudioCli {
   _RecordingCli(UvRuntime runtime, {this.reconstructPlanJson})
     : commands = [],
+      stdins = [],
       super(repoRoot: runtime.projectRoot, uvRuntime: runtime);
 
   final List<List<String>> commands;
+  final List<String?> stdins;
 
-  /// When set, simulates the `reconstruct-plan` CLI command by writing this
-  /// JSON to the command's `--out` path (the real CLI is the source of truth
-  /// for the diff; the UI only reads what it emits).
+  /// When set, simulates `reconstruct-plan --out -` by emitting this plan JSON
+  /// on stdout as a single marker-prefixed compact line (the UI reads the plan
+  /// from stdout instead of a file).
   final String? reconstructPlanJson;
   int syncCount = 0;
+
+  /// stdin payload the controller piped into the first invocation of [command].
+  String? stdinForCommand(String command) {
+    for (var i = 0; i < commands.length; i += 1) {
+      if (commands[i].isNotEmpty && commands[i].first == command) {
+        return stdins[i];
+      }
+    }
+    return null;
+  }
 
   @override
   Future<CliRunResult> syncEnvironment({
@@ -1668,8 +1682,9 @@ class _RecordingCli extends FhRadioStudioCli {
     CliLineHandler? onStdout,
     CliLineHandler? onStderr,
     CliCancellationToken? cancellationToken,
+    String? stdinInput,
   }) async {
-    return _resultFor(args);
+    return _resultFor(args, stdinInput);
   }
 
   @override
@@ -1679,25 +1694,23 @@ class _RecordingCli extends FhRadioStudioCli {
     CliLineHandler? onStdout,
     CliLineHandler? onStderr,
     CliCancellationToken? cancellationToken,
+    String? stdinInput,
   }) async {
-    return _resultFor(args);
+    return _resultFor(args, stdinInput);
   }
 
-  CliRunResult _resultFor(List<String> args) {
+  CliRunResult _resultFor(List<String> args, [String? stdinInput]) {
     commands.add([...args]);
+    stdins.add(stdinInput);
     final command = args.isEmpty ? null : args.first;
-    if (command == 'reconstruct-plan' && reconstructPlanJson != null) {
-      final outIndex = args.indexOf('--out');
-      if (outIndex >= 0 && outIndex + 1 < args.length) {
-        final out = File(args[outIndex + 1]);
-        out.parent.createSync(recursive: true);
-        out.writeAsStringSync(reconstructPlanJson!, encoding: utf8);
-      }
-    }
     final stdout = switch (command) {
       'status' => _statusJson(),
       'toolchain-status' => _toolchainStatusJson(args),
       'verify-integrity' => _integrityJson(),
+      'reconstruct-plan' =>
+        reconstructPlanJson == null
+            ? '{}'
+            : '$_planMarkerPrefix${jsonEncode(jsonDecode(reconstructPlanJson!))}',
       _ => '{}',
     };
     return CliRunResult(

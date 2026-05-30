@@ -9,7 +9,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:path/path.dart' as p;
 
-import '../core/playlist_plan.dart';
 import '../state/playlist_plan_state.dart';
 import '../state/studio_state.dart';
 import '../theme/app_theme.dart';
@@ -359,7 +358,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
     if (loudnessOffsetLu == null) return;
     if (!context.mounted) return;
-    final built = await c.buildPackage(loudnessOffsetLu: loudnessOffsetLu);
+    final built = await c.buildPackage(
+      loudnessOffsetLu: loudnessOffsetLu,
+      plan: ref.read(effectivePlaylistPlanProvider),
+    );
     if (!context.mounted) return;
     final latest = ref.read(studioProvider);
     if (built) {
@@ -393,7 +395,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     StudioController c,
     StudioState latest,
   ) async {
-    final missing = PlaylistPlanStore.read(latest.projectDir).missingSources();
+    final missing = ref.read(effectivePlaylistPlanProvider).missingSources();
     if (missing.isEmpty) return false;
     final action = await showMissingPlaylistSourcesDialog(
       context,
@@ -403,6 +405,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     if (action != MissingPlaylistSourcesAction.cleanup) return true;
     final cleaned = await c.cleanupMissingPlaylistSources(missing);
     if (!context.mounted) return true;
+    ref.read(playlistPlanProvider.notifier).removeDeletedSources(missing);
     _toast(context, cleaned > 0 ? '已删除 $cleaned 首失效歌曲。' : '没有发现需要删除的失效歌曲。');
     return true;
   }

@@ -464,7 +464,10 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     if (loudnessOffsetLu == null) return;
     if (!mounted) return;
     if (!context.mounted) return;
-    final built = await cli.buildPackage(loudnessOffsetLu: loudnessOffsetLu);
+    final built = await cli.buildPackage(
+      loudnessOffsetLu: loudnessOffsetLu,
+      plan: ref.read(effectivePlaylistPlanProvider),
+    );
     if (!mounted) return;
     if (!context.mounted) return;
     final latest = ref.read(studioProvider);
@@ -493,7 +496,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     BuildContext context,
     StudioState latest,
   ) async {
-    final missing = PlaylistPlanStore.read(latest.projectDir).missingSources();
+    final missing = ref.read(effectivePlaylistPlanProvider).missingSources();
     if (missing.isEmpty) return false;
     final action = await showMissingPlaylistSourcesDialog(
       context,

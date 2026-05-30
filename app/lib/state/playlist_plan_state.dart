@@ -27,10 +27,10 @@ class PlaylistPlanController extends StateNotifier<PlaylistPlan> {
 
   void reload() => _resetDraft();
 
+  // 草稿是纯内存权威（不再每次写盘）；build 时由 buildPackage 经 stdin 喂给 CLI。
   void replaceWith(PlaylistPlan plan) {
     if (_editingLocked) return;
     state = plan;
-    PlaylistPlanStore.write(_projectDir, state);
   }
 
   void assign({
@@ -46,7 +46,6 @@ class PlaylistPlanController extends StateNotifier<PlaylistPlan> {
       playlistType: playlistType,
       slot: slot,
     );
-    PlaylistPlanStore.write(_projectDir, state);
   }
 
   void unassign(String source, {String? radioCode, String? playlistType}) {
@@ -56,25 +55,16 @@ class PlaylistPlanController extends StateNotifier<PlaylistPlan> {
       radioCode: radioCode,
       playlistType: playlistType,
     );
-    PlaylistPlanStore.write(_projectDir, state);
   }
 
   void removeDeletedSource(String source) {
-    final stored = PlaylistPlanStore.read(_projectDir);
-    final base = state.hasDraft
-        ? state
-        : (stored.hasDraft ? stored : _stateSeededFromPackage());
+    final base = state.hasDraft ? state : _stateSeededFromPackage();
     state = base.unassign(source);
-    PlaylistPlanStore.write(_projectDir, state);
   }
 
   void removeDeletedSources(Iterable<String> sources) {
-    final stored = PlaylistPlanStore.read(_projectDir);
-    final base = state.hasDraft
-        ? state
-        : (stored.hasDraft ? stored : _stateSeededFromPackage());
+    final base = state.hasDraft ? state : _stateSeededFromPackage();
     state = base.unassignSources(sources);
-    PlaylistPlanStore.write(_projectDir, state);
   }
 
   void restoreBuiltin({
@@ -86,7 +76,6 @@ class PlaylistPlanController extends StateNotifier<PlaylistPlan> {
       radioCode: radioCode,
       playlistType: playlistType,
     );
-    PlaylistPlanStore.write(_projectDir, state);
   }
 
   PlaylistPlan _stateSeededFromPackage() {

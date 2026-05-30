@@ -331,6 +331,19 @@ class PlaylistPlan {
     );
   }
 
+  /// Serialize to the schema_version 2 document that `build-package
+  /// --playlist-plan -` reads from stdin. Same shape as [PlaylistPlanStore.write]
+  /// (minus the cosmetic `updated_at`), emitted compactly for a single pipe write.
+  String encodeForCli() {
+    final ordered = assignments.values.toList()..sort(_assignmentSort);
+    final targets = builtinTargets.toList()..sort();
+    return jsonEncode({
+      'schema_version': 2,
+      'assignments': [for (final assignment in ordered) assignment.toJson()],
+      'builtin_targets': [for (final target in targets) _targetJson(target)],
+    });
+  }
+
   static int _assignmentSort(PlaylistAssignment a, PlaylistAssignment b) {
     final byRadio = a.radioCode.compareTo(b.radioCode);
     if (byRadio != 0) return byRadio;
@@ -452,30 +465,9 @@ class PlaylistPlanStore {
 
   static PlaylistPlan _readFile(File file) {
     try {
-      final decoded = jsonDecode(file.readAsStringSync(encoding: utf8));
-      final items = decoded is Map ? decoded['assignments'] : null;
-      final rawBuiltinTargets = decoded is Map
-          ? decoded['builtin_targets']
-          : null;
-      if (items is! List) return const PlaylistPlan.empty();
-      final out = <String, PlaylistAssignment>{};
-      for (final item in items) {
-        if (item is! Map) continue;
-        final assignment = PlaylistAssignment.fromJson(
-          item.map((key, value) => MapEntry('$key', value)),
-        );
-        if (!assignment.isValid) continue;
-        if (!assignment.isAssigned) continue;
-        out[assignment.assignmentKey] = assignment;
-      }
-      final builtinTargets = <String>{};
-      if (rawBuiltinTargets is List) {
-        for (final item in rawBuiltinTargets) {
-          final key = PlaylistPlan._targetKeyFromJson(item);
-          if (key != null) builtinTargets.add(key);
-        }
-      }
-      return PlaylistPlan(assignments: out, builtinTargets: builtinTargets);
+      return PlaylistPlanCodec.fromDecoded(
+        jsonDecode(file.readAsStringSync(encoding: utf8)),
+      );
     } on FormatException {
       return const PlaylistPlan.empty();
     } on FileSystemException {
@@ -573,6 +565,48 @@ class PlaylistPlanStore {
 
   static String _assignmentSignature(PlaylistAssignment assignment) {
     return jsonEncode(assignment.toJson());
+  }
+}
+
+/// Decodes a schema_version 2 playlist plan document into a [PlaylistPlan].
+/// Used to read `reconstruct-plan --out -` output captured from CLI stdout,
+/// keeping the parsing identical to [PlaylistPlanStore] (no disk file involved).
+class PlaylistPlanCodec {
+  const PlaylistPlanCodec._();
+
+  static PlaylistPlan decodeJson(String source) {
+    if (source.trim().isEmpty) return const PlaylistPlan.empty();
+    try {
+      return fromDecoded(jsonDecode(source));
+    } on FormatException {
+      return const PlaylistPlan.empty();
+    }
+  }
+
+  static PlaylistPlan fromDecoded(Object? decoded) {
+    final items = decoded is Map ? decoded['assignments'] : null;
+    final rawBuiltinTargets = decoded is Map
+        ? decoded['builtin_targets']
+        : null;
+    if (items is! List) return const PlaylistPlan.empty();
+    final out = <String, PlaylistAssignment>{};
+    for (final item in items) {
+      if (item is! Map) continue;
+      final assignment = PlaylistAssignment.fromJson(
+        item.map((key, value) => MapEntry('$key', value)),
+      );
+      if (!assignment.isValid) continue;
+      if (!assignment.isAssigned) continue;
+      out[assignment.assignmentKey] = assignment;
+    }
+    final builtinTargets = <String>{};
+    if (rawBuiltinTargets is List) {
+      for (final item in rawBuiltinTargets) {
+        final key = PlaylistPlan._targetKeyFromJson(item);
+        if (key != null) builtinTargets.add(key);
+      }
+    }
+    return PlaylistPlan(assignments: out, builtinTargets: builtinTargets);
   }
 }
 
