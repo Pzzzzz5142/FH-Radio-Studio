@@ -25,7 +25,12 @@ def _resolve_existing_path(value: Optional[str]) -> Optional[Path]:
 def _package_manifest_path(package_dir: Optional[str]) -> Optional[Path]:
     if not package_dir:
         return None
-    root = package_root_dir(Path(package_dir).expanduser())
+    # The package directory (e.g. packages/current) is optional here: an empty
+    # or half-prepared directory just means "no prepared package", so resolve it
+    # leniently and treat an incomplete layout as no package rather than aborting.
+    root = package_root_dir(Path(package_dir).expanduser(), allow_missing=True)
+    if root is None:
+        return None
     candidate = root / "fh_radio_studio_package_manifest.json"
     if candidate.exists():
         return candidate

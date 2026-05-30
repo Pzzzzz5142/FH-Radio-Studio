@@ -267,13 +267,27 @@ def file_size(path: Path) -> Optional[int]:
     return path.stat().st_size
 
 
-def package_root_dir(package_dir: Path) -> Path:
+def package_root_dir(package_dir: Path, *, allow_missing: bool = False) -> Optional[Path]:
+    """Resolve the package root (the directory that holds ``media/``) from a
+    user-supplied path, accepting any of the three shapes a caller might pass:
+
+    1. the package root itself              -> ``<dir>/media`` exists
+    2. a build out-dir wrapping the package -> ``<dir>/package/media`` exists
+    3. the ``media/audio`` leaf directly    -> return its ``media`` grandparent
+
+    The first matching shape wins. When none match the directory has no prepared
+    package: with ``allow_missing=True`` that is reported as ``None`` (e.g. an
+    empty ``packages/current``); otherwise it is a hard error (the caller named a
+    package directory that is structurally broken).
+    """
     if (package_dir / "media").is_dir():
         return package_dir
     if (package_dir / "package" / "media").is_dir():
         return package_dir / "package"
     if package_dir.name.lower() == "audio" and package_dir.parent.name.lower() == "media":
         return package_dir.parent.parent
+    if allow_missing:
+        return None
     die(f"Could not find package media directory under {package_dir}")
 
 

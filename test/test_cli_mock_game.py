@@ -244,6 +244,47 @@ def test_verify_integrity_reports_current_baseline_without_package(mock_game, fu
     assert integrity["changed_files"] == 0
 
 
+def test_verify_integrity_tolerates_empty_current_package_dir(mock_game, full_project) -> None:
+    # Regression: an existing packages/current directory that has not had a
+    # package prepared into it (no media/ subtree) must be treated as "no
+    # prepared package", not abort the whole run.
+    baseline_dir = full_project.backups_dir / "baseline-current"
+    create = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--yes",
+    )
+    assert_cli_ok(create)
+
+    current_package = full_project.packages_dir / "current"
+    current_package.mkdir(parents=True)
+
+    result = run_cli(
+        "verify-integrity",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--baseline-manifest",
+        str(baseline_dir / "baseline_manifest.json"),
+        "--package-dir",
+        str(current_package),
+        "--json",
+    )
+
+    assert_cli_ok(result)
+    payload = json.loads(result.stdout)
+    integrity = payload["integrity"]
+    assert integrity["level"] == "no_package"
+    assert integrity["package_manifest_path"] is None
+    assert integrity["baseline_matches"] == 6
+    assert integrity["changed_files"] == 0
+
+
 def test_verify_integrity_reports_package_applied_from_cli(mock_game, full_project) -> None:
     baseline_dir = full_project.backups_dir / "baseline-current"
     create = run_cli(
