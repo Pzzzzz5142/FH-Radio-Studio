@@ -22,6 +22,9 @@ class TimeGroupCard extends StatelessWidget {
     required this.confirmed,
     required this.lowConfidence,
     required this.onSelect,
+    required this.manualCandidate,
+    required this.manualSelected,
+    required this.onManualRefine,
     required this.onConfirm,
     required this.onCancelConfirm,
     required this.onPreview,
@@ -35,6 +38,9 @@ class TimeGroupCard extends StatelessWidget {
   final bool confirmed;
   final bool lowConfidence;
   final ValueChanged<int> onSelect;
+  final dynamic manualCandidate; // PointCandidate or LoopCandidate
+  final bool manualSelected;
+  final VoidCallback onManualRefine;
   final ValueChanged<int> onConfirm; // idx
   final VoidCallback onCancelConfirm;
   final ValueChanged<int> onPreview;
@@ -75,6 +81,8 @@ class TimeGroupCard extends StatelessWidget {
                   if (i != 0) const SizedBox(height: 8),
                   _candRow(context, i),
                 ],
+                const SizedBox(height: 8),
+                _manualRow(context),
                 const SizedBox(height: 12),
                 _fine(context),
                 if (kind.isLoop) ...[
@@ -319,6 +327,114 @@ class TimeGroupCard extends StatelessWidget {
     );
   }
 
+  Widget _manualRow(BuildContext context) {
+    final rm = context.rm;
+    final hasManual = manualCandidate != null;
+    final lockedOut = confirmed && !manualSelected;
+    final highlight = manualSelected;
+    final bg = highlight ? rm.accent.bg : (lockedOut ? rm.panel : rm.raised);
+    final border = highlight
+        ? rm.accent.base
+        : (hasManual ? rm.borderStrong : rm.border);
+    final muted = lockedOut;
+
+    return MouseRegion(
+      cursor: confirmed ? SystemMouseCursors.basic : SystemMouseCursors.click,
+      child: GestureDetector(
+        key: ValueKey('editor-manual-refine-${kind.code.toLowerCase()}'),
+        onTap: confirmed ? null : onManualRefine,
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 74),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: bg,
+            border: Border.all(color: border),
+            borderRadius: BorderRadius.circular(RmTokens.rSm),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 22,
+                height: 22,
+                decoration: BoxDecoration(
+                  color: highlight ? rm.accent.base : rm.bg,
+                  border: Border.all(
+                    color: highlight ? rm.accent.base : rm.border,
+                  ),
+                  borderRadius: BorderRadius.circular(5),
+                ),
+                alignment: Alignment.center,
+                child: lockedOut
+                    ? RmIcon('lock', size: 10, color: rm.fg4)
+                    : Text(
+                        'M',
+                        style: RmText.mono(
+                          10.5,
+                          weight: FontWeight.w700,
+                          color: highlight ? rm.accent.onAccent : rm.fg2,
+                        ),
+                      ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: hasManual
+                    ? _timeBlock(context, manualCandidate, muted: muted)
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            '人工选点',
+                            style: RmText.sans(
+                              13,
+                              weight: FontWeight.w600,
+                              color: muted ? rm.fg3 : rm.fg,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            kind.isLoop
+                                ? '点击后居中波形，直接点选 A / B 循环端点。'
+                                : '点击后居中波形，直接点选播放起点。',
+                            style: RmText.sans(
+                              11.5,
+                              color: muted ? rm.fg4 : rm.fg3,
+                            ),
+                          ),
+                        ],
+                      ),
+              ),
+              const SizedBox(width: 12),
+              SizedBox(
+                width: 112,
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: confirmed
+                      ? RmChip(
+                          label: manualSelected ? '人工锁定' : '锁定',
+                          variant: manualSelected
+                              ? RmChipVariant.accent
+                              : RmChipVariant.muted,
+                          leading: const RmIcon('lock', size: 10),
+                        )
+                      : RmButton(
+                          onPressed: onManualRefine,
+                          size: RmButtonSize.sm,
+                          variant: hasManual
+                              ? RmButtonVariant.defaultBtn
+                              : RmButtonVariant.ghost,
+                          leading: const RmIcon('crosshair', size: 11),
+                          label: hasManual ? '继续精修' : '人工精修',
+                        ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _timeBlock(BuildContext context, dynamic c, {required bool muted}) {
     final rm = context.rm;
     final primary = muted ? rm.fg3 : rm.fg;
@@ -380,8 +496,14 @@ class TimeGroupCard extends StatelessWidget {
 
   // ---------------- fine tune row ----------------
   Widget _fine(BuildContext context) {
-    if (candidates.isEmpty) return const SizedBox.shrink();
-    final c = candidates[selectedIdx];
+    if (candidates.isEmpty && manualCandidate == null) {
+      return const SizedBox.shrink();
+    }
+    final c = candidates.isEmpty
+        ? manualCandidate
+        : manualSelected && manualCandidate != null
+        ? manualCandidate
+        : candidates[selectedIdx.clamp(0, candidates.length - 1).toInt()];
     if (kind.isLoop) {
       final lc = c as LoopCandidate;
       return Row(

@@ -148,7 +148,7 @@ void main() {
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
-    tester.view.physicalSize = const Size(900, 620);
+    tester.view.physicalSize = const Size(900, 760);
     addTearDown(() {
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
@@ -183,6 +183,9 @@ void main() {
             confirmed: false,
             lowConfidence: false,
             onSelect: (_) {},
+            manualCandidate: null,
+            manualSelected: false,
+            onManualRefine: () {},
             onConfirm: (_) {},
             onCancelConfirm: () {},
             onPreview: (_) {},
@@ -196,7 +199,72 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('候选 (top 5)'), findsOneWidget);
     expect(find.text('候选 (top 3)'), findsNothing);
+    expect(find.text('人工选点'), findsOneWidget);
   });
+
+  testWidgets(
+    'manual refine overlay applies an AI loop candidate and locks it',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1200, 1100);
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final tempRoot = Directory.systemTemp.createTempSync(
+        'replace_editor_manual_refine_',
+      );
+      addTearDown(() {
+        if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+      });
+
+      await _pumpEditor(tester, tempRoot.path);
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(ReplaceEditorScreen)),
+      );
+      final notifier = container.read(replaceEditorProvider('cp-1').notifier);
+      notifier.setConfirmed(GroupKind.tl, false);
+      await tester.pump();
+
+      final manualTl = find.byKey(const ValueKey('editor-manual-refine-tl'));
+      await Scrollable.ensureVisible(
+        tester.element(manualTl),
+        alignment: 0.45,
+        duration: Duration.zero,
+      );
+      await tester.pump();
+      await tester.tap(manualTl);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 260));
+
+      expect(tester.takeException(), isNull);
+      final overlay = find.byKey(const ValueKey('manual-refine-overlay'));
+      expect(overlay, findsOneWidget);
+      expect(tester.getSize(overlay).width, greaterThan(1000));
+      expect(tester.getSize(overlay).height, greaterThan(900));
+      expect(
+        find.byKey(const ValueKey('manual-refine-ai-panel')),
+        findsOneWidget,
+      );
+      expect(find.text('套用 AI 建议'), findsOneWidget);
+
+      final secondAi = container.read(replaceEditorProvider('cp-1')).ai.tl[1];
+      await tester.tap(find.byKey(const ValueKey('manual-refine-ai-apply-1')));
+      await tester.pump();
+      await tester.tap(find.text('锁定选点'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 260));
+
+      final state = container.read(replaceEditorProvider('cp-1'));
+      expect(state.tlManual, isNotNull);
+      expect(state.tlConfirmed, isTrue);
+      expect(state.selectedManualOf(GroupKind.tl), isTrue);
+      expect((state.tl.start - secondAi.start).abs(), lessThan(0.001));
+      expect((state.tl.end - secondAi.end).abs(), lessThan(0.001));
+      expect(find.byKey(const ValueKey('manual-refine-overlay')), findsNothing);
+    },
+  );
 
   testWidgets('replace editor sticky controls pin below shell chrome', (
     tester,

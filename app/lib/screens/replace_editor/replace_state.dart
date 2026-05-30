@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -27,6 +28,10 @@ class ReplaceEditorState {
     required this.pdConfirmed,
     required this.tlConfirmed,
     required this.plConfirmed,
+    this.tdManual,
+    this.pdManual,
+    this.tlManual,
+    this.plManual,
     required this.playing,
     required this.playhead,
     required this.zoomStart,
@@ -81,6 +86,10 @@ class ReplaceEditorState {
   final bool pdConfirmed;
   final bool tlConfirmed;
   final bool plConfirmed;
+  final PointCandidate? tdManual;
+  final PointCandidate? pdManual;
+  final LoopCandidate? tlManual;
+  final LoopCandidate? plManual;
   final bool playing;
   final double playhead;
   final double zoomStart;
@@ -92,10 +101,18 @@ class ReplaceEditorState {
   final bool saved;
   final String? error;
 
-  PointCandidate get td => ai.td[_idx(tdIdx, ai.td.length)];
-  PointCandidate get pd => ai.pd[_idx(pdIdx, ai.pd.length)];
-  LoopCandidate get tl => ai.tl[_idx(tlIdx, ai.tl.length)];
-  LoopCandidate get pl => ai.pl[_idx(plIdx, ai.pl.length)];
+  PointCandidate get td => selectedManualOf(GroupKind.td)
+      ? tdManual!
+      : ai.td[_idx(tdIdx, ai.td.length)];
+  PointCandidate get pd => selectedManualOf(GroupKind.pd)
+      ? pdManual!
+      : ai.pd[_idx(pdIdx, ai.pd.length)];
+  LoopCandidate get tl => selectedManualOf(GroupKind.tl)
+      ? tlManual!
+      : ai.tl[_idx(tlIdx, ai.tl.length)];
+  LoopCandidate get pl => selectedManualOf(GroupKind.pl)
+      ? plManual!
+      : ai.pl[_idx(plIdx, ai.pl.length)];
 
   bool get allConfirmed =>
       tdConfirmed && pdConfirmed && tlConfirmed && plConfirmed;
@@ -121,6 +138,33 @@ class ReplaceEditorState {
     GroupKind.tl => tlIdx,
     GroupKind.pl => plIdx,
   };
+
+  int aiCandidateCountOf(GroupKind k) => switch (k) {
+    GroupKind.td => ai.td.length,
+    GroupKind.pd => ai.pd.length,
+    GroupKind.tl => ai.tl.length,
+    GroupKind.pl => ai.pl.length,
+  };
+
+  dynamic manualCandidateOf(GroupKind k) => switch (k) {
+    GroupKind.td => tdManual,
+    GroupKind.pd => pdManual,
+    GroupKind.tl => tlManual,
+    GroupKind.pl => plManual,
+  };
+
+  bool hasManualOf(GroupKind k) => manualCandidateOf(k) != null;
+
+  int manualIndexOf(GroupKind k) => aiCandidateCountOf(k);
+
+  bool selectedManualOf(GroupKind k) {
+    return hasManualOf(k) && selectedIdxOf(k) == manualIndexOf(k);
+  }
+
+  bool selectableIdxOf(GroupKind k, int idx) {
+    if (idx < 0) return false;
+    return idx < aiCandidateCountOf(k) + (hasManualOf(k) ? 1 : 0);
+  }
 
   Map<String, double> get markerSeconds => {
     'TrackDrop': td.t,
@@ -149,6 +193,10 @@ class ReplaceEditorState {
     bool? pdConfirmed,
     bool? tlConfirmed,
     bool? plConfirmed,
+    Object? tdManual = _sentinel,
+    Object? pdManual = _sentinel,
+    Object? tlManual = _sentinel,
+    Object? plManual = _sentinel,
     bool? playing,
     double? playhead,
     double? zoomStart,
@@ -161,18 +209,50 @@ class ReplaceEditorState {
     Object? error = _sentinel,
   }) {
     final nextAi = ai ?? this.ai;
+    final nextTdManual = identical(tdManual, _sentinel)
+        ? this.tdManual
+        : tdManual as PointCandidate?;
+    final nextPdManual = identical(pdManual, _sentinel)
+        ? this.pdManual
+        : pdManual as PointCandidate?;
+    final nextTlManual = identical(tlManual, _sentinel)
+        ? this.tlManual
+        : tlManual as LoopCandidate?;
+    final nextPlManual = identical(plManual, _sentinel)
+        ? this.plManual
+        : plManual as LoopCandidate?;
     return ReplaceEditorState(
       trackId: trackId,
       track: track ?? this.track,
       ai: nextAi,
-      tdIdx: _idx(tdIdx ?? this.tdIdx, nextAi.td.length),
-      pdIdx: _idx(pdIdx ?? this.pdIdx, nextAi.pd.length),
-      tlIdx: _idx(tlIdx ?? this.tlIdx, nextAi.tl.length),
-      plIdx: _idx(plIdx ?? this.plIdx, nextAi.pl.length),
+      tdIdx: _idxWithManual(
+        tdIdx ?? this.tdIdx,
+        nextAi.td.length,
+        nextTdManual != null,
+      ),
+      pdIdx: _idxWithManual(
+        pdIdx ?? this.pdIdx,
+        nextAi.pd.length,
+        nextPdManual != null,
+      ),
+      tlIdx: _idxWithManual(
+        tlIdx ?? this.tlIdx,
+        nextAi.tl.length,
+        nextTlManual != null,
+      ),
+      plIdx: _idxWithManual(
+        plIdx ?? this.plIdx,
+        nextAi.pl.length,
+        nextPlManual != null,
+      ),
       tdConfirmed: tdConfirmed ?? this.tdConfirmed,
       pdConfirmed: pdConfirmed ?? this.pdConfirmed,
       tlConfirmed: tlConfirmed ?? this.tlConfirmed,
       plConfirmed: plConfirmed ?? this.plConfirmed,
+      tdManual: nextTdManual,
+      pdManual: nextPdManual,
+      tlManual: nextTlManual,
+      plManual: nextPlManual,
       playing: playing ?? this.playing,
       playhead: (playhead ?? this.playhead).clamp(0, nextAi.durationSec),
       zoomStart: (zoomStart ?? this.zoomStart).clamp(0, nextAi.durationSec),
@@ -241,6 +321,7 @@ class ReplaceEditorNotifier extends StateNotifier<ReplaceEditorState> {
 
   void selectCandidate(GroupKind kind, int idx) {
     if (state.confirmedOf(kind)) return;
+    if (!state.selectableIdxOf(kind, idx)) return;
     _remember();
     state = switch (kind) {
       GroupKind.td => state.copyWith(
@@ -341,6 +422,19 @@ class ReplaceEditorNotifier extends StateNotifier<ReplaceEditorState> {
 
     switch (kind) {
       case GroupKind.td:
+        if (state.selectedManualOf(kind)) {
+          final current = state.tdManual!;
+          state = state.copyWith(
+            tdManual: current.copyWith(
+              t: bound(current.t + deltaSec),
+              why: '人工选点',
+            ),
+            activeGroup: kind,
+            dirty: true,
+            saved: false,
+          );
+          return;
+        }
         final list = [...state.ai.td];
         list[state.tdIdx] = list[state.tdIdx].copyWith(
           t: bound(list[state.tdIdx].t + deltaSec),
@@ -353,6 +447,19 @@ class ReplaceEditorNotifier extends StateNotifier<ReplaceEditorState> {
           saved: false,
         );
       case GroupKind.pd:
+        if (state.selectedManualOf(kind)) {
+          final current = state.pdManual!;
+          state = state.copyWith(
+            pdManual: current.copyWith(
+              t: bound(current.t + deltaSec),
+              why: '人工选点',
+            ),
+            activeGroup: kind,
+            dirty: true,
+            saved: false,
+          );
+          return;
+        }
         final list = [...state.ai.pd];
         list[state.pdIdx] = list[state.pdIdx].copyWith(
           t: bound(list[state.pdIdx].t + deltaSec),
@@ -365,6 +472,29 @@ class ReplaceEditorNotifier extends StateNotifier<ReplaceEditorState> {
           saved: false,
         );
       case GroupKind.tl:
+        if (state.selectedManualOf(kind)) {
+          final current = state.tlManual!;
+          final start = target == FineTarget.loopEnd
+              ? current.start
+              : bound(current.start + deltaSec);
+          final end = target == FineTarget.loopStart
+              ? current.end
+              : bound(current.end + deltaSec);
+          final nextStart = start.clamp(0, end - 0.05).toDouble();
+          final nextEnd = end.clamp(nextStart + 0.05, duration).toDouble();
+          state = state.copyWith(
+            tlManual: current.copyWith(
+              start: nextStart,
+              end: nextEnd,
+              bars: _barsFor(nextStart, nextEnd, state.ai.bpm),
+              why: '人工选点',
+            ),
+            activeGroup: kind,
+            dirty: true,
+            saved: false,
+          );
+          return;
+        }
         final list = [...state.ai.tl];
         final current = list[state.tlIdx];
         final start = target == FineTarget.loopEnd
@@ -373,9 +503,12 @@ class ReplaceEditorNotifier extends StateNotifier<ReplaceEditorState> {
         final end = target == FineTarget.loopStart
             ? current.end
             : bound(current.end + deltaSec);
+        final nextStart = start.clamp(0, end - 0.05).toDouble();
+        final nextEnd = end.clamp(nextStart + 0.05, duration).toDouble();
         list[state.tlIdx] = current.copyWith(
-          start: start.clamp(0, end - 0.05).toDouble(),
-          end: end.clamp(start + 0.05, duration).toDouble(),
+          start: nextStart,
+          end: nextEnd,
+          bars: _barsFor(nextStart, nextEnd, state.ai.bpm),
           why: '手动微调',
         );
         state = state.copyWith(
@@ -385,6 +518,29 @@ class ReplaceEditorNotifier extends StateNotifier<ReplaceEditorState> {
           saved: false,
         );
       case GroupKind.pl:
+        if (state.selectedManualOf(kind)) {
+          final current = state.plManual!;
+          final start = target == FineTarget.loopEnd
+              ? current.start
+              : bound(current.start + deltaSec);
+          final end = target == FineTarget.loopStart
+              ? current.end
+              : bound(current.end + deltaSec);
+          final nextStart = start.clamp(0, end - 0.05).toDouble();
+          final nextEnd = end.clamp(nextStart + 0.05, duration).toDouble();
+          state = state.copyWith(
+            plManual: current.copyWith(
+              start: nextStart,
+              end: nextEnd,
+              bars: _barsFor(nextStart, nextEnd, state.ai.bpm),
+              why: '人工选点',
+            ),
+            activeGroup: kind,
+            dirty: true,
+            saved: false,
+          );
+          return;
+        }
         final list = [...state.ai.pl];
         final current = list[state.plIdx];
         final start = target == FineTarget.loopEnd
@@ -393,9 +549,12 @@ class ReplaceEditorNotifier extends StateNotifier<ReplaceEditorState> {
         final end = target == FineTarget.loopStart
             ? current.end
             : bound(current.end + deltaSec);
+        final nextStart = start.clamp(0, end - 0.05).toDouble();
+        final nextEnd = end.clamp(nextStart + 0.05, duration).toDouble();
         list[state.plIdx] = current.copyWith(
-          start: start.clamp(0, end - 0.05).toDouble(),
-          end: end.clamp(start + 0.05, duration).toDouble(),
+          start: nextStart,
+          end: nextEnd,
+          bars: _barsFor(nextStart, nextEnd, state.ai.bpm),
           why: '手动微调',
         );
         state = state.copyWith(
@@ -405,6 +564,78 @@ class ReplaceEditorNotifier extends StateNotifier<ReplaceEditorState> {
           saved: false,
         );
     }
+  }
+
+  void applyManualPoint(GroupKind kind, double timeSec) {
+    if (kind.isLoop) return;
+    _remember();
+    final duration = state.ai.durationSec;
+    final candidate = PointCandidate(
+      t: timeSec.clamp(0, duration).toDouble(),
+      score: 1,
+      why: '人工选点',
+    );
+    state = switch (kind) {
+      GroupKind.td => state.copyWith(
+        tdManual: candidate,
+        tdIdx: state.ai.td.length,
+        tdConfirmed: true,
+        activeGroup: kind,
+        dirty: true,
+        saved: false,
+      ),
+      GroupKind.pd => state.copyWith(
+        pdManual: candidate,
+        pdIdx: state.ai.pd.length,
+        pdConfirmed: true,
+        activeGroup: kind,
+        dirty: true,
+        saved: false,
+      ),
+      GroupKind.tl || GroupKind.pl => state,
+    };
+  }
+
+  void applyManualLoop(GroupKind kind, double startSec, double endSec) {
+    if (!kind.isLoop) return;
+    _remember();
+    final duration = state.ai.durationSec;
+    final boundedStart = startSec.clamp(0, duration).toDouble();
+    final boundedEnd = endSec.clamp(0, duration).toDouble();
+    final start = math
+        .min(boundedStart, boundedEnd - 0.05)
+        .clamp(0, duration)
+        .toDouble();
+    final end = math
+        .max(boundedEnd, start + 0.05)
+        .clamp(start + 0.05, duration)
+        .toDouble();
+    final candidate = LoopCandidate(
+      start: start,
+      end: end,
+      score: 1,
+      bars: _barsFor(start, end, state.ai.bpm),
+      why: '人工选点',
+    );
+    state = switch (kind) {
+      GroupKind.tl => state.copyWith(
+        tlManual: candidate,
+        tlIdx: state.ai.tl.length,
+        tlConfirmed: true,
+        activeGroup: kind,
+        dirty: true,
+        saved: false,
+      ),
+      GroupKind.pl => state.copyWith(
+        plManual: candidate,
+        plIdx: state.ai.pl.length,
+        plConfirmed: true,
+        activeGroup: kind,
+        dirty: true,
+        saved: false,
+      ),
+      GroupKind.td || GroupKind.pd => state,
+    };
   }
 
   void zoomIn() {
@@ -815,4 +1046,15 @@ List<double> _waveformDisplayValues(List<AudioWaveformBin> bins) {
 int _idx(int value, int length) {
   if (length <= 1) return 0;
   return value.clamp(0, length - 1).toInt();
+}
+
+int _idxWithManual(int value, int aiLength, bool hasManual) {
+  final max = aiLength + (hasManual ? 1 : 0);
+  if (max <= 1) return 0;
+  return value.clamp(0, max - 1).toInt();
+}
+
+int _barsFor(double start, double end, double bpm) {
+  final beat = bpm <= 0 ? 0.5 : 60 / bpm;
+  return ((end - start) / beat / 4).round().clamp(1, 128).toInt();
 }
