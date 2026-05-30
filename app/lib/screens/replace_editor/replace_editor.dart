@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -20,6 +21,7 @@ import '../../widgets/rm_button.dart';
 import '../../widgets/rm_icon.dart';
 import 'ai_pending_overlay.dart';
 import 'breadcrumb.dart';
+import 'group_colors.dart';
 import 'progress_strip.dart';
 import 'replace_state.dart';
 import 'side_panel.dart';
@@ -119,6 +121,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
   bool _lastObservedAllConfirmed = false;
   double _sidePanelExtraScroll = 0;
   _TransportDockMetrics? _transportDockMetrics;
+  _ManualRefineSession? _manualSession;
 
   @override
   void initState() {
@@ -203,7 +206,18 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     final n = ref.read(replaceEditorProvider(widget.trackId).notifier);
     final s = ref.read(replaceEditorProvider(widget.trackId));
     final shift = HardwareKeyboard.instance.isShiftPressed;
-    if (e.logicalKey == LogicalKeyboardKey.space) {
+    if (_manualSession != null && e.logicalKey == LogicalKeyboardKey.escape) {
+      _cancelManualRefine();
+    } else if (_manualSession != null &&
+        e.logicalKey == LogicalKeyboardKey.enter) {
+      _confirmManualRefine(n);
+    } else if (_manualSession != null &&
+        e.logicalKey == LogicalKeyboardKey.arrowLeft) {
+      _nudgeManualDraft(shift ? -0.010 : -(60 / s.ai.bpm));
+    } else if (_manualSession != null &&
+        e.logicalKey == LogicalKeyboardKey.arrowRight) {
+      _nudgeManualDraft(shift ? 0.010 : (60 / s.ai.bpm));
+    } else if (e.logicalKey == LogicalKeyboardKey.space) {
       unawaited(_togglePlayback(s, n));
     } else if ((HardwareKeyboard.instance.isControlPressed ||
             HardwareKeyboard.instance.isMetaPressed) &&
@@ -302,6 +316,9 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
                   analysis,
                   viewport: viewport,
                 ),
+              Positioned.fill(
+                child: _manualRefineOverlay(context, s, n, viewport: viewport),
+              ),
             ],
           );
         },
@@ -534,6 +551,223 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     );
   }
 
+  Widget _manualRefineOverlay(
+    BuildContext context,
+    ReplaceEditorState s,
+    ReplaceEditorNotifier n, {
+    required BoxConstraints viewport,
+  }) {
+    final session = _manualSession;
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 220),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, animation) {
+        final scale = Tween<double>(begin: 0.982, end: 1).animate(animation);
+        return FadeTransition(
+          opacity: animation,
+          child: ScaleTransition(scale: scale, child: child),
+        );
+      },
+      child: session == null
+          ? const SizedBox.shrink(key: ValueKey('manual-refine-empty'))
+          : _ManualRefineOverlay(
+              key: ValueKey('manual-refine-${session.kind.code}'),
+              state: _manualPreviewState(s, session),
+              session: session,
+              viewport: viewport,
+              aiCandidates: _aiCandidatesFor(s, session.kind),
+              onWaveformSeek: _placeManualDraft,
+              onApplyCandidate: _applyAiCandidateToManual,
+              onPickTarget: _setManualFineTarget,
+              onNudge: _nudgeManualDraftTarget,
+              onCancel: _cancelManualRefine,
+              onConfirm: () => _confirmManualRefine(n),
+              onTogglePlay: () => unawaited(
+                _togglePlayback(
+                  _manualPreviewState(
+                    ref.read(replaceEditorProvider(widget.trackId)),
+                    _manualSession!,
+                  ),
+                  n,
+                ),
+              ),
+              onRewind: () => _placeManualDraft(0),
+              onSkipFwd: () => _placeManualDraft(s.ai.durationSec),
+            ),
+    );
+  }
+
+  ReplaceEditorState _manualPreviewState(
+    ReplaceEditorState state,
+    _ManualRefineSession session,
+  ) {
+    final playhead = session.focusTime
+        .clamp(0, state.ai.durationSec)
+        .toDouble();
+    if (session.kind.isLoop) {
+      final candidate = LoopCandidate(
+        start: session.start,
+        end: session.end,
+        score: 1,
+        bars: _barsForManual(session.start, session.end, state.ai.bpm),
+        why: '人工选点',
+      );
+      return switch (session.kind) {
+        GroupKind.tl => state.copyWith(
+          tlManual: candidate,
+          tlIdx: state.ai.tl.length,
+          tlConfirmed: false,
+          activeGroup: session.kind,
+          playhead: playhead,
+        ),
+        GroupKind.pl => state.copyWith(
+          plManual: candidate,
+          plIdx: state.ai.pl.length,
+          plConfirmed: false,
+          activeGroup: session.kind,
+          playhead: playhead,
+        ),
+        GroupKind.td || GroupKind.pd => state,
+      };
+    }
+    final candidate = PointCandidate(
+      t: session.pointTime,
+      score: 1,
+      why: '人工选点',
+    );
+    return switch (session.kind) {
+      GroupKind.td => state.copyWith(
+        tdManual: candidate,
+        tdIdx: state.ai.td.length,
+        tdConfirmed: false,
+        activeGroup: session.kind,
+        playhead: playhead,
+      ),
+      GroupKind.pd => state.copyWith(
+        pdManual: candidate,
+        pdIdx: state.ai.pd.length,
+        pdConfirmed: false,
+        activeGroup: session.kind,
+        playhead: playhead,
+      ),
+      GroupKind.tl || GroupKind.pl => state,
+    };
+  }
+
+  List<dynamic> _aiCandidatesFor(ReplaceEditorState state, GroupKind kind) {
+    return switch (kind) {
+      GroupKind.td => state.ai.td,
+      GroupKind.pd => state.ai.pd,
+      GroupKind.tl => state.ai.tl,
+      GroupKind.pl => state.ai.pl,
+    };
+  }
+
+  void _openManualRefine(
+    ReplaceEditorState state,
+    ReplaceEditorNotifier notifier,
+    GroupKind kind,
+  ) {
+    if (state.confirmedOf(kind)) return;
+    final session = _ManualRefineSession.fromState(state, kind);
+    setState(() => _manualSession = session);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _manualSession != session) return;
+      unawaited(
+        _seekTo(
+          ref.read(replaceEditorProvider(widget.trackId)),
+          notifier,
+          session.focusTime,
+        ),
+      );
+    });
+  }
+
+  void _cancelManualRefine() {
+    if (_manualSession == null) return;
+    setState(() => _manualSession = null);
+  }
+
+  void _confirmManualRefine(ReplaceEditorNotifier notifier) {
+    final session = _manualSession;
+    if (session == null) return;
+    if (session.kind.isLoop) {
+      notifier.applyManualLoop(session.kind, session.start, session.end);
+    } else {
+      notifier.applyManualPoint(session.kind, session.pointTime);
+    }
+    setState(() => _manualSession = null);
+    _scheduleSavePromptIfNeeded(
+      ref.read(replaceEditorProvider(widget.trackId)),
+    );
+  }
+
+  void _placeManualDraft(double seconds) {
+    final session = _manualSession;
+    if (session == null) return;
+    final state = ref.read(replaceEditorProvider(widget.trackId));
+    final next = seconds.clamp(0, state.ai.durationSec).toDouble();
+    final updated = session.placeAt(next, duration: state.ai.durationSec);
+    setState(() => _manualSession = updated);
+    unawaited(
+      _seekTo(
+        state,
+        ref.read(replaceEditorProvider(widget.trackId).notifier),
+        updated.focusTime,
+      ),
+    );
+  }
+
+  void _applyAiCandidateToManual(dynamic candidate) {
+    final session = _manualSession;
+    if (session == null) return;
+    final state = ref.read(replaceEditorProvider(widget.trackId));
+    final updated = session.fromCandidate(
+      candidate,
+      duration: state.ai.durationSec,
+    );
+    setState(() => _manualSession = updated);
+    unawaited(
+      _seekTo(
+        state,
+        ref.read(replaceEditorProvider(widget.trackId).notifier),
+        updated.focusTime,
+      ),
+    );
+  }
+
+  void _setManualFineTarget(FineTarget target) {
+    final session = _manualSession;
+    if (session == null) return;
+    setState(() => _manualSession = session.copyWith(activeTarget: target));
+  }
+
+  void _nudgeManualDraft(double deltaSec) {
+    final session = _manualSession;
+    if (session == null) return;
+    _nudgeManualDraftTarget(session.activeTarget, deltaSec);
+  }
+
+  void _nudgeManualDraftTarget(FineTarget target, double deltaSec) {
+    final session = _manualSession;
+    if (session == null) return;
+    final state = ref.read(replaceEditorProvider(widget.trackId));
+    final updated = session.nudge(
+      target,
+      deltaSec,
+      duration: state.ai.durationSec,
+    );
+    setState(() => _manualSession = updated);
+    unawaited(
+      _seekTo(
+        state,
+        ref.read(replaceEditorProvider(widget.trackId).notifier),
+        updated.focusTime,
+      ),
+    );
+  }
+
   Widget _editorBody(
     BuildContext context,
     ReplaceEditorState s,
@@ -686,6 +920,9 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       confirmed: s.confirmedOf(kind),
       lowConfidence: low,
       onSelect: (i) => n.selectCandidate(kind, i),
+      manualCandidate: s.manualCandidateOf(kind),
+      manualSelected: s.selectedManualOf(kind),
+      onManualRefine: () => _openManualRefine(s, n, kind),
       onConfirm: (i) => _confirmGroup(n, kind, i),
       onCancelConfirm: () => n.setConfirmed(kind, false),
       onPreview: (i) => unawaited(
@@ -1687,6 +1924,815 @@ class _FloatingSideDrawer extends StatelessWidget {
       ],
     );
   }
+}
+
+class _ManualRefineOverlay extends StatelessWidget {
+  const _ManualRefineOverlay({
+    super.key,
+    required this.state,
+    required this.session,
+    required this.viewport,
+    required this.aiCandidates,
+    required this.onWaveformSeek,
+    required this.onApplyCandidate,
+    required this.onPickTarget,
+    required this.onNudge,
+    required this.onCancel,
+    required this.onConfirm,
+    required this.onTogglePlay,
+    required this.onRewind,
+    required this.onSkipFwd,
+  });
+
+  final ReplaceEditorState state;
+  final _ManualRefineSession session;
+  final BoxConstraints viewport;
+  final List<dynamic> aiCandidates;
+  final ValueChanged<double> onWaveformSeek;
+  final ValueChanged<dynamic> onApplyCandidate;
+  final ValueChanged<FineTarget> onPickTarget;
+  final void Function(FineTarget target, double deltaSec) onNudge;
+  final VoidCallback onCancel;
+  final VoidCallback onConfirm;
+  final VoidCallback onTogglePlay;
+  final VoidCallback onRewind;
+  final VoidCallback onSkipFwd;
+
+  @override
+  Widget build(BuildContext context) {
+    final rm = context.rm;
+    final width = math.min(1180.0, math.max(0.0, viewport.maxWidth - 48));
+    final height = math.min(860.0, math.max(0.0, viewport.maxHeight - 48));
+    final compact = width < 900;
+
+    return Stack(
+      key: const ValueKey('manual-refine-overlay'),
+      children: [
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onCancel,
+            child: BackdropFilter(
+              filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+              child: ColoredBox(color: RmTokens.modalBackdrop.withAlpha(178)),
+            ),
+          ),
+        ),
+        Center(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: width, maxHeight: height),
+            child: GestureDetector(
+              onTap: () {},
+              child: Container(
+                decoration: BoxDecoration(
+                  color: rm.panel,
+                  border: Border.all(color: rm.borderStrong),
+                  borderRadius: BorderRadius.circular(RmTokens.rXl),
+                  boxShadow: RmTokens.modal,
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _header(context),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.all(18),
+                        child: compact
+                            ? _compactBody(context)
+                            : _wideBody(context),
+                      ),
+                    ),
+                    _footer(context),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _header(BuildContext context) {
+    final rm = context.rm;
+    final acc = groupAccent(rm, session.kind);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 18, 18, 16),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: rm.border)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: acc.bg,
+              border: Border.all(color: acc.ring),
+              borderRadius: BorderRadius.circular(RmTokens.rMd),
+            ),
+            child: Text(
+              session.kind.code,
+              style: RmText.mono(12, weight: FontWeight.w700, color: acc.base),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${session.kind.name} · 人工精修',
+                  style: RmText.sans(17, weight: FontWeight.w700, color: rm.fg),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  session.kind.isLoop
+                      ? '点波形放置 A / B 两个循环端点，确认后锁定当前时间组。'
+                      : '点波形放置播放起点，确认后锁定当前时间组。',
+                  style: RmText.sans(12.5, color: rm.fg3),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          _statusPill(context, '磁吸到拍'),
+          const SizedBox(width: 10),
+          RmButton.icon(
+            onPressed: onCancel,
+            icon: const RmIcon('x', size: 13),
+            tooltip: '取消人工选点',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _wideBody(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(child: _mainEditor(context)),
+        const SizedBox(width: 14),
+        SizedBox(width: 318, child: _aiApplyPanel(context)),
+      ],
+    );
+  }
+
+  Widget _compactBody(BuildContext context) {
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _mainEditor(context, scrollable: false),
+          const SizedBox(height: 14),
+          SizedBox(height: 320, child: _aiApplyPanel(context)),
+        ],
+      ),
+    );
+  }
+
+  Widget _mainEditor(BuildContext context, {bool scrollable = true}) {
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        WaveformCard(
+          state: state,
+          aiPending: false,
+          onSeek: onWaveformSeek,
+          onZoomIn: () {},
+          onZoomOut: () {},
+        ),
+        const SizedBox(height: 12),
+        TransportBar(
+          state: state,
+          aiPending: false,
+          onTogglePlay: onTogglePlay,
+          onRewind: onRewind,
+          onSkipFwd: onSkipFwd,
+        ),
+        const SizedBox(height: 12),
+        _finePanel(context),
+      ],
+    );
+    if (!scrollable) return content;
+    return SingleChildScrollView(child: content);
+  }
+
+  Widget _finePanel(BuildContext context) {
+    final rm = context.rm;
+    return Container(
+      decoration: BoxDecoration(
+        color: rm.panel,
+        border: Border.all(color: rm.border),
+        borderRadius: BorderRadius.circular(RmTokens.rLg),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: session.kind.isLoop
+            ? Column(
+                children: [
+                  _fineRow(
+                    context,
+                    label: 'A · start',
+                    value: session.start,
+                    target: FineTarget.loopStart,
+                    active: session.activeTarget == FineTarget.loopStart,
+                  ),
+                  const SizedBox(height: 10),
+                  _fineRow(
+                    context,
+                    label: 'B · end',
+                    value: session.end,
+                    target: FineTarget.loopEnd,
+                    active: session.activeTarget == FineTarget.loopEnd,
+                  ),
+                  const SizedBox(height: 10),
+                  _loopMeta(context),
+                ],
+              )
+            : _fineRow(
+                context,
+                label: '播放起点',
+                value: session.pointTime,
+                target: FineTarget.point,
+                active: true,
+              ),
+      ),
+    );
+  }
+
+  Widget _fineRow(
+    BuildContext context, {
+    required String label,
+    required double value,
+    required FineTarget target,
+    required bool active,
+  }) {
+    final rm = context.rm;
+    final beat = state.ai.bpm <= 0 ? 0.5 : 60 / state.ai.bpm;
+    final sampleRate = session.kind.sampleRate;
+    return MouseRegion(
+      cursor: session.kind.isLoop
+          ? SystemMouseCursors.click
+          : SystemMouseCursors.basic,
+      child: GestureDetector(
+        onTap: session.kind.isLoop ? () => onPickTarget(target) : null,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: active ? rm.accent.bg : rm.raised,
+            border: Border.all(color: active ? rm.accent.base : rm.border),
+            borderRadius: BorderRadius.circular(RmTokens.rSm),
+          ),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final tight = constraints.maxWidth < 640;
+              final timeBlock = Column(
+                crossAxisAlignment: tight
+                    ? CrossAxisAlignment.start
+                    : CrossAxisAlignment.center,
+                children: [
+                  Text(
+                    formatTimecode(value),
+                    style: RmText.mono(
+                      20,
+                      weight: FontWeight.w700,
+                      color: rm.fg,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    '= ${formatSamples(value, sampleRate)} samples',
+                    style: RmText.mono(11, color: rm.fg4),
+                  ),
+                ],
+              );
+              final controls = Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                alignment: WrapAlignment.end,
+                children: [
+                  RmButton(
+                    onPressed: () => onNudge(target, -beat),
+                    size: RmButtonSize.sm,
+                    label: '−拍',
+                  ),
+                  RmButton(
+                    onPressed: () => onNudge(target, beat),
+                    size: RmButtonSize.sm,
+                    label: '+拍',
+                  ),
+                  RmButton(
+                    onPressed: () => onNudge(target, -0.010),
+                    size: RmButtonSize.sm,
+                    label: '−10ms',
+                  ),
+                  RmButton(
+                    onPressed: () => onNudge(target, 0.010),
+                    size: RmButtonSize.sm,
+                    label: '+10ms',
+                  ),
+                ],
+              );
+              if (tight) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _fineLabel(context, label, active),
+                    const SizedBox(height: 8),
+                    timeBlock,
+                    const SizedBox(height: 10),
+                    controls,
+                  ],
+                );
+              }
+              return Row(
+                children: [
+                  SizedBox(
+                    width: 118,
+                    child: _fineLabel(context, label, active),
+                  ),
+                  Expanded(child: timeBlock),
+                  const SizedBox(width: 14),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 284),
+                    child: controls,
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _fineLabel(BuildContext context, String label, bool active) {
+    final rm = context.rm;
+    return Row(
+      children: [
+        Container(
+          width: 9,
+          height: 9,
+          decoration: BoxDecoration(
+            color: active ? rm.accent.base : rm.fg4,
+            borderRadius: BorderRadius.circular(3),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            label,
+            style: RmText.mono(
+              12,
+              weight: FontWeight.w700,
+              color: active ? rm.fg : rm.fg2,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _loopMeta(BuildContext context) {
+    final rm = context.rm;
+    final beatMs = state.ai.bpm <= 0 ? 0 : 60 / state.ai.bpm * 1000;
+    return Row(
+      children: [
+        _meta(context, 'BPM', state.ai.bpm.toStringAsFixed(1)),
+        const SizedBox(width: 16),
+        _meta(context, '1 拍', '${beatMs.round()}ms'),
+        const SizedBox(width: 16),
+        _meta(
+          context,
+          'Δ',
+          '${(session.end - session.start).toStringAsFixed(2)}s',
+        ),
+        const Spacer(),
+        Text('downbeat', style: RmText.mono(11, color: rm.accent.base)),
+      ],
+    );
+  }
+
+  Widget _meta(BuildContext context, String label, String value) {
+    final rm = context.rm;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('$label ', style: RmText.mono(11, color: rm.fg3)),
+        Text(value, style: RmText.mono(11, color: rm.fg)),
+      ],
+    );
+  }
+
+  Widget _aiApplyPanel(BuildContext context) {
+    final rm = context.rm;
+    return Container(
+      key: const ValueKey('manual-refine-ai-panel'),
+      decoration: BoxDecoration(
+        color: rm.raised,
+        border: Border.all(color: rm.border),
+        borderRadius: BorderRadius.circular(RmTokens.rLg),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 15, 16, 12),
+            child: Row(
+              children: [
+                Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    color: rm.accent.base,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Text(
+                    '套用 AI 建议',
+                    style: RmText.sans(
+                      13,
+                      weight: FontWeight.w700,
+                      color: rm.fg,
+                    ),
+                  ),
+                ),
+                Text(
+                  '${aiCandidates.length} 个',
+                  style: RmText.mono(11, color: rm.fg3),
+                ),
+              ],
+            ),
+          ),
+          Container(height: 1, color: rm.border),
+          Expanded(
+            child: ListView.separated(
+              padding: const EdgeInsets.all(12),
+              itemCount: aiCandidates.length,
+              separatorBuilder: (_, _) => const SizedBox(height: 8),
+              itemBuilder: (context, index) {
+                return _aiCandidateRow(context, index, aiCandidates[index]);
+              },
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+            decoration: BoxDecoration(
+              border: Border(top: BorderSide(color: rm.border)),
+            ),
+            child: Text(
+              '套用后仍可继续点波形或微调；AI 只是起点。',
+              style: RmText.sans(12, color: rm.fg3, height: 1.35),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _aiCandidateRow(BuildContext context, int index, dynamic candidate) {
+    final rm = context.rm;
+    final selected = session.matches(candidate);
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: selected ? rm.accent.bg : rm.panel,
+        border: Border.all(color: selected ? rm.accent.base : rm.border),
+        borderRadius: BorderRadius.circular(RmTokens.rSm),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 25,
+            height: 25,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: selected ? rm.accent.base : rm.raised,
+              border: Border.all(
+                color: selected ? rm.accent.base : rm.borderStrong,
+              ),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              '${index + 1}',
+              style: RmText.mono(
+                11,
+                color: selected ? rm.accent.onAccent : rm.fg2,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(child: _candidateText(context, candidate)),
+          const SizedBox(width: 8),
+          RmButton(
+            key: ValueKey('manual-refine-ai-apply-$index'),
+            onPressed: () => onApplyCandidate(candidate),
+            size: RmButtonSize.sm,
+            variant: selected
+                ? RmButtonVariant.defaultBtn
+                : RmButtonVariant.ghost,
+            label: selected ? '已套用' : '套用',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _candidateText(BuildContext context, dynamic candidate) {
+    final rm = context.rm;
+    if (candidate is LoopCandidate) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${formatTimecode(candidate.start)} → ${formatTimecode(candidate.end)}',
+            style: RmText.mono(13, weight: FontWeight.w700, color: rm.fg),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            '${candidate.bars} 小节 · ${(candidate.score * 100).round()}% · ${candidate.why}',
+            style: RmText.sans(11.5, color: rm.fg3),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      );
+    }
+    final point = candidate as PointCandidate;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          formatTimecode(point.t),
+          style: RmText.mono(13, weight: FontWeight.w700, color: rm.fg),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        const SizedBox(height: 2),
+        Text(
+          '${(point.score * 100).round()}% · ${point.why}',
+          style: RmText.sans(11.5, color: rm.fg3),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
+    );
+  }
+
+  Widget _footer(BuildContext context) {
+    final rm = context.rm;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 16),
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: rm.border)),
+      ),
+      child: Row(
+        children: [
+          RmIcon('info', size: 14, color: rm.fg3),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Esc 取消 · Enter 锁定 · Shift + ←/→ 以 10ms 微调',
+              style: RmText.sans(12.5, color: rm.fg3),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 12),
+          RmButton(onPressed: onCancel, label: '取消'),
+          const SizedBox(width: 10),
+          RmButton(
+            onPressed: onConfirm,
+            variant: RmButtonVariant.primary,
+            leading: const RmIcon('check', size: 12),
+            label: '锁定选点',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusPill(BuildContext context, String label) {
+    final rm = context.rm;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+      decoration: BoxDecoration(
+        color: rm.raised,
+        border: Border.all(color: rm.border),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(
+              color: RmTokens.trafficGreen,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 7),
+          Text(label, style: RmText.sans(12, color: rm.fg3)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ManualRefineSession {
+  const _ManualRefineSession({
+    required this.kind,
+    required this.pointTime,
+    required this.start,
+    required this.end,
+    required this.activeTarget,
+  });
+
+  factory _ManualRefineSession.fromState(
+    ReplaceEditorState state,
+    GroupKind kind,
+  ) {
+    if (kind.isLoop) {
+      final current = switch (kind) {
+        GroupKind.tl =>
+          state.selectedManualOf(kind) ? state.tlManual! : state.tl,
+        GroupKind.pl =>
+          state.selectedManualOf(kind) ? state.plManual! : state.pl,
+        GroupKind.td || GroupKind.pd => state.tl,
+      };
+      return _ManualRefineSession(
+        kind: kind,
+        pointTime: current.start,
+        start: current.start,
+        end: current.end,
+        activeTarget: FineTarget.loopStart,
+      );
+    }
+    final current = switch (kind) {
+      GroupKind.td => state.selectedManualOf(kind) ? state.tdManual! : state.td,
+      GroupKind.pd => state.selectedManualOf(kind) ? state.pdManual! : state.pd,
+      GroupKind.tl || GroupKind.pl => state.td,
+    };
+    return _ManualRefineSession(
+      kind: kind,
+      pointTime: current.t,
+      start: current.t,
+      end: current.t,
+      activeTarget: FineTarget.point,
+    );
+  }
+
+  final GroupKind kind;
+  final double pointTime;
+  final double start;
+  final double end;
+  final FineTarget activeTarget;
+
+  double get focusTime {
+    if (!kind.isLoop) return pointTime;
+    return activeTarget == FineTarget.loopEnd ? end : start;
+  }
+
+  _ManualRefineSession copyWith({
+    double? pointTime,
+    double? start,
+    double? end,
+    FineTarget? activeTarget,
+  }) {
+    return _ManualRefineSession(
+      kind: kind,
+      pointTime: pointTime ?? this.pointTime,
+      start: start ?? this.start,
+      end: end ?? this.end,
+      activeTarget: activeTarget ?? this.activeTarget,
+    );
+  }
+
+  _ManualRefineSession placeAt(double seconds, {required double duration}) {
+    if (!kind.isLoop) {
+      return copyWith(pointTime: _clampTime(seconds, duration));
+    }
+    if (activeTarget == FineTarget.loopEnd) {
+      return _withLoop(end: seconds, duration: duration);
+    }
+    return _withLoop(start: seconds, duration: duration);
+  }
+
+  _ManualRefineSession nudge(
+    FineTarget target,
+    double deltaSec, {
+    required double duration,
+  }) {
+    if (!kind.isLoop) {
+      return copyWith(
+        pointTime: _clampTime(pointTime + deltaSec, duration),
+        activeTarget: FineTarget.point,
+      );
+    }
+    if (target == FineTarget.loopEnd) {
+      return _withLoop(
+        end: end + deltaSec,
+        duration: duration,
+        activeTarget: target,
+      );
+    }
+    return _withLoop(
+      start: start + deltaSec,
+      duration: duration,
+      activeTarget: FineTarget.loopStart,
+    );
+  }
+
+  _ManualRefineSession fromCandidate(
+    dynamic candidate, {
+    required double duration,
+  }) {
+    if (candidate is LoopCandidate) {
+      return _withLoop(
+        start: candidate.start,
+        end: candidate.end,
+        duration: duration,
+        activeTarget: FineTarget.loopStart,
+      );
+    }
+    final point = candidate as PointCandidate;
+    return copyWith(
+      pointTime: _clampTime(point.t, duration),
+      start: _clampTime(point.t, duration),
+      end: _clampTime(point.t, duration),
+      activeTarget: FineTarget.point,
+    );
+  }
+
+  bool matches(dynamic candidate) {
+    const epsilon = 0.001;
+    if (candidate is LoopCandidate) {
+      return (candidate.start - start).abs() < epsilon &&
+          (candidate.end - end).abs() < epsilon;
+    }
+    final point = candidate as PointCandidate;
+    return (point.t - pointTime).abs() < epsilon;
+  }
+
+  _ManualRefineSession _withLoop({
+    double? start,
+    double? end,
+    required double duration,
+    FineTarget? activeTarget,
+  }) {
+    const minGap = 0.05;
+    final safeDuration = math.max(0.0, duration);
+    if (safeDuration <= minGap) {
+      return copyWith(
+        start: 0,
+        end: safeDuration,
+        pointTime: 0,
+        activeTarget: activeTarget ?? this.activeTarget,
+      );
+    }
+    var nextStart = _clampTime(start ?? this.start, safeDuration);
+    var nextEnd = _clampTime(end ?? this.end, safeDuration);
+    final target = activeTarget ?? this.activeTarget;
+    if (nextEnd - nextStart < minGap) {
+      if (target == FineTarget.loopEnd) {
+        nextEnd = math.min(safeDuration, nextStart + minGap);
+        nextStart = math.min(nextStart, nextEnd - minGap);
+      } else {
+        nextStart = math.max(0, nextEnd - minGap);
+        nextEnd = math.max(nextEnd, nextStart + minGap);
+      }
+    }
+    return copyWith(
+      start: nextStart,
+      end: nextEnd,
+      pointTime: target == FineTarget.loopEnd ? nextEnd : nextStart,
+      activeTarget: target,
+    );
+  }
+
+  static double _clampTime(double seconds, double duration) {
+    return seconds.clamp(0, math.max(0.0, duration)).toDouble();
+  }
+}
+
+int _barsForManual(double start, double end, double bpm) {
+  final beat = bpm <= 0 ? 0.5 : 60 / bpm;
+  return ((end - start) / beat / 4).round().clamp(1, 128).toInt();
 }
 
 class _PreviewRange {

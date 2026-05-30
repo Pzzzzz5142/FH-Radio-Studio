@@ -90,6 +90,8 @@ class RmIcon extends StatelessWidget {
         return LucideIcons.music;
       case 'file':
         return LucideIcons.fileText;
+      case 'crosshair':
+        return LucideIcons.crosshair;
       case 'chevron-up':
         return LucideIcons.chevronUp;
       case 'chevron-down':

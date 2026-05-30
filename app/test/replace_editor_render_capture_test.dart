@@ -54,9 +54,100 @@ void main() {
         logicalSize: const Size(1365, 1800),
         outputPath: p.join(outDir.path, 'replace_editor_save_prompt_full.png'),
       );
+      await _captureReplaceEditorManualRefine(
+        tester,
+        prefs: prefs,
+        logicalSize: const Size(1365, 900),
+        outputPath: p.join(outDir.path, 'replace_editor_manual_regular.png'),
+      );
+      await _captureReplaceEditorManualRefine(
+        tester,
+        prefs: prefs,
+        logicalSize: const Size(1365, 1800),
+        outputPath: p.join(outDir.path, 'replace_editor_manual_full.png'),
+      );
     },
     skip: Platform.environment['CAPTURE_REPLACE_EDITOR'] != '1',
   );
+}
+
+Future<void> _captureReplaceEditorManualRefine(
+  WidgetTester tester, {
+  required SharedPreferences prefs,
+  required Size logicalSize,
+  required String outputPath,
+}) async {
+  final repaintKey = GlobalKey();
+  tester.view.devicePixelRatio = 1;
+  tester.view.physicalSize = logicalSize;
+
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [sharedPreferencesProvider.overrideWithValue(prefs)],
+      child: RepaintBoundary(
+        key: repaintKey,
+        child: SizedBox.fromSize(
+          size: logicalSize,
+          child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: buildAppTheme(
+              brightness: Brightness.light,
+              accent: AppAccent.lime,
+            ),
+            home: const Scaffold(
+              body: ColoredBox(
+                color: RmTokens.bgLight,
+                child: ReplaceEditorScreen(trackId: 'cp-1', enableAudio: false),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 100));
+
+  final container = ProviderScope.containerOf(
+    tester.element(find.byType(ReplaceEditorScreen)),
+  );
+  container
+      .read(replaceEditorProvider('cp-1').notifier)
+      .setConfirmed(GroupKind.tl, false);
+  await tester.pump();
+  final manualTl = find.byKey(const ValueKey('editor-manual-refine-tl'));
+  await Scrollable.ensureVisible(
+    tester.element(manualTl),
+    alignment: 0.45,
+    duration: Duration.zero,
+  );
+  await tester.pump();
+  await tester.tap(manualTl);
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 260));
+
+  expect(tester.takeException(), isNull);
+  expect(find.byKey(const ValueKey('manual-refine-overlay')), findsOneWidget);
+  expect(find.text('套用 AI 建议'), findsOneWidget);
+
+  final boundary = repaintKey.currentContext?.findRenderObject();
+  expect(boundary, isA<RenderRepaintBoundary>());
+  await tester.runAsync(() async {
+    final image = await (boundary! as RenderRepaintBoundary).toImage(
+      pixelRatio: 1.5,
+    );
+    final data = await image.toByteData(format: ui.ImageByteFormat.png);
+    image.dispose();
+    expect(data, isNotNull);
+
+    final output = File(outputPath);
+    await output.parent.create(recursive: true);
+    await output.writeAsBytes(data!.buffer.asUint8List(), flush: true);
+    // ignore: avoid_print
+    print('${p.basenameWithoutExtension(outputPath)}=${output.absolute.path}');
+  });
+  await tester.pumpWidget(const SizedBox.shrink());
+  await tester.pump();
 }
 
 Future<void> _captureReplaceEditor(
