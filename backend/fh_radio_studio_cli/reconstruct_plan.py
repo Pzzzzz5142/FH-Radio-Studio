@@ -11,12 +11,14 @@ in Dart. The UI just calls this command and reads the emitted playlist_plan.json
 from __future__ import annotations
 
 import argparse
+import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
 
-from .common import die, path_key, write_json
+from .common import PLAN_PREFIX, die, path_key, write_json
 from .game import audio_dir_for, radio_info_files, resolve_game_dir
 from .metadata import _load_cache_entries  # internal cache reader (path_key -> entry)
 from .metadata import collect_audio_files, guess_track_metadata
@@ -228,6 +230,14 @@ def cmd_reconstruct_plan(args: argparse.Namespace) -> int:
         "assignments": assignments,
         "builtin_targets": [],
     }
+
+    if args.out == "-":
+        # Emit the plan on stdout as a single marker-prefixed compact JSON line
+        # so the UI can read it without a file; keep the human summary on stderr.
+        print(f"{PLAN_PREFIX}{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}")
+        print(f"Assignments  : {len(assignments)}", file=sys.stderr)
+        return 0
+
     out_path = Path(args.out).expanduser()
     write_json(out_path, payload)
 

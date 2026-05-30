@@ -1149,15 +1149,39 @@ def _resolve_playlist_plan_radio(
     return radio
 
 
-def load_playlist_plan_builtin_targets(
-    plan_path: Optional[str], root: ET.Element
-) -> List[Dict[str, object]]:
+_STDIN_PLAN_CACHE: Optional[Dict[str, object]] = None
+_STDIN_PLAN_LOADED = False
+
+
+def load_plan_document(plan_path: Optional[str]) -> Optional[Dict[str, object]]:
+    """Load a playlist plan document from a file path, or from stdin when
+    ``plan_path == "-"``. build-package reads the plan twice (builtin targets +
+    groups), so the stdin payload is read once and cached for the second read."""
+    global _STDIN_PLAN_CACHE, _STDIN_PLAN_LOADED
     if not plan_path:
-        return []
+        return None
+    if plan_path == "-":
+        if not _STDIN_PLAN_LOADED:
+            _STDIN_PLAN_LOADED = True
+            raw = sys.stdin.buffer.read()
+            if raw.strip():
+                try:
+                    decoded = json.loads(raw.decode("utf-8"))
+                except json.JSONDecodeError as exc:
+                    die(f"Playlist plan parse failed from stdin: {exc}")
+                _STDIN_PLAN_CACHE = decoded if isinstance(decoded, dict) else None
+        return _STDIN_PLAN_CACHE
     path = Path(plan_path).expanduser()
     if not path.exists():
         die(f"Playlist plan not found: {path}")
     data = load_manifest(path)
+    return data if isinstance(data, dict) else None
+
+
+def load_playlist_plan_builtin_targets(
+    plan_path: Optional[str], root: ET.Element
+) -> List[Dict[str, object]]:
+    data = load_plan_document(plan_path)
     items = data.get("builtin_targets") if isinstance(data, dict) else None
     if not isinstance(items, list):
         return []
@@ -1201,12 +1225,7 @@ def load_playlist_plan_groups(
     *,
     skip_radios: Optional[set[int]] = None,
 ) -> List[Dict[str, object]]:
-    if not plan_path:
-        return []
-    path = Path(plan_path).expanduser()
-    if not path.exists():
-        die(f"Playlist plan not found: {path}")
-    data = load_manifest(path)
+    data = load_plan_document(plan_path)
     items = data.get("assignments") if isinstance(data, dict) else None
     if not isinstance(items, list):
         return []

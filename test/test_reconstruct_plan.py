@@ -179,3 +179,39 @@ def test_reconstruct_plan_command_writes_plan_file(tmp_path: Path) -> None:
     assert payload["schema_version"] == 2
     assert len(payload["assignments"]) == 2
     assert {item["radio_code"] for item in payload["assignments"]} == {"XS"}
+
+
+def test_reconstruct_plan_command_emits_plan_on_stdout(tmp_path: Path) -> None:
+    game_audio, _baseline_audio, sources = _setup_diff_dirs(tmp_path)
+    game_dir = tmp_path / "game"
+    baseline_manifest = tmp_path / "baseline" / "baseline_manifest.json"
+    baseline_manifest.write_text(
+        json.dumps({"kind": "game_baseline", "state": "current"}), encoding="utf-8"
+    )
+
+    result = run_cli(
+        "reconstruct-plan",
+        "--game-dir",
+        str(game_dir),
+        "--baseline-manifest",
+        str(baseline_manifest),
+        "--music-dir",
+        str(sources),
+        "--source",
+        "CHS",
+        "--target",
+        "EN",
+        "--out",
+        "-",
+    )
+
+    assert_cli_ok(result)
+    prefix = "FH_RADIO_STUDIO_PLAN "
+    plan_lines = [line for line in result.stdout.splitlines() if line.startswith(prefix)]
+    assert len(plan_lines) == 1
+    payload = json.loads(plan_lines[0][len(prefix) :])
+    assert payload["schema_version"] == 2
+    assert len(payload["assignments"]) == 2
+    assert {item["radio_code"] for item in payload["assignments"]} == {"XS"}
+    # The human summary goes to stderr so it never corrupts the stdout JSON line.
+    assert "Assignments" in result.stderr

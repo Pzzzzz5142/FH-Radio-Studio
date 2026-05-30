@@ -34,6 +34,11 @@ for _stream in (sys.stdout, sys.stderr):
 DEFAULT_STEAM_GAME_DIR = Path(r"C:\Program Files (x86)\Steam\steamapps\common\ForzaHorizon6")
 DEFAULT_PYTHON_VERSION = "3.12"
 
+# Marker prefix for emitting a playlist plan document on stdout as a single
+# compact JSON line (mirrors PROGRESS_PREFIX). Used by `reconstruct-plan --out -`
+# so the UI can read the plan from the process stdout instead of a file.
+PLAN_PREFIX = "FH_RADIO_STUDIO_PLAN "
+
 
 def env_path(name: str) -> Optional[Path]:
     value = os.environ.get(name)

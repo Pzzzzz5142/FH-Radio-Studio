@@ -1486,6 +1486,70 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
     assert playlist_names(by_number["5"], "Event") == ["HZ6_R5_MOCK_REFERENCE"]
 
 
+def test_build_package_reads_playlist_plan_from_stdin(mock_game, tmp_path) -> None:
+    source_xs = tmp_path / "sources" / "FH Radio Studio Dev - Stdin Draft.wav"
+    package_dir = tmp_path / "packages" / "stdin-plan"
+    baseline_dir = tmp_path / "backups" / "baseline-current"
+    write_test_tone(source_xs)
+
+    baseline = run_cli(
+        "baseline",
+        "create",
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--out-dir",
+        str(baseline_dir),
+        "--state",
+        "current",
+        "--yes",
+    )
+    assert_cli_ok(baseline)
+    baseline_manifest = baseline_dir / "baseline_manifest.json"
+
+    # Same schema_version 2 document the file mode uses, piped over stdin via "-".
+    plan_json = json.dumps(
+        {
+            "schema_version": 2,
+            "assignments": [
+                {
+                    "source": str(source_xs),
+                    "radio_code": "XS",
+                    "playlist_type": "FreeRoam",
+                    "slot": 1,
+                }
+            ],
+            "builtin_targets": [],
+        }
+    )
+
+    build = run_cli(
+        "build-package",
+        str(source_xs),
+        "--game-dir",
+        str(mock_game.game_dir),
+        "--radio",
+        "4",
+        "--playlist-plan",
+        "-",
+        "--baseline-manifest",
+        str(baseline_manifest),
+        "--out-dir",
+        str(package_dir),
+        "--playlist-mode",
+        "only",
+        "--skip-bank",
+        stdin=plan_json,
+    )
+    assert_cli_ok(build)
+
+    manifest_path = package_dir / "package" / "fh_radio_studio_package_manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    by_radio = {item["radio"]: item for item in payload["radios"]}
+    assert by_radio[4]["radio_code"] == "XS"
+    assert by_radio[4]["assignments"][0]["source"] == str(source_xs.resolve())
+    assert by_radio[4]["assignments"][0]["playlist_types"] == ["FreeRoam"]
+
+
 def test_baseline_loudness_plan_reports_parallel_processes(tmp_path: Path) -> None:
     import argparse
 

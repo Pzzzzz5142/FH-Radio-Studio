@@ -99,7 +99,7 @@ def full_project(mock_game: MockGame) -> TestProject:
     )
 
 
-def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+def run_cli(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["uv", "run", "--project", str(REPO_ROOT), "fh-radio-studio", *args],
         cwd=REPO_ROOT,
@@ -107,6 +107,7 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
         text=True,
         encoding="utf-8",
         errors="replace",
+        input=stdin,
         check=False,
     )
 

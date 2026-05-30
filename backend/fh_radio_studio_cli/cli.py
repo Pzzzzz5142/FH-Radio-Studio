@@ -258,7 +258,9 @@ def build_parser() -> argparse.ArgumentParser:
     reconstruct_plan.add_argument("--source", help="Source display language (RadioInfo preference)")
     reconstruct_plan.add_argument("--target", help="Target voice language (RadioInfo preference)")
     reconstruct_plan.add_argument(
-        "--out", required=True, help="Path to write the reconstructed playlist_plan.json"
+        "--out",
+        required=True,
+        help="Path to write the reconstructed playlist_plan.json, or '-' to emit it on stdout",
     )
     reconstruct_plan.set_defaults(func=cmd_reconstruct_plan)
 
@@ -361,7 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     package.add_argument(
         "--playlist-plan",
-        help="FH Radio Studio playlist_plan.json; when present, build all assigned radios in one package",
+        help="FH Radio Studio playlist_plan.json (or '-' to read from stdin); when present, build all assigned radios in one package",
     )
     package.add_argument(
         "--playlist-from-package",
