@@ -10,7 +10,6 @@ from .package import collect_package_deploy_files, package_audio_dir
 
 PROGRESS_PREFIX = "FH_RADIO_STUDIO_PROGRESS "
 _PARALLEL_HASH_THRESHOLD_BYTES = 64 * 1024 * 1024
-_OLD_BASELINE_BUILD_LIMIT = 5
 
 
 def baseline_manifest_path(root: Path) -> Path:
@@ -312,144 +311,6 @@ def add_supported_game_version_id(manifest: Dict[str, object], game_version: obj
 def baseline_backup_name(state: str, game_version: object) -> str:
     state_id = sanitize_token(state, "baseline").lower().replace("_", "-")
     return f"fh6-{baseline_version_id(game_version)}-baseline-{state_id}"
-
-
-def _normalize_game_version_id(value: object) -> Optional[str]:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    normalized = sanitize_token(value, "unknown").lower().replace("_", "-")
-    return normalized if normalized and normalized != "unknown" else None
-
-
-def _old_baseline_version_id(path: Path, manifest: Optional[Dict[str, object]]) -> str:
-    if manifest:
-        for key in ("archive_game_version_id", "game_version_id"):
-            normalized = _normalize_game_version_id(manifest.get(key))
-            if normalized:
-                return normalized
-        normalized = _normalize_game_version_id(baseline_version_id(manifest.get("game_version")))
-        if normalized:
-            return normalized
-
-    match = re.match(r"^fh6-(.+)-baseline-old-\d{8}_\d{6}(?:-\d+)?$", path.name)
-    if match:
-        normalized = _normalize_game_version_id(match.group(1))
-        if normalized:
-            return normalized
-    return "unknown"
-
-
-def _parse_manifest_time(value: object) -> Optional[datetime]:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _old_baseline_last_used_at(path: Path, manifest: Optional[Dict[str, object]]) -> datetime:
-    if manifest:
-        for key in ("archived_at", "promoted_at", "created_at"):
-            try:
-                parsed = _parse_manifest_time(manifest.get(key))
-            except ValueError:
-                parsed = None
-            if parsed:
-                return parsed
-
-    match = re.match(r"^fh6-.+-baseline-old-(\d{8}_\d{6})(?:-\d+)?$", path.name)
-    if match:
-        try:
-            return datetime.strptime(match.group(1), "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
-        except ValueError:
-            pass
-    return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
-
-
-def _load_old_baseline_manifest(path: Path) -> Optional[Dict[str, object]]:
-    manifest_path = baseline_manifest_path(path)
-    if not manifest_path.exists():
-        return None
-    try:
-        payload = load_manifest(manifest_path)
-    except CliError:
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
-def _is_old_baseline_archive(path: Path, manifest: Optional[Dict[str, object]]) -> bool:
-    if not path.is_dir():
-        return False
-    if re.match(r"^fh6-.+-baseline-old-\d{8}_\d{6}(?:-\d+)?$", path.name):
-        return True
-    return bool(manifest and manifest.get("kind") == "game_baseline")
-
-
-def _old_baseline_archive_dir(
-    old_root: Path,
-    version_id: str,
-    stamp: str,
-) -> Path:
-    base = old_root / f"fh6-{version_id}-baseline-old-{stamp}"
-    if not base.exists():
-        return base
-    for suffix in range(2, 1000):
-        candidate = old_root / f"{base.name}-{suffix}"
-        if not candidate.exists():
-            return candidate
-    die(f"Could not choose a unique old baseline directory under {old_root}")
-
-
-def _mark_old_baseline_archived(
-    old_dir: Path,
-    version_id: str,
-    archived_at: datetime,
-) -> None:
-    manifest_path = baseline_manifest_path(old_dir)
-    if not manifest_path.exists():
-        return
-    try:
-        manifest = load_manifest(manifest_path)
-    except CliError:
-        return
-    manifest["archived_at"] = archived_at.isoformat()
-    manifest["archive_game_version_id"] = version_id
-    write_json(manifest_path, manifest)
-
-
-def _prune_old_baselines_by_build_id(
-    old_root: Path,
-    *,
-    keep_builds: int = _OLD_BASELINE_BUILD_LIMIT,
-) -> List[Path]:
-    if keep_builds <= 0 or not old_root.exists():
-        return []
-
-    entries: List[Tuple[str, datetime, str, Path]] = []
-    for child in old_root.iterdir():
-        manifest = _load_old_baseline_manifest(child)
-        if not _is_old_baseline_archive(child, manifest):
-            continue
-        entries.append(
-            (
-                _old_baseline_version_id(child, manifest),
-                _old_baseline_last_used_at(child, manifest),
-                child.name,
-                child,
-            )
-        )
-
-    entries.sort(key=lambda item: (item[1], item[2]), reverse=True)
-    kept_versions: set[str] = set()
-    removed: List[Path] = []
-    for version_id, _, _, path in entries:
-        if version_id not in kept_versions and len(kept_versions) < keep_builds:
-            kept_versions.add(version_id)
-            continue
-        shutil.rmtree(path)
-        removed.append(path)
-    return removed
 
 
 def describe_game_version(game_version: object) -> str:
@@ -834,7 +695,6 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     if args.baseline_action == "promote":
         current_dir = Path(args.current_dir).expanduser()
         pending_dir = Path(args.pending_dir).expanduser()
-        old_root = Path(args.old_root).expanduser()
         target_current_dir = (
             Path(args.target_current_dir).expanduser()
             if getattr(args, "target_current_dir", None)
@@ -843,30 +703,22 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         pending_manifest = baseline_manifest_path(pending_dir)
         if not pending_manifest.exists():
             die(f"Pending baseline not found: {pending_manifest}")
-        old_version_id = "unknown"
-        current_manifest = baseline_manifest_path(current_dir)
-        if current_manifest.exists():
-            current_manifest_data = load_manifest(current_manifest)
-            old_version_id = baseline_version_id(current_manifest_data.get("game_version"))
-        archived_at = datetime.now(timezone.utc)
-        old_dir = _old_baseline_archive_dir(
-            old_root,
-            old_version_id,
-            datetime.now().strftime("%Y%m%d_%H%M%S"),
-        )
+        if current_dir.resolve() == pending_dir.resolve():
+            die("Current and pending baseline directories must be different.")
+        if target_current_dir.resolve() == pending_dir.resolve():
+            die("Target current and pending baseline directories must be different.")
+        if target_current_dir.exists() and target_current_dir.resolve() != current_dir.resolve():
+            die(f"Target current baseline already exists: {target_current_dir}")
 
         print(f"Current baseline : {current_dir}")
         print(f"Pending baseline : {pending_dir}")
         print(f"Target current   : {target_current_dir}")
-        print(f"Old baseline     : {old_dir}")
         if not args.yes:
             print("\nDry run only. Re-run with --yes to promote pending baseline.")
             return 0
 
-        old_root.mkdir(parents=True, exist_ok=True)
         if current_dir.exists():
-            shutil.move(str(current_dir), str(old_dir))
-            _mark_old_baseline_archived(old_dir, old_version_id, archived_at)
+            shutil.rmtree(current_dir)
         pending_manifest_data = load_manifest(pending_manifest)
         pending_manifest_data["state"] = "current"
         pending_manifest_data["backup_name"] = baseline_backup_name(
@@ -883,13 +735,6 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         target_manifest = baseline_manifest_path(target_current_dir)
         _rewrite_manifest_backup_paths(pending_manifest_data, target_manifest)
         write_json(target_manifest, pending_manifest_data)
-        pruned_old = _prune_old_baselines_by_build_id(old_root)
-        if pruned_old:
-            print(
-                "Old baseline LRU: "
-                f"removed {len(pruned_old)} archived baseline(s); "
-                f"keeping the latest {_OLD_BASELINE_BUILD_LIMIT} Steam build id(s)."
-            )
         print(f"Promoted pending baseline to: {target_current_dir}")
         return 0
 

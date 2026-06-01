@@ -685,7 +685,7 @@ def test_build_package_completes_deploy_set_from_baseline(mock_game, full_projec
     ) == md5_file(mock_game.game_dir / "media" / "Stripped" / "StringTables" / "JP.zip")
 
 
-def test_baseline_promote_rewrites_backup_paths_after_move(mock_game, full_project) -> None:
+def test_baseline_promote_rewrites_backup_paths_after_replace(mock_game, full_project) -> None:
     current_dir = full_project.backups_dir / "baseline-current"
     pending_dir = full_project.backups_dir / "baseline-pending-verify"
     old_root = full_project.backups_dir / "baseline-old"
@@ -724,11 +724,10 @@ def test_baseline_promote_rewrites_backup_paths_after_move(mock_game, full_proje
         str(pending_dir),
         "--target-current-dir",
         str(current_dir),
-        "--old-root",
-        str(old_root),
         "--yes",
     )
     assert_cli_ok(promote)
+    assert not old_root.exists()
 
     promoted_manifest = current_dir / "baseline_manifest.json"
     payload = json.loads(promoted_manifest.read_text(encoding="utf-8"))
@@ -741,41 +740,10 @@ def test_baseline_promote_rewrites_backup_paths_after_move(mock_game, full_proje
         assert item["md5"] == md5_file(current_dir / item["install_relative_path"])
 
 
-def test_baseline_promote_keeps_latest_five_old_build_ids(mock_game, full_project) -> None:
+def test_baseline_promote_ignores_legacy_old_root(mock_game, full_project) -> None:
     current_dir = full_project.backups_dir / "baseline-current"
     pending_dir = full_project.backups_dir / "baseline-pending-verify"
     old_root = full_project.backups_dir / "baseline-old"
-
-    def write_old_build(version_id: str, stamp: str) -> Path:
-        old_dir = old_root / f"fh6-{version_id}-baseline-old-{stamp}"
-        old_dir.mkdir(parents=True, exist_ok=True)
-        archived_at = (
-            f"{stamp[0:4]}-{stamp[4:6]}-{stamp[6:8]}"
-            f"T{stamp[9:11]}:{stamp[11:13]}:{stamp[13:15]}+00:00"
-        )
-        (old_dir / "baseline_manifest.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "kind": "game_baseline",
-                    "game_version_id": version_id,
-                    "archived_at": archived_at,
-                    "files": [],
-                }
-            ),
-            encoding="utf-8",
-        )
-        return old_dir
-
-    removed_duplicate = write_old_build("steam-b11111111", "20000101_000000")
-    removed_build = write_old_build("steam-b22222222", "20000102_000000")
-    removed_older_build = write_old_build("steam-b33333333", "20000103_000000")
-    kept_builds = [
-        write_old_build("steam-b44444444", "20000104_000000"),
-        write_old_build("steam-b55555555", "20000105_000000"),
-        write_old_build("steam-b66666666", "20000106_000000"),
-        write_old_build("steam-b11111111", "20000107_000000"),
-    ]
 
     assert_cli_ok(
         run_cli(
@@ -819,14 +787,7 @@ def test_baseline_promote_keeps_latest_five_old_build_ids(mock_game, full_projec
     )
 
     assert_cli_ok(promote)
-    remaining = sorted(path.name for path in old_root.iterdir() if path.is_dir())
-    assert len(remaining) == 5
-    assert not removed_duplicate.exists()
-    assert not removed_build.exists()
-    assert not removed_older_build.exists()
-    for old_dir in kept_builds:
-        assert old_dir.exists()
-    assert any("steam-b99000001" in name for name in remaining)
+    assert not old_root.exists()
 
 
 def test_baseline_apply_overwrites_without_creating_restore_backup(mock_game, full_project) -> None:

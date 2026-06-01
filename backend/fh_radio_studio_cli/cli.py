@@ -454,7 +454,7 @@ def build_parser() -> argparse.ArgumentParser:
     baseline_promote.add_argument(
         "--target-current-dir", help="Destination directory for the promoted current baseline"
     )
-    baseline_promote.add_argument("--old-root", required=True)
+    baseline_promote.add_argument("--old-root", help=argparse.SUPPRESS)
     baseline_promote.add_argument("--yes", action="store_true")
     baseline_promote.set_defaults(func=cmd_baseline)
     baseline_discard = baseline_sub.add_parser(

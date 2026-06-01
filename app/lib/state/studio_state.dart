@@ -1526,7 +1526,6 @@ class StudioState {
     state: 'pending-verify',
     versionId: baselinePlanSummary?.gameVersionId,
   );
-  String get oldBaselinesDir => p.join(backupsDir, 'baseline-old');
   String get currentBaselineManifest =>
       p.join(currentBaselineDir, 'baseline_manifest.json');
   String get pendingBaselineManifest =>
@@ -4751,8 +4750,6 @@ class StudioController extends StateNotifier<StudioState> {
         state.pendingBaselineDir,
         '--target-current-dir',
         targetCurrentDir,
-        '--old-root',
-        state.oldBaselinesDir,
         '--yes',
       ]);
       if (result.ok) {
