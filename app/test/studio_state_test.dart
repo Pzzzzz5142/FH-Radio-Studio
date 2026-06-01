@@ -954,7 +954,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
           slot: 1,
           loudnessOffsetLu: kDefaultPackageLoudnessOffsetLu,
         );
-        PlaylistPlanStore.write(
+        _writeLegacyPlaylistPlan(
           projectDir,
           const PlaylistPlan.empty().assign(
             source: source.path,
@@ -1005,7 +1005,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
           slot: 1,
           loudnessOffsetLu: 0.0,
         );
-        PlaylistPlanStore.write(
+        _writeLegacyPlaylistPlan(
           projectDir,
           const PlaylistPlan.empty().assign(
             source: source.path,
@@ -1062,7 +1062,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         playlistType: 'FreeRoam',
         slot: 1,
       );
-      PlaylistPlanStore.write(
+      _writeLegacyPlaylistPlan(
         projectDir,
         const PlaylistPlan.empty().assign(
           source: source.path,
@@ -1194,7 +1194,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
       final source = File(
         p.join(FhRadioStudioProject.sourcesDir(projectDir), 'loud-song.wav'),
       )..createSync(recursive: true);
-      PlaylistPlanStore.write(
+      _writeLegacyPlaylistPlan(
         projectDir,
         PlaylistPlan.empty().assign(
           source: source.path,
@@ -1261,7 +1261,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
           ),
         );
         source.createSync(recursive: true);
-        PlaylistPlanStore.write(
+        _writeLegacyPlaylistPlan(
           projectDir,
           const PlaylistPlan.empty().assign(
             source: source.path,
@@ -1935,6 +1935,12 @@ BaselinePlanSummary _brokenBaselinePlan() {
       ),
     ],
   );
+}
+
+void _writeLegacyPlaylistPlan(String projectDir, PlaylistPlan plan) {
+  final file = File(PlaylistPlanStore.configPath(projectDir));
+  file.parent.createSync(recursive: true);
+  file.writeAsStringSync(plan.encodeForCli(), encoding: utf8);
 }
 
 void _writePackageManifestFile(

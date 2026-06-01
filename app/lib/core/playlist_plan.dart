@@ -332,8 +332,8 @@ class PlaylistPlan {
   }
 
   /// Serialize to the schema_version 2 document that `build-package
-  /// --playlist-plan -` reads from stdin. Same shape as [PlaylistPlanStore.write]
-  /// (minus the cosmetic `updated_at`), emitted compactly for a single pipe write.
+  /// --playlist-plan -` reads from stdin. Same shape as the legacy
+  /// `playlist_plan.json`, emitted compactly for a single pipe write.
   String encodeForCli() {
     final ordered = assignments.values.toList()..sort(_assignmentSort);
     final targets = builtinTargets.toList()..sort();
@@ -456,11 +456,7 @@ class PlaylistPlanStore {
     final file = File(configPath(projectDir));
     if (!file.existsSync()) return const PlaylistPlan.empty();
     final plan = _readFile(file);
-    final normalized = projectSourcesOnly(projectDir, plan);
-    if (!_samePlan(plan, normalized)) {
-      write(projectDir, normalized);
-    }
-    return normalized;
+    return projectSourcesOnly(projectDir, plan);
   }
 
   static PlaylistPlan _readFile(File file) {
@@ -475,38 +471,13 @@ class PlaylistPlanStore {
     }
   }
 
-  static void write(String projectDir, PlaylistPlan plan) {
-    final normalized = projectSourcesOnly(projectDir, plan);
-    if (!normalized.hasDraft) {
-      delete(projectDir);
-      return;
-    }
-    FhRadioStudioProject.ensure(projectDir);
-    final file = File(configPath(projectDir));
-    file.parent.createSync(recursive: true);
-    final ordered = normalized.assignments.values.toList()
-      ..sort(PlaylistPlan._assignmentSort);
-    final targets = normalized.builtinTargets.toList()..sort();
-    file.writeAsStringSync(
-      const JsonEncoder.withIndent('  ').convert({
-        'schema_version': 2,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-        'assignments': [for (final assignment in ordered) assignment.toJson()],
-        'builtin_targets': [
-          for (final target in targets) PlaylistPlan._targetJson(target),
-        ],
-      }),
-      encoding: utf8,
-    );
-  }
-
   static void delete(String projectDir) {
     final file = File(configPath(projectDir));
     if (!file.existsSync()) return;
     try {
       file.deleteSync();
     } on FileSystemException {
-      // Best-effort cleanup; callers can still overwrite on the next write.
+      // Best-effort cleanup; the next project open can retry this legacy file.
     }
   }
 
@@ -543,28 +514,6 @@ class PlaylistPlanStore {
       return null;
     }
     return assignment.copyWith(source: absolute);
-  }
-
-  static bool _samePlan(PlaylistPlan a, PlaylistPlan b) {
-    final aAssignments = a.assignments.values.map(_assignmentSignature).toList()
-      ..sort();
-    final bAssignments = b.assignments.values.map(_assignmentSignature).toList()
-      ..sort();
-    if (aAssignments.length != bAssignments.length) return false;
-    for (var index = 0; index < aAssignments.length; index += 1) {
-      if (aAssignments[index] != bAssignments[index]) return false;
-    }
-    final aTargets = a.builtinTargets.toList()..sort();
-    final bTargets = b.builtinTargets.toList()..sort();
-    if (aTargets.length != bTargets.length) return false;
-    for (var index = 0; index < aTargets.length; index += 1) {
-      if (aTargets[index] != bTargets[index]) return false;
-    }
-    return true;
-  }
-
-  static String _assignmentSignature(PlaylistAssignment assignment) {
-    return jsonEncode(assignment.toJson());
   }
 }
 

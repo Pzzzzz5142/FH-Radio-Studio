@@ -13,7 +13,7 @@ process pipes: `reconstruct-plan --out -` emits the schema_version 2 plan as a
 marker-prefixed (`FH_RADIO_STUDIO_PLAN`) compact JSON line on stdout (human
 summary on stderr), and `build-package --playlist-plan -` reads the plan from
 stdin. The CLI's file-path modes (`--out <path>` / `--playlist-plan <path>`) and
-`PlaylistPlanStore` (including `delete`) are retained for compatibility.
+`PlaylistPlanStore.read` / `delete` are retained for legacy file compatibility.
 
 **Why.** Both the UI (per edit, outside the busy lock) and the CLI
 (`reconstruct-plan`) wrote the same file, with a real race window during build

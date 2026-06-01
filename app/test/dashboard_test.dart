@@ -213,7 +213,7 @@ void main() {
       playlistType: 'FreeRoam',
       slot: 1,
     );
-    PlaylistPlanStore.write(
+    _writeLegacyPlaylistPlan(
       projectDir,
       PlaylistPlan(assignments: {assignment.assignmentKey: assignment}),
     );
@@ -1692,6 +1692,12 @@ PackageArtifactSummary _packageSummary({required String sourceLang}) {
     previewTracks: const ['Test Track'],
     assignments: const [],
   );
+}
+
+void _writeLegacyPlaylistPlan(String projectDir, PlaylistPlan plan) {
+  final file = File(PlaylistPlanStore.configPath(projectDir));
+  file.parent.createSync(recursive: true);
+  file.writeAsStringSync(plan.encodeForCli(), encoding: utf8);
 }
 
 GameFileIntegritySummary _integritySummary({

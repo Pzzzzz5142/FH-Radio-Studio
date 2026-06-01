@@ -885,7 +885,7 @@ void main() {
         updatedAt: DateTime.utc(2026, 5, 22),
       ),
     );
-    PlaylistPlanStore.write(
+    _writeLegacyPlaylistPlan(
       projectDir,
       const PlaylistPlan.empty().assign(
         source: audio.path,
@@ -2276,6 +2276,12 @@ BaselinePlanSummary _lockedBaselinePlan() {
       ),
     ],
   );
+}
+
+void _writeLegacyPlaylistPlan(String projectDir, PlaylistPlan plan) {
+  final file = File(PlaylistPlanStore.configPath(projectDir));
+  file.parent.createSync(recursive: true);
+  file.writeAsStringSync(plan.encodeForCli(), encoding: utf8);
 }
 
 void _writeIntegrityFixture(

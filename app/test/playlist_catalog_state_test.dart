@@ -531,7 +531,7 @@ void main() {
     },
   );
 
-  test('playlist plan persists builtin restore targets', () {
+  test('playlist plan store reads legacy builtin restore targets', () {
     final project = Directory.systemTemp.createTempSync(
       'fh-radio-studio-playlist-builtin-',
     );
@@ -544,7 +544,7 @@ void main() {
       playlistType: 'Event',
     );
 
-    PlaylistPlanStore.write(project.path, plan);
+    _writeLegacyPlaylistPlan(project.path, plan);
     final restored = PlaylistPlanStore.read(project.path);
 
     expect(
@@ -925,7 +925,7 @@ void main() {
     });
 
     final source = p.join(project.path, 'sources', 'old-song.wav');
-    PlaylistPlanStore.write(
+    _writeLegacyPlaylistPlan(
       project.path,
       PlaylistPlan.empty().assign(
         source: source,
@@ -956,7 +956,7 @@ void main() {
     )..createSync(recursive: true);
     final outside = p.join(Directory.current.path, 'outside.wav');
 
-    PlaylistPlanStore.write(
+    _writeLegacyPlaylistPlan(
       projectDir,
       PlaylistPlan.empty()
           .assign(
@@ -996,6 +996,12 @@ String _tempProjectDir() {
     if (project.existsSync()) project.deleteSync(recursive: true);
   });
   return project.path;
+}
+
+void _writeLegacyPlaylistPlan(String projectDir, PlaylistPlan plan) {
+  final file = File(PlaylistPlanStore.configPath(projectDir));
+  file.parent.createSync(recursive: true);
+  file.writeAsStringSync(plan.encodeForCli(), encoding: utf8);
 }
 
 void _writeFsb5Bank(File file, {required int samples}) {
