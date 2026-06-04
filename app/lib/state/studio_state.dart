@@ -13,6 +13,7 @@ import '../core/playlist_plan.dart';
 import '../core/fh_radio_studio_cli.dart';
 import '../core/package_manifest.dart';
 import '../core/path_keys.dart';
+import '../core/project_json_guard.dart';
 import '../core/siren_audio_cache.dart';
 import '../core/siren_catalog.dart';
 import '../core/siren_imports.dart';
@@ -4809,9 +4810,10 @@ class StudioController extends StateNotifier<StudioState> {
     data['build_compatibility_updated_at'] = DateTime.now()
         .toUtc()
         .toIso8601String();
-    manifestFile.writeAsStringSync(
-      const JsonEncoder.withIndent('  ').convert(data),
-      encoding: utf8,
+    writeProjectJsonSync(
+      projectDir: state.projectDir,
+      file: manifestFile,
+      payload: data,
     );
     return true;
   }

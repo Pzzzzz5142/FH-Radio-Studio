@@ -9,6 +9,7 @@ from .language import (
     write_user_preferred_lang,
 )
 from .package import collect_package_deploy_files
+from .project_json_guard import write_project_json
 from .project_refs import project_path_or_absolute
 
 
@@ -63,7 +64,7 @@ def _write_last_applied_manifest(
         ),
         "package_files": package_files,
     }
-    write_json(manifest_path, manifest)
+    write_project_json(manifest_path, manifest, project_dir=project_dir)
 
 
 def _last_applied_md5s(path: Optional[str]) -> Dict[str, str]:

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import 'path_keys.dart';
+import 'project_json_guard.dart';
 import 'project_refs.dart';
 import 'project_workspace.dart';
 
@@ -179,10 +180,7 @@ class TrackMetadataCache {
       final data = decoded.map((key, value) => MapEntry('$key', value));
       data['tracks'] = kept;
       data['updated_at'] = DateTime.now().toUtc().toIso8601String();
-      file.writeAsStringSync(
-        const JsonEncoder.withIndent('  ').convert(data),
-        encoding: utf8,
-      );
+      writeProjectJsonSync(projectDir: projectDir, file: file, payload: data);
     } on FormatException {
       return;
     } on FileSystemException {

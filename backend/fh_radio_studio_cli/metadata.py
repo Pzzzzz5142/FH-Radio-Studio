@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-from .common import die, path_key, sf, write_json
+from .common import die, path_key, sf
+from .project_json_guard import write_project_json
 from .project_refs import (
     ProjectRefError,
     normalize_project_ref,
@@ -234,7 +235,7 @@ def cmd_scan_metadata(args: argparse.Namespace) -> int:
             key=lambda item: str(item.get("source_ref") or item.get("source") or "").casefold(),
         ),
     }
-    write_json(cache_path, payload)
+    write_project_json(cache_path, payload, project_dir=project_dir)
 
     summary = {
         "cache": str(cache_path),
@@ -420,7 +421,7 @@ def _write_cache_entries(cache_path: Path, entries: Dict[str, Dict[str, object]]
             key=lambda item: str(item.get("source_ref") or item.get("source") or "").casefold(),
         ),
     }
-    write_json(cache_path, payload)
+    write_project_json(cache_path, payload, project_dir=cache_path.parent.parent)
 
 
 def _cache_key_for_path(project_dir: Path, path: Path) -> str:

@@ -7,6 +7,7 @@ from .baseline_order import is_baseline_derived_index_path, write_baseline_bank_
 from .common import *
 from .game import audio_dir_for, resolve_game_dir, steam_game_version
 from .package import collect_package_deploy_files, package_audio_dir
+from .project_json_guard import write_project_json
 from .project_refs import is_project_ref, project_path_or_absolute, resolve_project_ref
 
 PROGRESS_PREFIX = "FH_RADIO_STUDIO_PROGRESS "
@@ -720,7 +721,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
                 f"({bank_order_index['ok_bank_count']}/{bank_order_index['bank_count']} banks matched)"
             )
 
-        write_json(manifest_path, manifest_data)
+        write_project_json(manifest_path, manifest_data, project_dir=project_dir)
         print(f"Baseline manifest: {manifest_path}")
         return 0
 
@@ -766,7 +767,11 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         shutil.move(str(pending_dir), str(target_current_dir))
         target_manifest = baseline_manifest_path(target_current_dir)
         _rewrite_manifest_backup_paths(pending_manifest_data, target_manifest)
-        write_json(target_manifest, pending_manifest_data)
+        write_project_json(
+            target_manifest,
+            pending_manifest_data,
+            project_dir=_project_root_from_baseline_dir(target_current_dir),
+        )
         print(f"Promoted pending baseline to: {target_current_dir}")
         return 0
 
@@ -884,7 +889,11 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         if not args.yes:
             print("\nDry run only. Re-run with --yes to update the baseline manifest.")
             return 0
-        write_json(manifest_path, manifest)
+        write_project_json(
+            manifest_path,
+            manifest,
+            project_dir=_project_root_from_baseline_dir(manifest_path.parent),
+        )
         print(
             "Baseline build compatibility updated."
             if changed

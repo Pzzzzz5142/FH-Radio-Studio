@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import 'path_keys.dart';
+import 'project_json_guard.dart';
 import 'project_refs.dart';
 import 'project_workspace.dart';
 import 'track_metadata_cache.dart';
@@ -162,16 +163,17 @@ class TrackTimingStore {
       ..sort(
         (a, b) => a.source.toLowerCase().compareTo(b.source.toLowerCase()),
       );
-    file.writeAsStringSync(
-      const JsonEncoder.withIndent('  ').convert({
+    writeProjectJsonSync(
+      projectDir: projectDir,
+      file: file,
+      payload: {
         'schema_version': 2,
         'updated_at': DateTime.now().toUtc().toIso8601String(),
         'tracks': [
           for (final config in ordered)
             _withTrackKey(projectDir, config).toJson(),
         ],
-      }),
-      encoding: utf8,
+      },
     );
   }
 
@@ -228,13 +230,14 @@ class TrackTimingStore {
     final path = buildManifestPath(projectDir);
     final file = File(path);
     file.parent.createSync(recursive: true);
-    file.writeAsStringSync(
-      const JsonEncoder.withIndent('  ').convert({
+    writeProjectJsonSync(
+      projectDir: projectDir,
+      file: file,
+      payload: {
         'schema_version': 2,
         'created_at': DateTime.now().toUtc().toIso8601String(),
         'tracks': tracks,
-      }),
-      encoding: utf8,
+      },
     );
     return path;
   }

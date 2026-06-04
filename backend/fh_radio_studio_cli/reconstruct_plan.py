@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
 
-from .common import PLAN_PREFIX, die, path_key, write_json
+from .common import PLAN_PREFIX, die, path_key
 from .game import audio_dir_for, radio_info_files, resolve_game_dir
 from .metadata import _load_cache_entries  # internal cache reader (path_key -> entry)
 from .metadata import collect_audio_files, guess_track_metadata
@@ -27,6 +27,7 @@ from .package import (
     normalize_playlist_type,
     radio_code_for_station,
 )
+from .project_json_guard import write_project_json
 from .project_refs import ProjectRefError, resolve_project_ref, track_key_for_project_path
 
 PLAYLIST_TYPES = ("FreeRoam", "Event")
@@ -268,7 +269,7 @@ def cmd_reconstruct_plan(args: argparse.Namespace) -> int:
         return 0
 
     out_path = Path(args.out).expanduser()
-    write_json(out_path, payload)
+    write_project_json(out_path, payload)
 
     print(f"Plan written : {out_path}")
     print(f"Assignments  : {len(assignments)}")

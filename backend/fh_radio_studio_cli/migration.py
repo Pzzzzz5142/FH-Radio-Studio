@@ -6,12 +6,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
-from .common import write_json
 from .metadata import (
     build_track_metadata_cache_entry,
     collect_audio_files,
     metadata_cache_path,
 )
+from .project_json_guard import write_project_json
 from .project_refs import (
     absolute_path,
     is_project_ref,
@@ -62,21 +62,25 @@ def migrate_project_paths(project_dir: Path) -> int:
     changed += int(metadata_changed)
 
     changed += _migrate_track_key_file(
+        project_dir,
         project_dir / "analysis" / "track_timing.json",
         track_key_for_project_path,
         source_field="source",
     )
     changed += _migrate_track_key_file(
+        project_dir,
         project_dir / "analysis" / "build_timing_manifest.json",
         track_key_for_project_path,
         source_field="source",
     )
     changed += _migrate_track_key_file(
+        project_dir,
         project_dir / "siren" / "siren_imports.json",
         track_key_for_project_path,
         source_field="path",
     )
     changed += _migrate_playlist_plan(
+        project_dir,
         project_dir / ".fh-radio-studio" / "playlist_plan.json",
         track_key_for_project_path,
     )
@@ -182,7 +186,7 @@ def _migrate_metadata(project_dir: Path, track_refs: Dict[str, str]) -> bool:
         payload["schema_version"] = 2
         payload["updated_at"] = datetime.now(timezone.utc).isoformat()
         payload["tracks"] = out
-        write_json(path, payload)
+        write_project_json(path, payload, project_dir=project_dir)
     return changed
 
 
@@ -230,11 +234,12 @@ def _upsert_metadata_asset_entries(
             out_tracks,
             key=_metadata_sort_key,
         )
-        write_json(path, payload)
+        write_project_json(path, payload, project_dir=project_dir)
     return changed
 
 
 def _migrate_track_key_file(
+    project_dir: Path,
     path: Path,
     track_key_for_project_path: Any,
     *,
@@ -271,11 +276,11 @@ def _migrate_track_key_file(
         payload["schema_version"] = max(int(payload.get("schema_version") or 1), 2)
         payload["updated_at"] = datetime.now(timezone.utc).isoformat()
         payload["tracks"] = out
-        write_json(path, payload)
+        write_project_json(path, payload, project_dir=project_dir)
     return int(changed)
 
 
-def _migrate_playlist_plan(path: Path, track_key_for_project_path: Any) -> int:
+def _migrate_playlist_plan(project_dir: Path, path: Path, track_key_for_project_path: Any) -> int:
     payload = _read_json(path)
     if not isinstance(payload, dict):
         return 0
@@ -302,7 +307,7 @@ def _migrate_playlist_plan(path: Path, track_key_for_project_path: Any) -> int:
     if changed:
         payload["schema_version"] = max(int(payload.get("schema_version") or 1), 2)
         payload["assignments"] = out
-        write_json(path, payload)
+        write_project_json(path, payload, project_dir=project_dir)
     return int(changed)
 
 
@@ -320,6 +325,8 @@ def _migrate_package_manifest(
         "source_audio_dir",
         "source_radio_info",
         "source_bank",
+        "source_package_manifest",
+        "package_root",
     ):
         if _encode_project_path_value(project_dir, payload, key):
             changed = True
@@ -364,7 +371,7 @@ def _migrate_package_manifest(
     if _walk_project_fields(project_dir, payload, {"baseline_manifest"}):
         changed = True
     if changed:
-        write_json(path, payload)
+        write_project_json(path, payload, project_dir=project_dir)
     return int(changed)
 
 
@@ -406,7 +413,7 @@ def _migrate_project_path_fields(project_dir: Path, path: Path, *, fields: set[s
         return 0
     changed = _walk_project_fields(project_dir, payload, fields)
     if changed:
-        write_json(path, payload)
+        write_project_json(path, payload, project_dir=project_dir)
     return int(changed)
 
 
@@ -467,7 +474,7 @@ def _mark_project_schema(project_dir: Path) -> bool:
         payload["current_project_dir"] = current
         changed = True
     if changed:
-        write_json(path, payload)
+        write_project_json(path, payload, project_dir=project_dir)
     return changed
 
 

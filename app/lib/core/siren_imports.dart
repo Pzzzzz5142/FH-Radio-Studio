@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import 'path_keys.dart';
+import 'project_json_guard.dart';
 import 'project_refs.dart';
 import 'project_workspace.dart';
 import 'siren_catalog.dart';
@@ -215,15 +216,16 @@ class SirenImportRegistry {
         if (byAlbum != 0) return byAlbum;
         return a.title.compareTo(b.title);
       });
-    file.writeAsStringSync(
-      const JsonEncoder.withIndent('  ').convert({
+    writeProjectJsonSync(
+      projectDir: projectDir,
+      file: file,
+      payload: {
         'schema_version': 2,
         'updated_at': DateTime.now().toUtc().toIso8601String(),
         'tracks': [
           for (final entry in sorted) _withTrackKey(projectDir, entry).toJson(),
         ],
-      }),
-      encoding: utf8,
+      },
     );
   }
 

@@ -7,6 +7,7 @@ from .audio import linear_resample
 from .common import *
 from .external_tools import find_executable
 from .fsb5 import extract_embedded_fsb
+from .project_json_guard import write_project_json
 from .project_refs import ProjectRefError, is_project_ref, resolve_project_ref
 
 LOUDNESS_ALGORITHM_VERSION = "fh-radio-studio-loudness-v2"
@@ -71,7 +72,11 @@ def ensure_baseline_loudness_envelope(
         derived_values = {}
     derived_values["loudness_envelope"] = envelope
     manifest["derived_values"] = derived_values
-    write_json(manifest_path, manifest)
+    write_project_json(
+        manifest_path,
+        manifest,
+        project_dir=_project_root_from_baseline_dir(manifest_path.parent),
+    )
     return envelope
 
 

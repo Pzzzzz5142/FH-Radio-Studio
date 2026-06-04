@@ -79,7 +79,7 @@ repos:
 
       - id: dart-format
         name: dart format
-        entry: dart format --output=none --set-exit-if-changed
+        entry: dart format
         language: system
         files: ^app/(lib|test|tool)/.*\.dart$
         types: [dart]

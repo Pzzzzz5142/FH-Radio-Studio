@@ -4,6 +4,11 @@ from pathlib import Path
 
 import pytest
 
+from backend.fh_radio_studio_cli.project_json_guard import (
+    ProjectJsonPathSchemaError,
+    find_project_json_path_violations,
+    write_project_json,
+)
 from backend.fh_radio_studio_cli.project_refs import (
     ProjectRefError,
     normalize_project_ref,
@@ -57,3 +62,64 @@ def test_track_key_is_derived_from_canonical_source_ref() -> None:
     assert left == right
     assert left.startswith("trkref_")
     assert len(left) == len("trkref_") + 32
+
+
+def test_project_json_guard_catches_project_owned_absolute_paths(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source = project / "siren" / "MSR-306877.wav"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"")
+
+    violations = find_project_json_path_violations(
+        project,
+        {
+            "tracks": [
+                {
+                    "track_key": "trkref_ok",
+                    "loudness_analysis": {"source": str(source)},
+                }
+            ]
+        },
+    )
+
+    assert len(violations) == 1
+    assert violations[0].pointer == "/tracks/0/loudness_analysis/source"
+    assert violations[0].field == "source"
+    assert violations[0].value == str(source)
+
+
+def test_project_json_guard_allows_external_absolute_paths(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source = tmp_path / "game" / "media" / "audio" / "FMODBanks" / "R4.bank"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"")
+
+    violations = find_project_json_path_violations(
+        project,
+        {
+            "files": [
+                {
+                    "source_game_path": str(source),
+                    "source": str(source),
+                }
+            ]
+        },
+    )
+
+    assert violations == []
+
+
+def test_project_json_writer_rejects_invalid_project_ref_before_writing(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    output = project / "analysis" / "bad.json"
+
+    with pytest.raises(ProjectJsonPathSchemaError):
+        write_project_json(
+            output,
+            {"tracks": [{"path": "fh-project:/sources/../bad.wav"}]},
+            project_dir=project,
+        )
+
+    assert not output.exists()

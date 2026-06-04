@@ -4,30 +4,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import 'path_keys.dart';
-
-const _legacyProjectPathFields = {
-  'source',
-  'path',
-  'cover_art_path',
-  'backup_path',
-  'package_path',
-  'package_audio',
-  'source_baseline_manifest',
-  'source_package_manifest',
-  'package_root',
-  'playlist_plan',
-  'timing_manifest',
-  'baseline_manifest',
-  'source_audio_dir',
-  'source_radio_info',
-  'source_bank',
-  'prepared_wav',
-  'staged_wav',
-  'source_string_tables_dir',
-  'source_table',
-  'target_table',
-  'packaged_table',
-};
+import 'project_json_guard.dart';
 
 class FhRadioStudioProject {
   const FhRadioStudioProject._();
@@ -88,8 +65,10 @@ class FhRadioStudioProject {
 
     final manifest = File(manifestPath(projectDir));
     if (manifest.existsSync()) return;
-    manifest.writeAsStringSync(
-      const JsonEncoder.withIndent('  ').convert({
+    writeProjectJsonSync(
+      projectDir: projectDir,
+      file: manifest,
+      payload: {
         'schema': 1,
         'path_schema': 2,
         'current_project_dir': Directory(projectDir).absolute.path,
@@ -102,8 +81,7 @@ class FhRadioStudioProject {
           'backups': 'backups',
           'analysis': 'analysis',
         },
-      }),
-      encoding: utf8,
+      },
     );
   }
 
@@ -194,10 +172,7 @@ class FhRadioStudioProject {
     data['app'] = data['app'] ?? 'FH Radio Studio';
     data['settings'] = settings;
     data['last_opened_at'] = DateTime.now().toUtc().toIso8601String();
-    manifest.writeAsStringSync(
-      const JsonEncoder.withIndent('  ').convert(data),
-      encoding: utf8,
-    );
+    writeProjectJsonSync(projectDir: projectDir, file: manifest, payload: data);
   }
 
   static List<File> collectAudioFiles(Iterable<String> inputs) {
@@ -359,7 +334,7 @@ class FhRadioStudioProject {
         if (_containsLegacyProjectPath(
           projectDir,
           decoded,
-          _legacyProjectPathFields,
+          projectJsonPathFields,
         )) {
           return true;
         }

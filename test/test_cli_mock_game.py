@@ -8,7 +8,10 @@ from pathlib import Path
 
 from conftest import assert_cli_ok, md5_file, run_cli, write_test_tone
 
-from backend.fh_radio_studio_cli.project_refs import track_key_for_project_path
+from backend.fh_radio_studio_cli.project_refs import (
+    project_path_or_absolute,
+    track_key_for_project_path,
+)
 from tools.test.create_mock_game import FH6_STEAM_APP_ID, MOCK_TRACKS, build_mock_fsb5
 
 
@@ -1187,7 +1190,7 @@ def test_baseline_bank_order_index_is_derived_and_used_for_build(mock_game, tmp_
             "scope": "derived_index",
             "relative_path": "derived/bank_order.json",
             "install_relative_path": "derived/bank_order.json",
-            "backup_path": str(bank_order_path),
+            "backup_path": project_path_or_absolute(tmp_path, bank_order_path),
             "size": bank_order_path.stat().st_size,
             "md5": md5_file(bank_order_path),
         }

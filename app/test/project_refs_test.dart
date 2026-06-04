@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:fh_radio_studio/core/path_keys.dart';
+import 'package:fh_radio_studio/core/project_json_guard.dart';
 import 'package:fh_radio_studio/core/project_refs.dart';
 import 'package:fh_radio_studio/core/project_workspace.dart';
 import 'package:fh_radio_studio/core/track_metadata_cache.dart';
@@ -53,6 +54,85 @@ void main() {
     expect(left, right);
     expect(left, startsWith('trkref_'));
     expect(left.length, 'trkref_'.length + 32);
+  });
+
+  test('project json guard catches project-owned absolute paths', () {
+    final projectDir = Directory.systemTemp.createTempSync(
+      'project_json_guard_',
+    );
+    addTearDown(() {
+      if (projectDir.existsSync()) projectDir.deleteSync(recursive: true);
+    });
+    final source = File(p.join(projectDir.path, 'siren', 'MSR-306877.wav'))
+      ..createSync(recursive: true);
+
+    final violations = findProjectJsonPathViolations(
+      projectDir: projectDir.path,
+      payload: {
+        'tracks': [
+          {
+            'track_key': 'trkref_ok',
+            'loudness_analysis': {'source': source.path},
+          },
+        ],
+      },
+    );
+
+    expect(violations, hasLength(1));
+    expect(violations.single.pointer, '/tracks/0/loudness_analysis/source');
+    expect(violations.single.field, 'source');
+    expect(violations.single.value, source.path);
+  });
+
+  test('project json guard allows external absolute paths', () {
+    final projectDir = Directory.systemTemp.createTempSync(
+      'project_json_guard_external_',
+    );
+    final externalDir = Directory.systemTemp.createTempSync(
+      'project_json_guard_game_',
+    );
+    addTearDown(() {
+      if (projectDir.existsSync()) projectDir.deleteSync(recursive: true);
+      if (externalDir.existsSync()) externalDir.deleteSync(recursive: true);
+    });
+    final source = File(
+      p.join(externalDir.path, 'media', 'audio', 'FMODBanks', 'R4.bank'),
+    )..createSync(recursive: true);
+
+    final violations = findProjectJsonPathViolations(
+      projectDir: projectDir.path,
+      payload: {
+        'files': [
+          {'source_game_path': source.path, 'source': source.path},
+        ],
+      },
+    );
+
+    expect(violations, isEmpty);
+  });
+
+  test('project json writer rejects invalid project refs before writing', () {
+    final projectDir = Directory.systemTemp.createTempSync(
+      'project_json_guard_write_',
+    );
+    addTearDown(() {
+      if (projectDir.existsSync()) projectDir.deleteSync(recursive: true);
+    });
+    final output = File(p.join(projectDir.path, 'analysis', 'bad.json'));
+
+    expect(
+      () => writeProjectJsonSync(
+        projectDir: projectDir.path,
+        file: output,
+        payload: {
+          'tracks': [
+            {'path': 'fh-project:/sources/../bad.wav'},
+          ],
+        },
+      ),
+      throwsA(isA<ProjectJsonPathSchemaException>()),
+    );
+    expect(output.existsSync(), isFalse);
   });
 
   test('TrackMetadataCache reads source refs and resolves project artwork', () {

@@ -52,6 +52,7 @@ from .metadata import (
     resolve_track_key,
     upsert_track_metadata_cache_entry,
 )
+from .project_json_guard import write_project_json
 from .project_refs import project_path_or_absolute, track_key_for_project_path
 from .radio_xml import patch_package_xml_tree
 
@@ -2107,7 +2108,11 @@ def cmd_build_current_radio_package(
         apply_baseline_completion(package_manifest, package_root, args)
         package_manifest["package_files"] = package_file_fingerprints(package_root)
         manifest_path = package_root / "fh_radio_studio_package_manifest.json"
-        write_json(manifest_path, package_manifest)
+        write_project_json(
+            manifest_path,
+            package_manifest,
+            project_dir=_project_dir_for_args(args),
+        )
         instructions = [
             "FH Radio Studio baseline-radio package",
             "=" * 35,
@@ -2290,7 +2295,11 @@ def cmd_build_baseline_restore_package(
         apply_baseline_completion(package_manifest, package_root, args)
         package_manifest["package_files"] = package_file_fingerprints(package_root)
         manifest_path = package_root / "fh_radio_studio_package_manifest.json"
-        write_json(manifest_path, package_manifest)
+        write_project_json(
+            manifest_path,
+            package_manifest,
+            project_dir=_project_dir_for_args(args),
+        )
         instructions = [
             "FH Radio Studio builtin restore package",
             "=" * 39,
@@ -2587,7 +2596,11 @@ def cmd_build_package_from_plan(
         apply_baseline_completion(package_manifest, out_dir / "package", args)
         package_manifest["package_files"] = package_file_fingerprints(out_dir / "package")
         manifest_path = out_dir / "package" / "fh_radio_studio_package_manifest.json"
-        write_json(manifest_path, package_manifest)
+        write_project_json(
+            manifest_path,
+            package_manifest,
+            project_dir=_project_dir_for_args(args),
+        )
         instructions = [
             "FH Radio Studio package",
             "=" * 24,
@@ -2941,7 +2954,11 @@ def cmd_build_package(args: argparse.Namespace) -> int:
         apply_baseline_completion(package_manifest, out_dir / "package", args)
         package_manifest["package_files"] = package_file_fingerprints(out_dir / "package")
         manifest_path = out_dir / "package" / "fh_radio_studio_package_manifest.json"
-        write_json(manifest_path, package_manifest)
+        write_project_json(
+            manifest_path,
+            package_manifest,
+            project_dir=_project_dir_for_args(args),
+        )
         instructions = [
             "FH Radio Studio package",
             "=" * 24,

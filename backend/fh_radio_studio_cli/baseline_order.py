@@ -3,6 +3,7 @@ from __future__ import annotations
 from .common import *
 from .fsb5 import parse_fsb5
 from .game import default_radio_info, find_station, iter_track_samples, parse_xml
+from .project_json_guard import write_project_json
 from .project_refs import project_path_or_absolute
 
 BANK_ORDER_INDEX_RELATIVE_PATH = "derived/bank_order.json"
@@ -235,7 +236,11 @@ def write_baseline_bank_order_index(
     if not index.get("banks"):
         return None
     path = baseline_bank_order_index_path(baseline_dir)
-    write_json(path, index)
+    write_project_json(
+        path,
+        index,
+        project_dir=_project_root_from_baseline_dir(baseline_dir),
+    )
     return {
         "kind": "baseline_bank_order",
         "relative_path": BANK_ORDER_INDEX_RELATIVE_PATH,
@@ -262,7 +267,11 @@ def ensure_baseline_bank_order_index(
         derived = {}
     derived["bank_order"] = entry
     manifest["derived_indexes"] = derived
-    write_json(manifest_path, manifest)
+    write_project_json(
+        manifest_path,
+        manifest,
+        project_dir=_project_root_from_baseline_dir(manifest_path.parent),
+    )
     return _bank_order_path_from_manifest(manifest_path, manifest)
 
 
