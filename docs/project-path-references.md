@@ -167,6 +167,49 @@ writer / repository 层不能只是把上层传下来的 entry map 原样写进 
 
 换句话说，JSON writer 是最后一道持久化边界。上层可以为了处理方便传递绝对路径，但项目相关资源不能因为“entry 已经组好了”就绕过 URI/资产索引规则。
 
+### 写入门禁
+
+0.2.0+ 的 durable project JSON 不应该直接调用底层 JSON sink 写入。Dart 和 Python 都有项目专属 writer，它们会在落盘前扫描 path-like 字段：
+
+- 项目内绝对路径：拒绝写入，要求先编码为 `fh-project:/...` 或 `track_key`。
+- `fh-project:/...`：规范化并校验；非法 URI 直接失败。
+- 项目外绝对路径：保留为外部路径，例如 `game_dir`、`audio_dir`、`source_game_path`。
+
+Dart 写入项目 JSON 时使用：
+
+```dart
+writeProjectJsonSync(
+  projectDir: projectDir,
+  file: file,
+  payload: payload,
+);
+```
+
+对应实现位于 `app/lib/core/project_json_guard.dart`。不要在 durable project JSON writer 中直接写：
+
+```dart
+file.writeAsStringSync(
+  const JsonEncoder.withIndent('  ').convert(payload),
+  encoding: utf8,
+);
+```
+
+Python CLI 写入项目 JSON 时使用：
+
+```python
+write_project_json(path, payload, project_dir=project_dir)
+```
+
+对应实现位于 `backend/fh_radio_studio_cli/project_json_guard.py`。不要在 durable project JSON writer 中直接写：
+
+```python
+write_json(path, payload)
+```
+
+`write_json()` 仍可用于非项目 schema JSON，例如工具链 manifest、外部工具状态、AI cache，或 CLI stdout 之外的普通 JSON 工具文件。`print(json.dumps(...))` / marker-prefixed stdout 也不属于 durable project JSON，不需要走 project guard。
+
+新增或修改 writer 时的判断标准：如果文件位于 `.fh-radio-studio/`、`analysis/`、`siren/`、`backups/`、`packages/` 且会被项目重新打开后读取，就应走项目专属 writer。测试中如需构造坏旧数据，可以手写 JSON；产品代码写回时必须经过 guard。
+
 ## 迁移
 
 从现有绝对路径 schema 迁移由一次性的专属 `0.1.0 -> 0.2.0+` migration tool 完成。迁移功能从 0.2.0 起生效；不支持根据 JSON 内容推断未知旧项目根目录。打开项目时，当前用户选择的目录就是唯一可信的项目根。
