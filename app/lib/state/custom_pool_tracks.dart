@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 
 import '../core/path_keys.dart';
 import '../core/playlist_plan.dart';
+import '../core/project_workspace.dart';
 import '../core/siren_imports.dart';
 import '../core/track_metadata_cache.dart';
 import '../domain/radio_library.dart';
@@ -15,9 +16,20 @@ import 'track_timing_state.dart';
 final realPoolTracksProvider = Provider<List<PoolTrack>>((ref) {
   final studio = ref.watch(
     studioProvider.select(
-      (state) => (projectDir: state.projectDir, musicPaths: state.musicPaths),
+      (state) => (
+        projectDir: state.projectDir,
+        musicPaths: state.musicPaths,
+        migrationRequired: state.projectPathMigrationRequired,
+        migrationRunning: state.projectPathMigrationRunning,
+        migrationRevision: state.projectPathMigrationRevision,
+      ),
     ),
   );
+  if (studio.migrationRequired ||
+      studio.migrationRunning ||
+      FhRadioStudioProject.needsPathMigration(studio.projectDir)) {
+    return const [];
+  }
   final configs = ref.watch(trackTimingProvider);
   final playlist = ref.watch(effectivePlaylistPlanProvider);
   final metadata = TrackMetadataCache.read(studio.projectDir);
@@ -96,7 +108,10 @@ PlaylistAssignment? firstAssignmentForPath(
   final items =
       assignments.values
           .where(
-            (assignment) => assignment.trackKey == key && assignment.isAssigned,
+            (assignment) =>
+                assignment.isAssigned &&
+                (assignment.trackKey == key ||
+                    PlaylistAssignment.keyForPath(assignment.source) == key),
           )
           .toList()
         ..sort((a, b) {

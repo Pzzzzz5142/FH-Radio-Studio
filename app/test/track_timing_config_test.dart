@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:fh_radio_studio/core/project_refs.dart';
 import 'package:fh_radio_studio/core/track_timing_config.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
@@ -47,19 +48,21 @@ void main() {
     expect(
       track.keys,
       unorderedEquals([
-        'source',
-        'path_key',
+        'track_key',
         'bpm',
         'markers_sec',
         'confirmed',
         'updated_at',
       ]),
     );
-    expect(track['source'], source.absolute.path);
+    // track_key is the authoritative identity, derived from the project
+    // source_ref; source stays only in memory.
+    expect(track['track_key'], isA<String>());
+    expect((track['track_key'] as String).startsWith('trkref_'), isTrue);
     expect(track['bpm'], 128.5);
   });
 
-  test('TrackTimingStore reads legacy metadata fields but rewrites slim', () {
+  test('TrackTimingStore rejects project-internal legacy source', () {
     final projectDir = Directory.systemTemp.createTempSync(
       'track_timing_legacy_',
     );
@@ -100,27 +103,9 @@ void main() {
       encoding: utf8,
     );
 
-    final config = TrackTimingStore.readAll(projectDir.path).values.single;
-    expect(config.bpm, 120.0);
-    expect(config.allConfirmed, isTrue);
-
-    final manifestPath = TrackTimingStore.writeBuildManifest(
-      projectDir: projectDir.path,
-      musicInputs: [source.path],
+    expect(
+      () => TrackTimingStore.readAll(projectDir.path),
+      throwsA(isA<ProjectRefException>()),
     );
-    expect(manifestPath, isNotNull);
-    final manifest =
-        jsonDecode(File(manifestPath!).readAsStringSync(encoding: utf8))
-            as Map<String, dynamic>;
-    final track = (manifest['tracks'] as List).single as Map<String, dynamic>;
-
-    expect(manifest['schema_version'], 2);
-    expect(track, isNot(contains('title')));
-    expect(track, isNot(contains('artist')));
-    expect(track, isNot(contains('duration_sec')));
-    expect(track, isNot(contains('sample_rate')));
-    expect(track, isNot(contains('peak_dbfs')));
-    expect(track, isNot(contains('rms_dbfs')));
-    expect(track, isNot(contains('ai_note')));
   });
 }

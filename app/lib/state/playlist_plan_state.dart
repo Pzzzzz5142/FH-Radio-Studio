@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/playlist_plan.dart';
+import '../core/project_refs.dart';
 import '../domain/radio_library.dart';
 import 'studio_state.dart';
 
@@ -45,6 +46,7 @@ class PlaylistPlanController extends StateNotifier<PlaylistPlan> {
       radioCode: radioCode,
       playlistType: playlistType,
       slot: slot,
+      projectDir: _projectDir,
     );
   }
 
@@ -54,17 +56,18 @@ class PlaylistPlanController extends StateNotifier<PlaylistPlan> {
       source,
       radioCode: radioCode,
       playlistType: playlistType,
+      projectDir: _projectDir,
     );
   }
 
   void removeDeletedSource(String source) {
     final base = state.hasDraft ? state : _stateSeededFromPackage();
-    state = base.unassign(source);
+    state = base.unassign(source, projectDir: _projectDir);
   }
 
   void removeDeletedSources(Iterable<String> sources) {
     final base = state.hasDraft ? state : _stateSeededFromPackage();
-    state = base.unassignSources(sources);
+    state = base.unassignSources(sources, projectDir: _projectDir);
   }
 
   void restoreBuiltin({
@@ -82,6 +85,7 @@ class PlaylistPlanController extends StateNotifier<PlaylistPlan> {
     if (state.hasDraft) return state;
     final cli = ref.read(studioProvider);
     return playlistPlanFromPackageSummaries(
+      projectDir: cli.projectDir,
       pending: cli.pendingPackageSummary,
       last: cli.lastPackageSummary,
     );
@@ -101,15 +105,21 @@ final effectivePlaylistPlanProvider = Provider<PlaylistPlan>((ref) {
   final cli = ref.watch(
     studioProvider.select(
       (state) => (
+        projectDir: state.projectDir,
         pending: state.pendingPackageSummary,
         last: state.lastPackageSummary,
       ),
     ),
   );
-  return playlistPlanFromPackageSummaries(pending: cli.pending, last: cli.last);
+  return playlistPlanFromPackageSummaries(
+    projectDir: cli.projectDir,
+    pending: cli.pending,
+    last: cli.last,
+  );
 });
 
 PlaylistPlan playlistPlanFromPackageSummaries({
+  required String projectDir,
   required PackageArtifactSummary? pending,
   required PackageArtifactSummary? last,
 }) {
@@ -124,7 +134,7 @@ PlaylistPlan playlistPlanFromPackageSummaries({
     final playlistTypes = item.normalizedPlaylistTypes;
     for (final playlistType in playlistTypes) {
       final assignment = PlaylistAssignment(
-        trackKey: PlaylistAssignment.keyForPath(item.source),
+        trackKey: _playlistTrackKey(projectDir, item.source),
         source: item.source,
         radioCode: item.radioLabel,
         playlistType: playlistType,
@@ -135,4 +145,13 @@ PlaylistPlan playlistPlanFromPackageSummaries({
     }
   }
   return PlaylistPlan(assignments: assignments);
+}
+
+String _playlistTrackKey(String projectDir, String source) {
+  try {
+    return trackKeyForProjectPath(projectDir, source) ??
+        PlaylistAssignment.keyForPath(source);
+  } on Object {
+    return PlaylistAssignment.keyForPath(source);
+  }
 }

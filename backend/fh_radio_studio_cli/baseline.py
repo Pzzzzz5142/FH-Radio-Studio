@@ -7,6 +7,7 @@ from .baseline_order import is_baseline_derived_index_path, write_baseline_bank_
 from .common import *
 from .game import audio_dir_for, resolve_game_dir, steam_game_version
 from .package import collect_package_deploy_files, package_audio_dir
+from .project_refs import is_project_ref, project_path_or_absolute, resolve_project_ref
 
 PROGRESS_PREFIX = "FH_RADIO_STUDIO_PROGRESS "
 _PARALLEL_HASH_THRESHOLD_BYTES = 64 * 1024 * 1024
@@ -219,6 +220,14 @@ def resolve_baseline_backup_path(
     return _path_from_install_relative(manifest_path.parent, install_rel)
 
 
+def _resolve_project_path_value(project_dir: Optional[Path], value: object) -> Optional[Path]:
+    if not isinstance(value, str) or not value:
+        return None
+    if project_dir is not None and is_project_ref(value):
+        return resolve_project_ref(project_dir, value)
+    return Path(value).expanduser()
+
+
 def _rewrite_manifest_backup_paths(
     manifest: Dict[str, object],
     manifest_path: Path,
@@ -231,7 +240,12 @@ def _rewrite_manifest_backup_paths(
             continue
         backup_path = resolve_baseline_backup_path(manifest_path, item)
         if backup_path:
-            item["backup_path"] = str(backup_path.resolve())
+            project_dir = _project_root_from_baseline_dir(manifest_path.parent)
+            item["backup_path"] = (
+                project_path_or_absolute(project_dir, backup_path)
+                if project_dir is not None
+                else str(backup_path.resolve())
+            )
 
 
 def load_baseline_md5s(path: Optional[str]) -> Dict[str, str]:
@@ -438,6 +452,11 @@ def baseline_plan(
         if package_audio
         else collect_game_baseline_file_specs(game_dir, preferred_path=preferred_path)
     )
+    project_dir = (
+        _project_root_from_baseline_dir(baseline_manifest.parent)
+        if baseline_manifest is not None
+        else None
+    )
     if allow_missing and not package_audio:
         known_install_paths = {
             str(item["install_relative_path"]).replace("\\", "/")
@@ -467,9 +486,9 @@ def baseline_plan(
                 die(f"Game file missing; cannot baseline: {source}")
         else:
             hash_inputs.append(source)
-        package_path = spec.get("package_path")
+        package_path = _resolve_project_path_value(project_dir, spec.get("package_path"))
         if package_path:
-            hash_inputs.append(Path(str(package_path)))
+            hash_inputs.append(package_path)
         install_rel = str(spec["install_relative_path"])
         backup_item = baseline_items.get(install_rel)
         backup_path = (
@@ -506,7 +525,7 @@ def baseline_plan(
             str(backup_item.get("md5")) if backup_item and backup_item.get("md5") else None
         )
         current_md5 = hashes.get(path_key(source)) if source.exists() else None
-        package_path = Path(str(spec["package_path"])) if spec.get("package_path") else None
+        package_path = _resolve_project_path_value(project_dir, spec.get("package_path"))
         package_md5 = hashes.get(path_key(package_path)) if package_path else None
         if backup_item is None:
             baseline_status = "not_backed_up"
@@ -640,6 +659,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
             for cleared in _clear_prepared_packages_for_overwrite(out_dir):
                 print(f"  cleared package artifact {cleared}")
         manifest_files = []
+        project_dir = _project_root_from_baseline_dir(out_dir)
         for item in files:
             rel_text = str(item["relative_path"]).replace("\\", "/")
             install_rel_text = str(item["install_relative_path"]).replace("\\", "/")
@@ -652,13 +672,21 @@ def cmd_baseline(args: argparse.Namespace) -> int:
                 "scope": item.get("scope"),
                 "source_game_path": str(game_src.resolve()),
                 "md5": item.get("md5"),
-                "package_path": item.get("package_path"),
+                "package_path": (
+                    project_path_or_absolute(project_dir, Path(str(item.get("package_path"))))
+                    if project_dir is not None and item.get("package_path")
+                    else item.get("package_path")
+                ),
                 "package_md5": item.get("package_md5"),
             }
             backup = out_dir / Path(*install_rel_text.split("/"))
             backup.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(game_src, backup)
-            manifest_item["backup_path"] = str(backup.resolve())
+            manifest_item["backup_path"] = (
+                project_path_or_absolute(project_dir, backup)
+                if project_dir is not None
+                else str(backup.resolve())
+            )
             manifest_item["size"] = file_size(backup)
             manifest_files.append(manifest_item)
             print(f"  saved {install_rel_text}")
@@ -674,7 +702,11 @@ def cmd_baseline(args: argparse.Namespace) -> int:
             "game_version": game_version,
             "game_version_id": baseline_version_id(game_version),
             "supported_game_version_ids": [baseline_version_id(game_version)],
-            "package_audio": str(package_audio.resolve()) if package_audio else None,
+            "package_audio": (
+                project_path_or_absolute(project_dir, package_audio)
+                if project_dir is not None and package_audio
+                else (str(package_audio.resolve()) if package_audio else None)
+            ),
             "file_count": len(manifest_files),
             "by_scope": plan.get("by_scope", {}),
             "files": manifest_files,

@@ -7,6 +7,7 @@ from .audio import linear_resample
 from .common import *
 from .external_tools import find_executable
 from .fsb5 import extract_embedded_fsb
+from .project_refs import ProjectRefError, is_project_ref, resolve_project_ref
 
 LOUDNESS_ALGORITHM_VERSION = "fh-radio-studio-loudness-v2"
 HEURISTIC_SAFE_MIN_LUFS = -28.0
@@ -685,10 +686,26 @@ def _try_measure_baseline_envelope(
     )
 
 
+def _project_root_from_baseline_dir(baseline_dir: Path) -> Optional[Path]:
+    if baseline_dir.parent.name == "backups":
+        return baseline_dir.parent.parent
+    return None
+
+
 def _resolve_baseline_bank_path(manifest_path: Path, item: Dict[str, object]) -> Optional[Path]:
     raw_backup = item.get("backup_path")
     if raw_backup:
-        path = Path(str(raw_backup)).expanduser()
+        raw_text = str(raw_backup)
+        if is_project_ref(raw_text):
+            project_dir = _project_root_from_baseline_dir(manifest_path.parent)
+            if project_dir is not None:
+                try:
+                    path = resolve_project_ref(project_dir, raw_text)
+                except ProjectRefError:
+                    path = None
+                if path and path.exists():
+                    return path
+        path = Path(raw_text).expanduser()
         if path.exists():
             return path
     install_rel = str(item.get("install_relative_path") or "").replace("\\", "/").strip("/")

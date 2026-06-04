@@ -12,6 +12,14 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 from .common import die, path_key, sf, write_json
+from .project_refs import (
+    ProjectRefError,
+    normalize_project_ref,
+    project_path_or_absolute,
+    project_ref_for_path,
+    resolve_project_ref,
+    track_key_for_source_ref,
+)
 
 UNKNOWN_ARTIST = "Unknown Artist"
 TRACK_METADATA_CACHE_NAME = "track_metadata.json"
@@ -206,20 +214,24 @@ def cmd_scan_metadata(args: argparse.Namespace) -> int:
     entries = _load_cache_entries(cache_path)
     updated = 0
     for file in files:
-        key = path_key(file)
+        key = _cache_key_for_path(project_dir, file)
+        legacy_key = path_key(file)
         entries[key] = build_track_metadata_cache_entry(
             file,
-            existing=entries.get(key),
+            existing=entries.get(key) or entries.get(legacy_key),
             artwork_dir=artwork_dir,
+            project_dir=project_dir,
         )
+        if key != legacy_key:
+            entries.pop(legacy_key, None)
         updated += 1
 
     payload: Dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "tracks": sorted(
             entries.values(),
-            key=lambda item: str(item.get("source", "")).casefold(),
+            key=lambda item: str(item.get("source_ref") or item.get("source") or "").casefold(),
         ),
     }
     write_json(cache_path, payload)
@@ -245,14 +257,19 @@ def upsert_track_metadata_cache_entry(
     *,
     loudness_analysis: Optional[Dict[str, object]] = None,
 ) -> None:
+    project_dir = cache_path.parent.parent
     entries = _load_cache_entries(cache_path)
-    key = path_key(path)
+    key = _cache_key_for_path(project_dir, path)
+    legacy_key = path_key(path)
     entries[key] = build_track_metadata_cache_entry(
         path,
-        existing=entries.get(key),
+        existing=entries.get(key) or entries.get(legacy_key),
         loudness_analysis=loudness_analysis,
         artwork_dir=cache_path.parent / "artwork",
+        project_dir=project_dir,
     )
+    if key != legacy_key:
+        entries.pop(legacy_key, None)
     _write_cache_entries(cache_path, entries)
 
 
@@ -262,12 +279,11 @@ def build_track_metadata_cache_entry(
     existing: Optional[Dict[str, object]] = None,
     loudness_analysis: Optional[Dict[str, object]] = None,
     artwork_dir: Optional[Path] = None,
+    project_dir: Optional[Path] = None,
 ) -> Dict[str, object]:
     metadata = read_track_metadata(path)
     stat = path.stat()
     entry: Dict[str, object] = {
-        "source": str(path.resolve()),
-        "path_key": path_key(path),
         "artist": metadata.artist,
         "title": metadata.title,
         "from_tags": metadata.from_tags,
@@ -278,11 +294,24 @@ def build_track_metadata_cache_entry(
         "size": stat.st_size,
         "mtime_ms": int(stat.st_mtime * 1000),
     }
+    if project_dir is not None:
+        source_ref = project_ref_for_path(project_dir, path)
+        if source_ref is not None:
+            entry["source_ref"] = source_ref
+            entry["track_key"] = track_key_for_source_ref(source_ref)
+        else:
+            entry["source"] = str(path.resolve())
+    else:
+        entry["source"] = str(path.resolve())
     if artwork_dir is not None:
         cover = extract_track_cover_art(path, artwork_dir)
         if cover is not None:
             cover_path, cover_mime, cover_size = cover
-            entry["cover_art_path"] = str(cover_path)
+            entry["cover_art_path"] = (
+                project_path_or_absolute(project_dir, cover_path)
+                if project_dir is not None
+                else str(cover_path)
+            )
             entry["cover_art_mime"] = cover_mime
             entry["cover_art_size"] = cover_size
     if loudness_analysis is not None:
@@ -324,7 +353,8 @@ def cached_loudness_analysis_for_path(
     if cache_path is None or not cache_path.exists():
         return None
     entries = _load_cache_entries(cache_path)
-    entry = entries.get(path_key(path))
+    project_dir = cache_path.parent.parent
+    entry = entries.get(_cache_key_for_path(project_dir, path)) or entries.get(path_key(path))
     if not entry:
         return None
     try:
@@ -355,13 +385,27 @@ def _load_cache_entries(cache_path: Path) -> Dict[str, Dict[str, object]]:
     tracks = decoded.get("tracks")
     if not isinstance(tracks, list):
         return {}
+    project_dir = cache_path.parent.parent if cache_path.parent.name == ".fh-radio-studio" else None
     out: Dict[str, Dict[str, object]] = {}
     for item in tracks:
         if not isinstance(item, dict):
             continue
         source = item.get("source")
         key = item.get("path_key")
+        track_key = item.get("track_key")
+        source_ref = item.get("source_ref")
+        if isinstance(track_key, str) and track_key and isinstance(source_ref, str) and source_ref:
+            out[track_key] = dict(item)
+            continue
         if isinstance(source, str) and source:
+            if (
+                project_dir is not None
+                and project_ref_for_path(project_dir, Path(source)) is not None
+            ):
+                die(
+                    "Metadata cache contains a legacy project-internal source "
+                    f"without track_key/source_ref: {source}. Run migrate-project first."
+                )
             cache_key = key if isinstance(key, str) and key else path_key(Path(source))
             out[cache_key] = dict(item)
     return out
@@ -369,18 +413,59 @@ def _load_cache_entries(cache_path: Path) -> Dict[str, Dict[str, object]]:
 
 def _write_cache_entries(cache_path: Path, entries: Dict[str, Dict[str, object]]) -> None:
     payload: Dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "tracks": sorted(
             entries.values(),
-            key=lambda item: str(item.get("source", "")).casefold(),
+            key=lambda item: str(item.get("source_ref") or item.get("source") or "").casefold(),
         ),
     }
     write_json(cache_path, payload)
 
 
+def _cache_key_for_path(project_dir: Path, path: Path) -> str:
+    source_ref = project_ref_for_path(project_dir, path)
+    if source_ref is not None:
+        return track_key_for_source_ref(source_ref)
+    return path_key(path)
+
+
+def load_track_asset_index(project_dir: Path) -> Dict[str, str]:
+    """Return the authoritative ``track_key -> source_ref`` map for the project.
+
+    ``track_metadata.json`` doubles as the project's track asset index: every
+    project-owned audio file scanned by ``scan-metadata`` carries a canonical
+    ``source_ref`` and the ``track_key`` derived from it. Business records
+    (timing, siren, playlist, package) persist only ``track_key`` and resolve
+    back to a runtime path through this index.
+    """
+    cache_path = metadata_cache_path(project_dir)
+    index: Dict[str, str] = {}
+    for entry in _load_cache_entries(cache_path).values():
+        track_key = entry.get("track_key")
+        source_ref = entry.get("source_ref")
+        if isinstance(track_key, str) and track_key and isinstance(source_ref, str) and source_ref:
+            try:
+                index[track_key] = normalize_project_ref(source_ref)
+            except ProjectRefError:
+                continue
+    return index
+
+
+def resolve_track_key(project_dir: Path, track_key: str) -> Optional[Path]:
+    """Resolve a ``track_key`` to a runtime absolute path via the asset index."""
+    source_ref = load_track_asset_index(project_dir).get(track_key)
+    if source_ref is None:
+        return None
+    try:
+        return resolve_project_ref(project_dir, source_ref)
+    except ProjectRefError:
+        return None
+
+
 def _loudness_cache_payload(analysis: Dict[str, object], stat: os.stat_result) -> Dict[str, object]:
     payload = dict(analysis)
+    payload.pop("source", None)
     payload["source_size"] = stat.st_size
     payload["source_mtime_ms"] = int(stat.st_mtime * 1000)
     payload["cached_at"] = datetime.now(timezone.utc).isoformat()
@@ -406,7 +491,9 @@ def _preserved_loudness_payload(
         return None
     if cached_mtime != int(stat.st_mtime * 1000):
         return None
-    return dict(payload)
+    out = dict(payload)
+    out.pop("source", None)
+    return out
 
 
 def _read_audio_info(path: Path) -> Dict[str, object]:

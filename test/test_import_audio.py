@@ -11,6 +11,7 @@ from backend.fh_radio_studio_cli.metadata import (
     has_import_completion_marker,
     read_track_metadata,
 )
+from backend.fh_radio_studio_cli.project_refs import resolve_project_ref
 
 _PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -46,8 +47,9 @@ def test_import_audio_transcodes_non_48k_file(tmp_path: Path, capsys) -> None:
     assert has_import_completion_marker(imported)
     cache_path = project / ".fh-radio-studio" / "track_metadata.json"
     cached = json.loads(cache_path.read_text(encoding="utf-8"))["tracks"][0]
-    assert cached["source"] == str(imported.resolve())
+    assert cached["source_ref"] == "fh-project:/sources/Outside%20Song.wav"
     assert "loudness_analysis" in cached
+    assert "source" not in cached["loudness_analysis"]
 
 
 def test_import_audio_copies_48k_file_without_transcoding(tmp_path: Path, capsys) -> None:
@@ -115,10 +117,11 @@ def test_import_audio_can_target_siren_folder(tmp_path: Path, capsys) -> None:
     assert not has_import_completion_marker(imported)
     cache_path = project / ".fh-radio-studio" / "track_metadata.json"
     cached = json.loads(cache_path.read_text(encoding="utf-8"))["tracks"][0]
-    assert cached["source"] == str(imported.resolve())
+    assert cached["source_ref"] == "fh-project:/siren/MSR-232251.wav"
     assert "loudness_analysis" in cached
+    assert "source" not in cached["loudness_analysis"]
     assert cached["cover_art_mime"] == "image/png"
-    assert Path(cached["cover_art_path"]).read_bytes() == _PNG_BYTES
+    assert resolve_project_ref(project, cached["cover_art_path"]).read_bytes() == _PNG_BYTES
     metadata = read_track_metadata(imported)
     assert metadata.title == "Whistle Stop"
     assert metadata.artist == "塞壬唱片-MSR / Edine"

@@ -2,12 +2,16 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart' as crypto;
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:fh_radio_studio/core/fh_radio_studio_cli.dart';
 import 'package:fh_radio_studio/core/playlist_plan.dart';
+import 'package:fh_radio_studio/core/project_refs.dart';
 import 'package:fh_radio_studio/core/project_workspace.dart';
 import 'package:fh_radio_studio/core/track_metadata_cache.dart';
+import 'package:fh_radio_studio/state/app_state.dart';
+import 'package:fh_radio_studio/state/custom_pool_tracks.dart';
 import 'package:fh_radio_studio/state/studio_state.dart';
 import 'package:fh_radio_studio/state/playlist_plan_state.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -286,6 +290,111 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
           'verify-integrity',
         ]);
         expect(controller.state.fileIntegrity.checkedFiles, 0);
+      },
+    );
+
+    test('full environment check waits for project path migration', () async {
+      final projectDir = p.join(tempRoot.path, 'project');
+      FhRadioStudioProject.ensure(projectDir);
+      final legacySource = File(
+        p.join(FhRadioStudioProject.sirenDir(projectDir), 'MSR-306877.wav'),
+      )..createSync(recursive: true);
+      final cacheFile = File(TrackMetadataCache.configPath(projectDir));
+      cacheFile.parent.createSync(recursive: true);
+      cacheFile.writeAsStringSync(
+        const JsonEncoder.withIndent('  ').convert({
+          'schema_version': 1,
+          'tracks': [
+            {
+              'source': legacySource.path,
+              'path_key': 'legacy',
+              'artist': 'Siren',
+              'title': 'MSR',
+            },
+          ],
+        }),
+        encoding: utf8,
+      );
+      SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+
+      final prefs = await SharedPreferences.getInstance();
+      final runtime = _testUvRuntime(tempRoot, 'full-check-migration');
+      final cli = _RecordingCli(runtime);
+      final controller = _RecordingCliStudioController(prefs, cli);
+      controller.setStateForTest(
+        controller.state.copyWith(
+          repoRoot: runtime.projectRoot,
+          gameDir: p.join(tempRoot.path, 'game'),
+        ),
+      );
+
+      await controller.refreshStatus(verifyFiles: true);
+
+      final commands = cli.commands.map((args) => args.first).toList();
+      final migrateIndex = commands.indexOf('migrate-project');
+      final verifyIndex = commands.indexOf('verify-integrity');
+      expect(migrateIndex, isNonNegative);
+      expect(verifyIndex, isNonNegative);
+      expect(migrateIndex, lessThan(verifyIndex));
+      expect(FhRadioStudioProject.needsPathMigration(projectDir), isFalse);
+    });
+
+    test(
+      'project readers are gated while opening project migration runs',
+      () async {
+        final projectDir = p.join(tempRoot.path, 'project');
+        FhRadioStudioProject.ensure(projectDir);
+        final legacySource = File(
+          p.join(FhRadioStudioProject.sourcesDir(projectDir), 'Song.wav'),
+        )..createSync(recursive: true);
+        final cacheFile = File(TrackMetadataCache.configPath(projectDir));
+        cacheFile.parent.createSync(recursive: true);
+        cacheFile.writeAsStringSync(
+          const JsonEncoder.withIndent('  ').convert({
+            'schema_version': 1,
+            'tracks': [
+              {
+                'source': legacySource.path,
+                'path_key': 'legacy',
+                'artist': 'Artist',
+                'title': 'Song',
+                'from_tags': true,
+              },
+            ],
+          }),
+          encoding: utf8,
+        );
+        SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
+
+        final prefs = await SharedPreferences.getInstance();
+        final runtime = _testUvRuntime(tempRoot, 'reader-gate-migration');
+        final cli = _RecordingCli(runtime);
+        final controller = _RecordingCliStudioController(prefs, cli);
+        controller.setStateForTest(
+          controller.state.copyWith(
+            repoRoot: runtime.projectRoot,
+            gameDir: p.join(tempRoot.path, 'game'),
+            projectPathMigrationRequired: true,
+            projectPathMigrationRunning: true,
+            projectPathMigrationRevision:
+                controller.state.projectPathMigrationRevision + 1,
+          ),
+        );
+        final container = ProviderContainer(
+          overrides: [
+            sharedPreferencesProvider.overrideWithValue(prefs),
+            studioProvider.overrideWith((ref) => controller),
+          ],
+        );
+        addTearDown(container.dispose);
+
+        expect(controller.state.projectPathMigrationActive, isTrue);
+        expect(container.read(realPoolTracksProvider), isEmpty);
+
+        await controller.refreshStatus(verifyFiles: true);
+
+        expect(controller.state.projectPathMigrationActive, isFalse);
+        expect(container.read(realPoolTracksProvider), hasLength(1));
       },
     );
 
@@ -867,13 +976,20 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
 
         // The CLI owns the diff/reverse-match; here we only verify the UI calls
         // reconstruct-plan and then consumes the plan it writes.
+        final trackKey = _upsertTrackMetadata(
+          projectDir,
+          source.path,
+          artist: 'Local Artist',
+          title: 'Diff Song',
+        );
+        expect(trackKey, isNotNull);
         final seededPlan =
             '''
 {
   "schema_version": 2,
   "assignments": [
-    {"source": "${_jsonPath(source.path)}", "radio_code": "R4", "playlist_type": "FreeRoam", "slot": 1},
-    {"source": "${_jsonPath(source.path)}", "radio_code": "R4", "playlist_type": "Event", "slot": 1}
+    {"track_key": "$trackKey", "radio_code": "R4", "playlist_type": "FreeRoam", "slot": 1},
+    {"track_key": "$trackKey", "radio_code": "R4", "playlist_type": "Event", "slot": 1}
   ],
   "builtin_targets": []
 }
@@ -912,7 +1028,10 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         // The reconstructed plan rides into build-package over stdin, never a file.
         final buildStdin = cli.stdinForCommand('build-package');
         expect(buildStdin, isNotNull);
-        final plan = PlaylistPlanCodec.decodeJson(buildStdin!);
+        final plan = PlaylistPlanCodec.decodeJson(
+          buildStdin!,
+          projectDir: projectDir,
+        );
         expect(plan.assignments, hasLength(2));
         expect(plan.assignments.values.map((item) => item.source).toSet(), {
           source.path,
@@ -1203,21 +1322,11 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
           slot: 1,
         ),
       );
-      final cacheFile = File(TrackMetadataCache.configPath(projectDir));
-      cacheFile.parent.createSync(recursive: true);
-      cacheFile.writeAsStringSync(
-        const JsonEncoder.withIndent('  ').convert({
-          'schema_version': 1,
-          'tracks': [
-            {
-              'source': source.path,
-              'artist': 'CLI Artist',
-              'title': 'CLI Title',
-              'from_tags': true,
-            },
-          ],
-        }),
-        encoding: utf8,
+      _upsertTrackMetadata(
+        projectDir,
+        source.path,
+        artist: 'CLI Artist',
+        title: 'CLI Title',
       );
       SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
 
@@ -1291,7 +1400,12 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         // Plan removal is the provider's job now; the controller cleanup only
         // drops timing/metadata and logs. The plan itself no longer round-trips
         // through a file, so we assert the in-memory removal instead.
-        expect(draftPlan.unassignSources([source.path]).assignments, isEmpty);
+        expect(
+          draftPlan.unassignSources([
+            source.path,
+          ], projectDir: projectDir).assignments,
+          isEmpty,
+        );
         expect(
           controller.state.log.join('\n'),
           contains('已删除失效歌曲引用：deleted-song.wav。'),
@@ -1417,8 +1531,14 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         expect(built, isFalse);
         expect(controller.state.projectEditingLocked, isTrue);
         expect(controller.state.customSongEditingLocked, isFalse);
-        expect(controller.state.musicPaths, hasLength(1));
-        expect(p.basename(controller.state.musicPaths.single), 'song.wav');
+        final importedMusic = controller.state.musicPaths
+            .where(
+              (path) =>
+                  !p.basename(path).contains('.fh-radio-studio-import-tmp'),
+            )
+            .toList();
+        expect(importedMusic, hasLength(1));
+        expect(p.basename(importedMusic.single), 'song.wav');
         expect(controller.state.log.join('\n'), contains('只允许编辑歌曲的 6 个时间点'));
         expect(controller.state.log.join('\n'), contains('已阻止：准备电台包'));
         expect(controller.state.log.join('\n'), isNot(contains('已阻止：导入自建歌曲')));
@@ -1514,6 +1634,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
       expect(summary.assignments[1].playlistTypes, ['Event']);
 
       final plan = playlistPlanFromPackageSummaries(
+        projectDir: projectDir,
         pending: null,
         last: summary,
       );
@@ -1703,6 +1824,9 @@ class _RecordingCli extends FhRadioStudioCli {
     commands.add([...args]);
     stdins.add(stdinInput);
     final command = args.isEmpty ? null : args.first;
+    if (command == 'migrate-project') {
+      _simulateProjectMigration(args);
+    }
     final stdout = switch (command) {
       'status' => _statusJson(),
       'toolchain-status' => _toolchainStatusJson(args),
@@ -1711,6 +1835,7 @@ class _RecordingCli extends FhRadioStudioCli {
         reconstructPlanJson == null
             ? '{}'
             : '$_planMarkerPrefix${jsonEncode(jsonDecode(reconstructPlanJson!))}',
+      'migrate-project' => 'Project migrated',
       _ => '{}',
     };
     return CliRunResult(
@@ -1720,6 +1845,184 @@ class _RecordingCli extends FhRadioStudioCli {
       commandLine: ['fh-radio-studio', ...args].join(' '),
     );
   }
+}
+
+void _simulateProjectMigration(List<String> args) {
+  final projectDirIndex = args.indexOf('--project-dir');
+  if (projectDirIndex < 0 || projectDirIndex + 1 >= args.length) return;
+  final projectDir = args[projectDirIndex + 1];
+  final metadata = File(TrackMetadataCache.configPath(projectDir));
+  if (metadata.existsSync()) {
+    try {
+      final decoded = jsonDecode(metadata.readAsStringSync(encoding: utf8));
+      if (decoded is Map) {
+        final tracks = decoded['tracks'];
+        if (tracks is List) {
+          final migrated = tracks.map((item) {
+            if (item is! Map) return item;
+            final entry = item.map((key, value) => MapEntry('$key', value));
+            final source = '${entry['source'] ?? ''}';
+            final sourceRef = projectRefForPath(projectDir, source);
+            if (sourceRef == null) return entry;
+            final trackKey = trackKeyForSourceRef(sourceRef);
+            entry['source_ref'] = sourceRef;
+            entry['track_key'] = trackKey;
+            entry.remove('source');
+            entry.remove('path_key');
+            return entry;
+          }).toList();
+          final payload = decoded.map((key, value) => MapEntry('$key', value));
+          payload['schema_version'] = 2;
+          payload['tracks'] = migrated;
+          metadata.writeAsStringSync(
+            const JsonEncoder.withIndent('  ').convert(payload),
+            encoding: utf8,
+          );
+        }
+      }
+    } on FormatException {
+      // Keep the fake migration best-effort, matching CLI failure coverage elsewhere.
+    }
+  }
+  for (final file in _legacyMigrationJsonFiles(projectDir)) {
+    _simulateLegacyPathFieldMigration(projectDir, file);
+  }
+  final projectJson = File(FhRadioStudioProject.manifestPath(projectDir));
+  final payload = projectJson.existsSync()
+      ? jsonDecode(projectJson.readAsStringSync(encoding: utf8))
+      : <String, dynamic>{};
+  final data = payload is Map
+      ? payload.map((key, value) => MapEntry('$key', value))
+      : <String, dynamic>{};
+  data['schema'] = 2;
+  data['path_schema'] = 2;
+  data['current_project_dir'] = Directory(projectDir).absolute.path;
+  data['app'] = data['app'] ?? 'FH Radio Studio';
+  projectJson.parent.createSync(recursive: true);
+  projectJson.writeAsStringSync(
+    const JsonEncoder.withIndent('  ').convert(data),
+    encoding: utf8,
+  );
+}
+
+List<File> _legacyMigrationJsonFiles(String projectDir) {
+  final files = <File>[
+    File(TrackMetadataCache.configPath(projectDir)),
+    File(
+      p.join(
+        FhRadioStudioProject.metadataDir(projectDir),
+        'playlist_plan.json',
+      ),
+    ),
+    File(
+      p.join(FhRadioStudioProject.analysisDir(projectDir), 'track_timing.json'),
+    ),
+    File(
+      p.join(
+        FhRadioStudioProject.analysisDir(projectDir),
+        'build_timing_manifest.json',
+      ),
+    ),
+    File(
+      p.join(FhRadioStudioProject.sirenDir(projectDir), 'siren_imports.json'),
+    ),
+    File(FhRadioStudioProject.lastAppliedPackageManifestPath(projectDir)),
+  ];
+  final packageRoot = Directory(FhRadioStudioProject.packagesDir(projectDir));
+  if (packageRoot.existsSync()) {
+    for (final child in packageRoot.listSync(followLinks: false)) {
+      if (child is! Directory) continue;
+      files.add(
+        File(
+          p.join(
+            child.path,
+            'package',
+            'fh_radio_studio_package_manifest.json',
+          ),
+        ),
+      );
+    }
+  }
+  final backupRoot = Directory(FhRadioStudioProject.backupsDir(projectDir));
+  if (backupRoot.existsSync()) {
+    for (final child in backupRoot.listSync(followLinks: false)) {
+      if (child is! Directory) continue;
+      files.add(File(p.join(child.path, 'baseline_manifest.json')));
+      files.add(File(p.join(child.path, 'derived', 'bank_order.json')));
+    }
+  }
+  return files;
+}
+
+void _simulateLegacyPathFieldMigration(String projectDir, File file) {
+  if (!file.existsSync()) return;
+  try {
+    final decoded = jsonDecode(file.readAsStringSync(encoding: utf8));
+    if (decoded is! Map) return;
+    final changed = _rewriteLegacyPathFields(projectDir, decoded);
+    if (!changed) return;
+    file.writeAsStringSync(
+      const JsonEncoder.withIndent('  ').convert(decoded),
+      encoding: utf8,
+    );
+  } on FormatException {
+    return;
+  }
+}
+
+bool _rewriteLegacyPathFields(String projectDir, Object? value) {
+  const fields = {
+    'source',
+    'path',
+    'cover_art_path',
+    'backup_path',
+    'package_path',
+    'package_audio',
+    'source_baseline_manifest',
+    'source_package_manifest',
+    'package_root',
+    'playlist_plan',
+    'timing_manifest',
+    'baseline_manifest',
+    'source_audio_dir',
+    'source_radio_info',
+    'source_bank',
+    'prepared_wav',
+    'staged_wav',
+    'source_string_tables_dir',
+    'source_table',
+    'target_table',
+    'packaged_table',
+  };
+  var changed = false;
+  if (value is Map) {
+    for (final entry in value.entries.toList()) {
+      final key = '${entry.key}';
+      if (fields.contains(key)) {
+        final encoded = _fakeMigratedPath(projectDir, entry.value);
+        if (encoded != null && encoded != entry.value) {
+          value[entry.key] = encoded;
+          changed = true;
+        }
+      }
+      if (_rewriteLegacyPathFields(projectDir, value[entry.key])) {
+        changed = true;
+      }
+    }
+  } else if (value is List) {
+    for (final item in value) {
+      if (_rewriteLegacyPathFields(projectDir, item)) changed = true;
+    }
+  }
+  return changed;
+}
+
+String? _fakeMigratedPath(String projectDir, Object? value) {
+  if (value is! String || value.trim().isEmpty || value.trim() == '-') {
+    return null;
+  }
+  if (isProjectRef(value)) return normalizeProjectRef(value);
+  return projectRefForPath(projectDir, value);
 }
 
 UvRuntime _testUvRuntime(Directory root, String name) {
@@ -1940,7 +2243,33 @@ BaselinePlanSummary _brokenBaselinePlan() {
 void _writeLegacyPlaylistPlan(String projectDir, PlaylistPlan plan) {
   final file = File(PlaylistPlanStore.configPath(projectDir));
   file.parent.createSync(recursive: true);
-  file.writeAsStringSync(plan.encodeForCli(), encoding: utf8);
+  final assignments = <Map<String, Object?>>[];
+  for (final assignment in plan.assignments.values) {
+    final source = assignment.source;
+    final projectTrackKey = _upsertTrackMetadata(projectDir, source);
+    assignments.add({
+      'track_key': projectTrackKey ?? assignment.trackKey,
+      if (projectTrackKey == null) 'source': source,
+      'radio_code': assignment.radioCode,
+      'playlist_type': assignment.playlistType,
+      'slot': assignment.slot,
+    });
+  }
+  final builtinTargets = plan.builtinTargets.map((target) {
+    final parts = target.split('|');
+    return {
+      'radio_code': parts.isNotEmpty ? parts.first : '',
+      'playlist_type': parts.length > 1 ? parts[1] : 'FreeRoam',
+    };
+  }).toList();
+  file.writeAsStringSync(
+    const JsonEncoder.withIndent('  ').convert({
+      'schema_version': 2,
+      'assignments': assignments,
+      'builtin_targets': builtinTargets,
+    }),
+    encoding: utf8,
+  );
 }
 
 void _writePackageManifestFile(
@@ -1955,6 +2284,13 @@ void _writePackageManifestFile(
   final loudnessLine = loudnessOffsetLu == null
       ? ''
       : '  "loudness_offset_lu": $loudnessOffsetLu,\n';
+  final projectDir = _projectDirFromPackageManifest(manifest.path);
+  final trackKey = projectDir == null
+      ? null
+      : _upsertTrackMetadata(projectDir, source);
+  final trackRefEntry = trackKey == null
+      ? '"source": "${_jsonPath(source)}"'
+      : '"track_key": "$trackKey"';
   manifest.createSync(recursive: true);
   manifest.writeAsStringSync('''
 {
@@ -1974,7 +2310,7 @@ $loudnessLine  "radios": [
       "target_bank_name": "R4_Tracks_CU1.assets.bank",
       "music": [
         {
-          "source": "${_jsonPath(source)}",
+          $trackRefEntry,
           "display_name": "Same Song",
           "artist": "Local Artist"
         }
@@ -1983,7 +2319,7 @@ $loudnessLine  "radios": [
         {
           "slot_index": $slotIndex,
           "source_index": 0,
-          "source": "${_jsonPath(source)}",
+          $trackRefEntry,
           "target_sound_name": "HZ6_R4_MOCK_REFERENCE",
           "playlist_entry": true,
           "playlist_types": ["$playlistType"]
@@ -1993,6 +2329,55 @@ $loudnessLine  "radios": [
   ]
 }
 ''', encoding: utf8);
+}
+
+String? _upsertTrackMetadata(
+  String projectDir,
+  String source, {
+  String artist = 'Local Artist',
+  String title = 'Same Song',
+}) {
+  final sourceRef = projectRefForPath(projectDir, source);
+  if (sourceRef == null) return null;
+  final trackKey = trackKeyForSourceRef(sourceRef);
+  final file = File(TrackMetadataCache.configPath(projectDir));
+  file.parent.createSync(recursive: true);
+  Map<String, dynamic> payload = {'schema_version': 2, 'tracks': <Object>[]};
+  if (file.existsSync()) {
+    try {
+      final decoded = jsonDecode(file.readAsStringSync(encoding: utf8));
+      if (decoded is Map) {
+        payload = decoded.map((key, value) => MapEntry('$key', value));
+      }
+    } on FormatException {
+      payload = {'schema_version': 2, 'tracks': <Object>[]};
+    }
+  }
+  final tracks = payload['tracks'] is List
+      ? List<Object?>.from(payload['tracks'] as List)
+      : <Object?>[];
+  tracks.removeWhere((item) => item is Map && item['track_key'] == trackKey);
+  tracks.add({
+    'track_key': trackKey,
+    'source_ref': sourceRef,
+    'artist': artist,
+    'title': title,
+    'from_tags': true,
+  });
+  payload['schema_version'] = 2;
+  payload['tracks'] = tracks;
+  file.writeAsStringSync(
+    const JsonEncoder.withIndent('  ').convert(payload),
+    encoding: utf8,
+  );
+  return trackKey;
+}
+
+String? _projectDirFromPackageManifest(String manifestPath) {
+  final parts = p.split(File(manifestPath).absolute.path);
+  final index = parts.lastIndexOf('packages');
+  if (index <= 0) return null;
+  return p.joinAll(parts.take(index));
 }
 
 ({

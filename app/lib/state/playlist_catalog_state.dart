@@ -10,6 +10,7 @@ import 'package:xml/xml.dart';
 
 import '../core/package_manifest.dart';
 import '../core/playlist_plan.dart';
+import '../core/track_metadata_cache.dart';
 import '../domain/radio_library.dart';
 import 'studio_state.dart';
 
@@ -782,13 +783,20 @@ Map<String, String> _packagePlaylistSourcesBySoundName(
   Map<String, dynamic>? manifest,
 ) {
   final out = <String, String>{};
+  final projectDir = _projectDirFromManifestPath(
+    '${manifest?['_manifest_path'] ?? ''}',
+  );
   void addFrom(Object? items) {
     if (items is! List) return;
     for (final item in items) {
       if (item is! Map) continue;
       if (item['playlist_entry'] != true) continue;
       final soundName = '${item['target_sound_name'] ?? ''}'.trim();
-      final source = '${item['source'] ?? ''}'.trim();
+      var source = '${item['source'] ?? ''}'.trim();
+      final trackKey = '${item['track_key'] ?? ''}'.trim();
+      if (source.isEmpty && projectDir != null && trackKey.isNotEmpty) {
+        source = TrackMetadataCache.resolveTrackKey(projectDir, trackKey) ?? '';
+      }
       if (soundName.isNotEmpty && source.isNotEmpty) {
         out[soundName] = source;
       }
@@ -802,6 +810,14 @@ Map<String, String> _packagePlaylistSourcesBySoundName(
     }
   }
   return out;
+}
+
+String? _projectDirFromManifestPath(String manifestPath) {
+  if (manifestPath.trim().isEmpty) return null;
+  final parts = p.split(File(manifestPath).absolute.path);
+  final index = parts.indexOf('packages');
+  if (index <= 0) return null;
+  return p.joinAll(parts.take(index));
 }
 
 bool _tracksContainModded(List<TrackRef>? tracks) {

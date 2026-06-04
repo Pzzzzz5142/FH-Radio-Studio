@@ -5,6 +5,30 @@ import 'package:path/path.dart' as p;
 
 import 'path_keys.dart';
 
+const _legacyProjectPathFields = {
+  'source',
+  'path',
+  'cover_art_path',
+  'backup_path',
+  'package_path',
+  'package_audio',
+  'source_baseline_manifest',
+  'source_package_manifest',
+  'package_root',
+  'playlist_plan',
+  'timing_manifest',
+  'baseline_manifest',
+  'source_audio_dir',
+  'source_radio_info',
+  'source_bank',
+  'prepared_wav',
+  'staged_wav',
+  'source_string_tables_dir',
+  'source_table',
+  'target_table',
+  'packaged_table',
+};
+
 class FhRadioStudioProject {
   const FhRadioStudioProject._();
 
@@ -67,6 +91,8 @@ class FhRadioStudioProject {
     manifest.writeAsStringSync(
       const JsonEncoder.withIndent('  ').convert({
         'schema': 1,
+        'path_schema': 2,
+        'current_project_dir': Directory(projectDir).absolute.path,
         'app': 'FH Radio Studio',
         'created_at': DateTime.now().toUtc().toIso8601String(),
         'folders': {
@@ -117,6 +143,21 @@ class FhRadioStudioProject {
     }
   }
 
+  static bool needsPathMigration(String projectDir) {
+    final manifest = File(manifestPath(projectDir));
+    if (!manifest.existsSync()) return false;
+    try {
+      final decoded = jsonDecode(manifest.readAsStringSync(encoding: utf8));
+      if (decoded is! Map) return true;
+      if (decoded['path_schema'] != 2) return true;
+      return _hasLegacyProjectPathReferences(projectDir);
+    } on FormatException {
+      return true;
+    } on FileSystemException {
+      return true;
+    }
+  }
+
   static void writeSettings(
     String projectDir, {
     String? gameDir,
@@ -148,7 +189,8 @@ class FhRadioStudioProject {
     if (sourceLang != null) settings['source_lang'] = sourceLang;
     if (targetLang != null) settings['target_lang'] = targetLang;
     if (aiProfile != null) settings['ai_profile'] = aiProfile;
-    data['schema'] = data['schema'] ?? 1;
+    data['schema'] = 2;
+    data['current_project_dir'] = Directory(projectDir).absolute.path;
     data['app'] = data['app'] ?? 'FH Radio Studio';
     data['settings'] = settings;
     data['last_opened_at'] = DateTime.now().toUtc().toIso8601String();
@@ -274,4 +316,99 @@ class FhRadioStudioProject {
   }
 
   static String _pathKey(String path) => canonicalPathKey(path);
+
+  static bool _hasLegacyProjectPathReferences(String projectDir) {
+    final files = <File>[
+      File(p.join(metadataDir(projectDir), 'track_metadata.json')),
+      File(p.join(metadataDir(projectDir), 'playlist_plan.json')),
+      File(p.join(analysisDir(projectDir), 'track_timing.json')),
+      File(p.join(analysisDir(projectDir), 'build_timing_manifest.json')),
+      File(p.join(sirenDir(projectDir), 'siren_imports.json')),
+      File(lastAppliedPackageManifestPath(projectDir)),
+    ];
+
+    final packageRoot = Directory(packagesDir(projectDir));
+    if (packageRoot.existsSync()) {
+      for (final child in packageRoot.listSync(followLinks: false)) {
+        if (child is! Directory) continue;
+        files.add(
+          File(
+            p.join(
+              child.path,
+              'package',
+              'fh_radio_studio_package_manifest.json',
+            ),
+          ),
+        );
+      }
+    }
+
+    final backupRoot = Directory(backupsDir(projectDir));
+    if (backupRoot.existsSync()) {
+      for (final child in backupRoot.listSync(followLinks: false)) {
+        if (child is! Directory) continue;
+        files.add(File(p.join(child.path, 'baseline_manifest.json')));
+        files.add(File(p.join(child.path, 'derived', 'bank_order.json')));
+      }
+    }
+
+    for (final file in files) {
+      if (!file.existsSync()) continue;
+      try {
+        final decoded = jsonDecode(file.readAsStringSync(encoding: utf8));
+        if (_containsLegacyProjectPath(
+          projectDir,
+          decoded,
+          _legacyProjectPathFields,
+        )) {
+          return true;
+        }
+      } on FormatException {
+        continue;
+      } on FileSystemException {
+        continue;
+      }
+    }
+    return false;
+  }
+
+  static bool _containsLegacyProjectPath(
+    String projectDir,
+    Object? value,
+    Set<String> projectPathFields,
+  ) {
+    if (value is Map) {
+      for (final entry in value.entries) {
+        final key = '${entry.key}';
+        if (projectPathFields.contains(key) &&
+            _isLegacyProjectPath(projectDir, entry.value)) {
+          return true;
+        }
+        if (_containsLegacyProjectPath(
+          projectDir,
+          entry.value,
+          projectPathFields,
+        )) {
+          return true;
+        }
+      }
+    } else if (value is List) {
+      for (final item in value) {
+        if (_containsLegacyProjectPath(projectDir, item, projectPathFields)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  static bool _isLegacyProjectPath(String projectDir, Object? value) {
+    if (value is! String || value.trim().isEmpty) return false;
+    if (value.startsWith('fh-project:/')) return false;
+    if (!p.isAbsolute(value)) return false;
+    return isCanonicalPathInside(
+      Directory(projectDir).absolute.path,
+      File(value).absolute.path,
+    );
+  }
 }

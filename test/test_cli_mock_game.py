@@ -8,7 +8,25 @@ from pathlib import Path
 
 from conftest import assert_cli_ok, md5_file, run_cli, write_test_tone
 
+from backend.fh_radio_studio_cli.project_refs import track_key_for_project_path
 from tools.test.create_mock_game import FH6_STEAM_APP_ID, MOCK_TRACKS, build_mock_fsb5
+
+
+def _scan_project_sources(project_dir: Path, *sources: Path) -> None:
+    result = run_cli(
+        "scan-metadata",
+        "--project-dir",
+        str(project_dir),
+        *(str(source) for source in sources),
+        "--json",
+    )
+    assert_cli_ok(result)
+
+
+def _project_track_key(project_dir: Path, source: Path) -> str:
+    track_key = track_key_for_project_path(project_dir, source)
+    assert track_key is not None
+    return track_key
 
 
 def test_probe_reads_mock_game_directory(mock_game) -> None:
@@ -735,7 +753,7 @@ def test_baseline_promote_rewrites_backup_paths_after_replace(mock_game, full_pr
     assert payload["file_count"] == 6
     for item in payload["files"]:
         backup_path = item["backup_path"]
-        assert str(current_dir) in backup_path
+        assert backup_path.startswith("fh-project:/backups/baseline-current/")
         assert (current_dir / item["install_relative_path"]).exists()
         assert item["md5"] == md5_file(current_dir / item["install_relative_path"])
 
@@ -1367,6 +1385,9 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
     )
     assert_cli_ok(baseline)
     baseline_manifest = baseline_dir / "baseline_manifest.json"
+    _scan_project_sources(tmp_path, source_xs, source_r5)
+    track_key_xs = _project_track_key(tmp_path, source_xs)
+    track_key_r5 = _project_track_key(tmp_path, source_r5)
 
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_text(
@@ -1375,13 +1396,13 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
                 "schema_version": 2,
                 "assignments": [
                     {
-                        "source": str(source_xs),
+                        "track_key": track_key_xs,
                         "radio_code": "XS",
                         "playlist_type": "FreeRoam",
                         "slot": 1,
                     },
                     {
-                        "source": str(source_r5),
+                        "track_key": track_key_r5,
                         "radio_code": "R5",
                         "playlist_type": "Event",
                         "slot": 1,
@@ -1461,9 +1482,9 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
     by_radio = {item["radio"]: item for item in payload["radios"]}
     assert by_radio[4]["radio_code"] == "XS"
     assert by_radio[5]["radio_code"] == "R5"
-    assert by_radio[4]["assignments"][0]["source"] == str(source_xs.resolve())
+    assert by_radio[4]["assignments"][0]["track_key"] == track_key_xs
     assert by_radio[4]["assignments"][0]["playlist_types"] == ["FreeRoam"]
-    assert by_radio[5]["assignments"][0]["source"] == str(source_r5.resolve())
+    assert by_radio[5]["assignments"][0]["track_key"] == track_key_r5
     assert by_radio[5]["assignments"][0]["playlist_types"] == ["Event"]
 
     radio_info = package_dir / "package" / "media" / "audio" / "RadioInfo_CN.xml"
@@ -1507,6 +1528,15 @@ def test_build_package_reads_playlist_plan_from_stdin(mock_game, tmp_path) -> No
     )
     assert_cli_ok(baseline)
     baseline_manifest = baseline_dir / "baseline_manifest.json"
+    scan = run_cli(
+        "scan-metadata",
+        "--project-dir",
+        str(tmp_path),
+        str(source_xs),
+        "--json",
+    )
+    assert_cli_ok(scan)
+    track_key = track_key_for_project_path(tmp_path, source_xs)
 
     # Same schema_version 2 document the file mode uses, piped over stdin via "-".
     plan_json = json.dumps(
@@ -1514,7 +1544,7 @@ def test_build_package_reads_playlist_plan_from_stdin(mock_game, tmp_path) -> No
             "schema_version": 2,
             "assignments": [
                 {
-                    "source": str(source_xs),
+                    "track_key": track_key,
                     "radio_code": "XS",
                     "playlist_type": "FreeRoam",
                     "slot": 1,
@@ -1547,8 +1577,9 @@ def test_build_package_reads_playlist_plan_from_stdin(mock_game, tmp_path) -> No
     manifest_path = package_dir / "package" / "fh_radio_studio_package_manifest.json"
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     by_radio = {item["radio"]: item for item in payload["radios"]}
+    assert payload["playlist_plan"] == "-"
     assert by_radio[4]["radio_code"] == "XS"
-    assert by_radio[4]["assignments"][0]["source"] == str(source_xs.resolve())
+    assert by_radio[4]["assignments"][0]["track_key"] == track_key
     assert by_radio[4]["assignments"][0]["playlist_types"] == ["FreeRoam"]
 
 
@@ -1618,6 +1649,8 @@ def test_build_package_restores_builtin_targets_from_baseline(mock_game, tmp_pat
     )
     assert_cli_ok(baseline)
     baseline_manifest = baseline_dir / "baseline_manifest.json"
+    old_source = tmp_path / "sources" / "old-custom-track.wav"
+    old_track_key = _project_track_key(tmp_path, old_source)
 
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_text(
@@ -1626,7 +1659,7 @@ def test_build_package_restores_builtin_targets_from_baseline(mock_game, tmp_pat
                 "schema_version": 2,
                 "assignments": [
                     {
-                        "source": str(tmp_path / "sources" / "old-custom-track.wav"),
+                        "track_key": old_track_key,
                         "radio_code": "XS",
                         "playlist_type": "FreeRoam",
                         "slot": 1,
@@ -1709,6 +1742,9 @@ def test_build_package_combines_custom_radios_and_builtin_restores(mock_game, tm
     )
     assert_cli_ok(baseline)
     baseline_manifest = baseline_dir / "baseline_manifest.json"
+    _scan_project_sources(tmp_path, source_xs)
+    track_key_xs = _project_track_key(tmp_path, source_xs)
+    old_r5_track_key = _project_track_key(tmp_path, tmp_path / "sources" / "old-r5-custom.wav")
 
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_text(
@@ -1717,13 +1753,13 @@ def test_build_package_combines_custom_radios_and_builtin_restores(mock_game, tm
                 "schema_version": 2,
                 "assignments": [
                     {
-                        "source": str(source_xs),
+                        "track_key": track_key_xs,
                         "radio_code": "XS",
                         "playlist_type": "FreeRoam",
                         "slot": 1,
                     },
                     {
-                        "source": str(tmp_path / "sources" / "old-r5-custom.wav"),
+                        "track_key": old_r5_track_key,
                         "radio_code": "R5",
                         "playlist_type": "FreeRoam",
                         "slot": 1,
@@ -1775,7 +1811,7 @@ def test_build_package_combines_custom_radios_and_builtin_restores(mock_game, tm
     assert payload.get("baseline_restore") is not True
     assert [item["radio"] for item in payload["radios"]] == [4]
     assert payload["restored_radios"][0]["radio"] == 5
-    assert payload["radios"][0]["assignments"][0]["source"] == str(source_xs.resolve())
+    assert payload["radios"][0]["assignments"][0]["track_key"] == track_key_xs
     assert md5_file(
         package_dir / "package" / "media" / "audio" / "FMODBanks" / "R5_Tracks_Disk.assets.bank"
     ) == md5_file(baseline_dir / "media" / "audio" / "FMODBanks" / "R5_Tracks_Disk.assets.bank")
@@ -1897,6 +1933,9 @@ def test_build_package_reuses_package_playlist_without_music_args(mock_game, tmp
     )
     assert_cli_ok(baseline)
     baseline_manifest = baseline_dir / "baseline_manifest.json"
+    _scan_project_sources(tmp_path, source_xs, source_r5)
+    track_key_xs = _project_track_key(tmp_path, source_xs)
+    track_key_r5 = _project_track_key(tmp_path, source_r5)
 
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_text(
@@ -1905,13 +1944,13 @@ def test_build_package_reuses_package_playlist_without_music_args(mock_game, tmp
                 "schema_version": 2,
                 "assignments": [
                     {
-                        "source": str(source_xs),
+                        "track_key": track_key_xs,
                         "radio_code": "XS",
                         "playlist_type": "FreeRoam",
                         "slot": 1,
                     },
                     {
-                        "source": str(source_r5),
+                        "track_key": track_key_r5,
                         "radio_code": "R5",
                         "playlist_type": "Event",
                         "slot": 1,
@@ -1968,8 +2007,8 @@ def test_build_package_reuses_package_playlist_without_music_args(mock_game, tmp
     )
     assert payload["playlist_plan"] is None
     by_radio = {item["radio"]: item for item in payload["radios"]}
-    assert [item["source"] for item in by_radio[4]["music"]] == [str(source_xs.resolve())]
-    assert [item["source"] for item in by_radio[5]["music"]] == [str(source_r5.resolve())]
+    assert [item["track_key"] for item in by_radio[4]["music"]] == [track_key_xs]
+    assert [item["track_key"] for item in by_radio[5]["music"]] == [track_key_r5]
     assert by_radio[4]["assignments"][0]["playlist_types"] == ["FreeRoam"]
     assert by_radio[5]["assignments"][0]["playlist_types"] == ["Event"]
 
@@ -1995,6 +2034,9 @@ def test_build_package_preflights_all_playlist_radios_before_writing(mock_game, 
     )
     assert_cli_ok(baseline)
     baseline_manifest = baseline_dir / "baseline_manifest.json"
+    _scan_project_sources(tmp_path, source_xs, source_r6)
+    track_key_xs = _project_track_key(tmp_path, source_xs)
+    track_key_r6 = _project_track_key(tmp_path, source_r6)
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_text(
         json.dumps(
@@ -2002,13 +2044,13 @@ def test_build_package_preflights_all_playlist_radios_before_writing(mock_game, 
                 "schema_version": 2,
                 "assignments": [
                     {
-                        "source": str(source_xs),
+                        "track_key": track_key_xs,
                         "radio_code": "XS",
                         "playlist_type": "FreeRoam",
                         "slot": 1,
                     },
                     {
-                        "source": str(source_r6),
+                        "track_key": track_key_r6,
                         "radio_code": "R6",
                         "playlist_type": "FreeRoam",
                         "slot": 1,

@@ -1,8 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:fh_radio_studio/core/project_refs.dart';
 import 'package:fh_radio_studio/core/siren_catalog.dart';
 import 'package:fh_radio_studio/core/siren_imports.dart';
+import 'package:fh_radio_studio/core/track_metadata_cache.dart';
 import 'package:fh_radio_studio/state/custom_pool_tracks.dart';
 
 void main() {
@@ -35,6 +38,7 @@ void main() {
     final audio = File(
       '${sirenDir.path}${Platform.pathSeparator}MSR-232251.wav',
     )..writeAsBytesSync(const [0, 1, 2, 3]);
+    _writeTrackAssetIndex(project.path, audio.path);
 
     final entry = SirenImportEntry(
       cid: '232251',
@@ -87,4 +91,25 @@ void main() {
     expect(entry.artist, 'Mili');
     expect(entry.artists, ['Mili']);
   });
+}
+
+void _writeTrackAssetIndex(String projectDir, String audioPath) {
+  final sourceRef = projectRefForPath(projectDir, audioPath)!;
+  final cache = File(TrackMetadataCache.configPath(projectDir));
+  cache.parent.createSync(recursive: true);
+  cache.writeAsStringSync(
+    const JsonEncoder.withIndent('  ').convert({
+      'schema_version': 2,
+      'tracks': [
+        {
+          'track_key': trackKeyForSourceRef(sourceRef),
+          'source_ref': sourceRef,
+          'artist': '塞壬唱片-MSR',
+          'title': 'Whistle Stop',
+          'from_tags': true,
+        },
+      ],
+    }),
+    encoding: utf8,
+  );
 }

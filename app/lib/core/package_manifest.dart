@@ -26,9 +26,9 @@ Map<String, dynamic>? readPackageManifestFile(String? manifestPath) {
   if (!manifest.existsSync()) return null;
   try {
     final decoded = jsonDecode(manifest.readAsStringSync(encoding: utf8));
-    return decoded is Map
-        ? decoded.map((key, value) => MapEntry('$key', value))
-        : null;
+    if (decoded is! Map) return null;
+    return decoded.map((key, value) => MapEntry('$key', value))
+      ..['_manifest_path'] = manifest.absolute.path;
   } on FormatException {
     return null;
   } on FileSystemException {

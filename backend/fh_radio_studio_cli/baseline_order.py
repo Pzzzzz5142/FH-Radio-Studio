@@ -3,12 +3,19 @@ from __future__ import annotations
 from .common import *
 from .fsb5 import parse_fsb5
 from .game import default_radio_info, find_station, iter_track_samples, parse_xml
+from .project_refs import project_path_or_absolute
 
 BANK_ORDER_INDEX_RELATIVE_PATH = "derived/bank_order.json"
 
 
 def baseline_bank_order_index_path(baseline_dir: Path) -> Path:
     return baseline_dir / Path(*BANK_ORDER_INDEX_RELATIVE_PATH.split("/"))
+
+
+def _project_root_from_baseline_dir(baseline_dir: Path) -> Optional[Path]:
+    if baseline_dir.parent.name != "backups":
+        return None
+    return baseline_dir.parent.parent
 
 
 def is_baseline_derived_index_path(value: object) -> bool:
@@ -193,11 +200,17 @@ def build_baseline_bank_order_index(
         warnings.extend(f"{bank_name}: {warning}" for warning in bank_warnings)
 
     ok_banks = [bank for bank in banks if bank.get("status") == "ok"]
+    project_dir = _project_root_from_baseline_dir(baseline_dir)
+    source_manifest = baseline_dir / "baseline_manifest.json"
     return {
         "schema_version": 1,
         "kind": "baseline_bank_order",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "source_baseline_manifest": str(baseline_dir / "baseline_manifest.json"),
+        "source_baseline_manifest": (
+            project_path_or_absolute(project_dir, source_manifest)
+            if project_dir is not None
+            else str(source_manifest)
+        ),
         "game_version_id": manifest.get("game_version_id"),
         "source_radio_info": (
             str(radio_info.relative_to(baseline_dir)).replace("\\", "/")

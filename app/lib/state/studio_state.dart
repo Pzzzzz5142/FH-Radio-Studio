@@ -16,6 +16,7 @@ import '../core/path_keys.dart';
 import '../core/siren_audio_cache.dart';
 import '../core/siren_catalog.dart';
 import '../core/siren_imports.dart';
+import '../core/project_refs.dart';
 import '../core/track_metadata_cache.dart';
 import '../core/track_timing_config.dart';
 import '../domain/radio_library.dart';
@@ -1306,6 +1307,9 @@ class StudioState {
     required this.toolInstallLog,
     required this.toolInstallFailureSummary,
     required this.statusSummary,
+    this.projectPathMigrationRequired = false,
+    this.projectPathMigrationRunning = false,
+    this.projectPathMigrationRevision = 0,
     this.gameDirError,
   });
 
@@ -1369,6 +1373,8 @@ class StudioState {
     final projectPendingPackageDir = hasProject
         ? _latestPendingPackageDir(projectDir)
         : null;
+    final projectPathMigrationRequired =
+        hasProject && FhRadioStudioProject.needsPathMigration(projectDir);
     final radio = _objectInt(projectSettings['radio']) ?? 4;
     if (hasProject) {
       FhRadioStudioProject.writeSettings(
@@ -1449,6 +1455,8 @@ class StudioState {
       toolInstallLog: const [],
       toolInstallFailureSummary: null,
       statusSummary: '尚未检查',
+      projectPathMigrationRequired: projectPathMigrationRequired,
+      projectPathMigrationRunning: projectPathMigrationRequired,
     );
   }
 
@@ -1509,6 +1517,9 @@ class StudioState {
   final List<String> toolInstallLog;
   final String? toolInstallFailureSummary;
   final String statusSummary;
+  final bool projectPathMigrationRequired;
+  final bool projectPathMigrationRunning;
+  final int projectPathMigrationRevision;
   final String? gameDirError;
 
   String get musicPath => musicPaths.isEmpty ? '' : musicPaths.first;
@@ -1653,7 +1664,10 @@ class StudioState {
     return ((completed / total) * 100).clamp(0, 100).round();
   }
 
-  bool get projectOperationLocked => busy || fileIntegrityRefreshing;
+  bool get projectPathMigrationActive =>
+      projectPathMigrationRequired || projectPathMigrationRunning;
+  bool get projectOperationLocked =>
+      busy || fileIntegrityRefreshing || projectPathMigrationActive;
   bool get baselineIntegrityBroken =>
       fileIntegrity.hasCurrentBaseline &&
       (baselinePlanSummary?.hasIntegrityBreak ?? false);
@@ -1674,6 +1688,12 @@ class StudioState {
       ? toolchainWorkflowLockTitle
       : baselineWorkflowLockTitle;
   String get projectEditingLockMessage {
+    if (projectPathMigrationRunning) {
+      return '正在迁移项目路径引用，完成后会恢复项目编辑。';
+    }
+    if (projectPathMigrationRequired) {
+      return '项目路径引用需要迁移；请先完成项目检查或重新打开项目。';
+    }
     if (fileIntegrityRefreshing) {
       return '正在扫描游戏文件、原始备份和准备包，完成后会恢复播放列表编辑。';
     }
@@ -1685,7 +1705,8 @@ class StudioState {
     return baselineWorkflowLockMessage;
   }
 
-  bool get customSongEditingLocked => toolchainWorkflowLocked;
+  bool get customSongEditingLocked =>
+      toolchainWorkflowLocked || projectPathMigrationActive;
 
   bool get languageSelectionMatchesGame =>
       sourceLang == gameSourceLang && targetLang == gameTargetLang;
@@ -1775,6 +1796,9 @@ class StudioState {
     List<String>? toolInstallLog,
     Object? toolInstallFailureSummary = _sentinel,
     String? statusSummary,
+    bool? projectPathMigrationRequired,
+    bool? projectPathMigrationRunning,
+    int? projectPathMigrationRevision,
     Object? gameDirError = _sentinel,
   }) {
     return StudioState(
@@ -1874,6 +1898,12 @@ class StudioState {
           ? this.toolInstallFailureSummary
           : toolInstallFailureSummary as String?,
       statusSummary: statusSummary ?? this.statusSummary,
+      projectPathMigrationRequired:
+          projectPathMigrationRequired ?? this.projectPathMigrationRequired,
+      projectPathMigrationRunning:
+          projectPathMigrationRunning ?? this.projectPathMigrationRunning,
+      projectPathMigrationRevision:
+          projectPathMigrationRevision ?? this.projectPathMigrationRevision,
       gameDirError: identical(gameDirError, _sentinel)
           ? this.gameDirError
           : gameDirError as String?,
@@ -2218,6 +2248,7 @@ PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
   if (manifest == null) return null;
   final data = _readJsonMap(manifest);
   if (data == null) return null;
+  final projectDir = _projectDirFromPackageManifest(manifest);
   final language = _objectMap(data['language']);
   final previews = <String>[];
   final assignments = <PackageTrackAssignment>[];
@@ -2248,7 +2279,11 @@ PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
       final item = music[index];
       final map = _objectMap(item);
       if (map == null) continue;
-      final source = _objectString(map['source']);
+      final source = _manifestRuntimeSource(
+        projectDir,
+        _objectString(map['source']),
+        _objectString(map['track_key']),
+      );
       final title = _objectString(map['display_name']) ?? 'Unknown Track';
       final artist = _objectString(map['artist']);
       final preview = artist == null || artist.isEmpty
@@ -2274,7 +2309,11 @@ PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
       final sourceIndex = _objectInt(map['source_index']);
       final slotIndex = _objectInt(map['slot_index']);
       if (slotIndex == null) continue;
-      final directSource = _objectString(map['source']);
+      final directSource = _manifestRuntimeSource(
+        projectDir,
+        _objectString(map['source']),
+        _objectString(map['track_key']),
+      );
       final source = directSource == null || directSource.isEmpty
           ? (sourceIndex == null ? null : sourceByIndex[sourceIndex])
           : directSource;
@@ -2330,6 +2369,35 @@ PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
     previewTracks: previews,
     assignments: assignments,
   );
+}
+
+String? _projectDirFromPackageManifest(File manifest) {
+  final parts = p.split(manifest.absolute.path);
+  final metadataIndex = parts.indexOf('.fh-radio-studio');
+  if (metadataIndex > 0) return p.joinAll(parts.take(metadataIndex));
+  final index = parts.indexOf('packages');
+  if (index <= 0) return null;
+  return p.joinAll(parts.take(index));
+}
+
+String? _manifestRuntimeSource(
+  String? projectDir,
+  String? source,
+  String? trackKey,
+) {
+  if (projectDir != null && trackKey != null && trackKey.isNotEmpty) {
+    final resolved = TrackMetadataCache.resolveTrackKey(projectDir, trackKey);
+    if (resolved != null) return resolved;
+  }
+  if (source == null || source.isEmpty) return null;
+  if (projectDir != null && isProjectRef(source)) {
+    try {
+      return resolveProjectRef(projectDir, source);
+    } on ProjectRefException {
+      return null;
+    }
+  }
+  return source;
 }
 
 double? _packageLoudnessOffsetLu(Map<String, dynamic> data) {
@@ -2608,12 +2676,15 @@ class StudioController extends StateNotifier<StudioState> {
     if (state.hasProject) {
       _deleteStalePendingPackage(state.projectDir);
       _cleanupInterruptedProjectImports(state.projectDir);
+      unawaited(_migrateProjectIfNeeded(state.projectDir));
     }
   }
 
   final SharedPreferences _prefs;
   bool _startupFullCheckStarted = false;
   CliCancellationToken? _activeAiEnvironmentSyncToken;
+  String? _projectPathMigrationDir;
+  Future<bool>? _projectPathMigrationFuture;
 
   FhRadioStudioCli get _cli => createCli();
 
@@ -2667,6 +2738,8 @@ class StudioController extends StateNotifier<StudioState> {
       targetLang: targetLang,
       aiProfile: aiProfile,
     );
+    final projectPathMigrationRequired =
+        FhRadioStudioProject.needsPathMigration(next);
     state = state.copyWith(
       hasProject: true,
       projectDir: next,
@@ -2700,6 +2773,9 @@ class StudioController extends StateNotifier<StudioState> {
       pendingPackageSummary: _readPackageSummary(pendingPackageDir),
       baselinePlanSummary: null,
       refreshingPanels: const {},
+      projectPathMigrationRequired: projectPathMigrationRequired,
+      projectPathMigrationRunning: projectPathMigrationRequired,
+      projectPathMigrationRevision: state.projectPathMigrationRevision + 1,
       fileIntegrity: GameFileIntegritySummary.deferred(
         baselineManifestPath: _currentBaselineManifest(next),
         pendingBaselineManifestPath: _pendingBaselineManifest(next),
@@ -2714,6 +2790,87 @@ class StudioController extends StateNotifier<StudioState> {
     _prefs.setString(_StudioPrefsKeys.projectDir, next);
     _prefs.setStringList(_StudioPrefsKeys.recentProjectDirs, recentProjectDirs);
     _append('项目目录：$next');
+    unawaited(_migrateProjectIfNeeded(next));
+  }
+
+  Future<bool> _migrateProjectIfNeeded(String projectDir) {
+    if (!FhRadioStudioProject.needsPathMigration(projectDir)) {
+      _finishProjectPathMigration(projectDir, required: false);
+      return Future.value(true);
+    }
+    if (_projectPathMigrationDir == projectDir &&
+        _projectPathMigrationFuture != null) {
+      return _projectPathMigrationFuture!;
+    }
+    _projectPathMigrationDir = projectDir;
+    _startProjectPathMigration(projectDir);
+    final future =
+        _run([
+              'migrate-project',
+              '--project-dir',
+              projectDir,
+            ], streamOutput: false)
+            .then((result) {
+              if (!mounted) return result.ok;
+              if (state.projectDir != projectDir) return result.ok;
+              if (!result.ok) {
+                _append('项目路径引用迁移失败。请检查项目 JSON 后重试。');
+                _finishProjectPathMigration(projectDir, required: true);
+                return false;
+              }
+              _append('项目路径引用已迁移到 0.2.0+ 格式。');
+              final stillRequired = FhRadioStudioProject.needsPathMigration(
+                projectDir,
+              );
+              state = state.copyWith(
+                musicPaths: _projectMusicPaths(projectDir),
+                lastPackageSummary: _readPackageSummary(state.lastPackageDir),
+                pendingPackageSummary: _readPackageSummary(
+                  state.pendingPackageDir,
+                ),
+                projectPathMigrationRequired: stillRequired,
+                projectPathMigrationRunning: false,
+                projectPathMigrationRevision:
+                    state.projectPathMigrationRevision + 1,
+              );
+              return true;
+            })
+            .whenComplete(() {
+              if (_projectPathMigrationDir == projectDir) {
+                _projectPathMigrationDir = null;
+                _projectPathMigrationFuture = null;
+              }
+            });
+    _projectPathMigrationFuture = future;
+    return future;
+  }
+
+  void _startProjectPathMigration(String projectDir) {
+    if (!mounted || state.projectDir != projectDir) return;
+    if (state.projectPathMigrationRequired &&
+        state.projectPathMigrationRunning) {
+      return;
+    }
+    state = state.copyWith(
+      projectPathMigrationRequired: true,
+      projectPathMigrationRunning: true,
+    );
+  }
+
+  void _finishProjectPathMigration(
+    String projectDir, {
+    required bool required,
+  }) {
+    if (!mounted || state.projectDir != projectDir) return;
+    if (state.projectPathMigrationRequired == required &&
+        !state.projectPathMigrationRunning) {
+      return;
+    }
+    state = state.copyWith(
+      projectPathMigrationRequired: required,
+      projectPathMigrationRunning: false,
+      projectPathMigrationRevision: state.projectPathMigrationRevision + 1,
+    );
   }
 
   void _cleanupInterruptedProjectImports(String projectDir) {
@@ -2850,6 +3007,7 @@ class StudioController extends StateNotifier<StudioState> {
         .where((value) => value.isNotEmpty)
         .toList(growable: false);
     if (inputs.isEmpty) return;
+    if (!await _ensureProjectPathMigratedForAction('导入自建歌曲')) return;
     await _withBusy('导入自建歌曲', () async {
       final result = await _run([
         'import-audio',
@@ -2885,6 +3043,9 @@ class StudioController extends StateNotifier<StudioState> {
     String? coverImagePath,
   }) async {
     if (state.busy || !state.hasProject) return null;
+    if (!await _ensureProjectPathMigratedForAction('导入塞壬唱片')) {
+      return null;
+    }
     String? importedPath;
     await _withBusy('导入塞壬唱片', () async {
       final sirenArtists = sirenArtistsForDisplay(
@@ -2945,6 +3106,9 @@ class StudioController extends StateNotifier<StudioState> {
 
   Future<bool> deleteMusicPath(String value) async {
     if (state.busy || !state.hasProject) return false;
+    if (!await _ensureProjectPathMigratedForAction('删除自建歌曲')) {
+      return false;
+    }
     final target = File(value).absolute;
     final source = target.path;
     final sourceKey = TrackTimingConfig.keyForPath(source);
@@ -3159,6 +3323,7 @@ class StudioController extends StateNotifier<StudioState> {
     if (state.busy) return;
     final refreshProjectDir = state.projectDir;
     final refreshGameDir = state.gameDir;
+    if (!await _migrateProjectIfNeeded(refreshProjectDir)) return;
     await _withBusy(verifyFiles ? '完整校验当前环境' : '检查当前环境', () async {
       state = state.copyWith(
         statusSummary: verifyFiles ? '正在完整校验当前环境' : '正在检查当前环境',
@@ -3223,6 +3388,7 @@ class StudioController extends StateNotifier<StudioState> {
 
   Future<void> verifyFileIntegrity() async {
     if (state.busy) return;
+    if (!await _migrateProjectIfNeeded(state.projectDir)) return;
     await _withPanelRefresh(_RefreshScope.fileIntegrity, '刷新文件校验', () async {
       final baseEnvironmentReady =
           await _ensureBaseEnvironmentForToolchainCheck();
@@ -3900,6 +4066,9 @@ class StudioController extends StateNotifier<StudioState> {
     PlaylistPlan? plan,
   }) async {
     if (state.busy) return false;
+    if (!await _ensureProjectPathMigratedForAction('准备电台包')) {
+      return false;
+    }
     final normalizedLoudnessOffsetLu = normalizePackageLoudnessOffsetLu(
       loudnessOffsetLu,
     );
@@ -4102,6 +4271,9 @@ class StudioController extends StateNotifier<StudioState> {
 
   Future<bool> createPendingBaselineAndBuildPackage() async {
     if (state.busy) return false;
+    if (!await _ensureProjectPathMigratedForAction('生成测试准备包')) {
+      return false;
+    }
     if (_rejectProjectEditWhenBaselineBroken('生成测试准备包')) return false;
     if (!_canCreatePendingPackage) {
       _append(
@@ -4226,6 +4398,7 @@ class StudioController extends StateNotifier<StudioState> {
       if (trimmed.startsWith(_cliPlanPrefix)) {
         return PlaylistPlanCodec.decodeJson(
           trimmed.substring(_cliPlanPrefix.length),
+          projectDir: state.projectDir,
         );
       }
     }
@@ -4253,6 +4426,9 @@ class StudioController extends StateNotifier<StudioState> {
 
   Future<bool> createPendingBaselineOnly() async {
     if (state.busy) return false;
+    if (!await _ensureProjectPathMigratedForAction('保存新文件记录')) {
+      return false;
+    }
     if (_rejectProjectEditWhenBaselineBroken('保存新文件记录')) return false;
     if (!_canCreatePendingPackage) {
       _append('当前没有发现需要单独保存的新游戏文件。');
@@ -4314,7 +4490,9 @@ class StudioController extends StateNotifier<StudioState> {
     }
     final packageKeys = <String>{};
     for (final assignment in summary.assignments) {
-      final trackKey = PackageTrackAssignment.keyForPath(assignment.source);
+      final trackKey =
+          trackKeyForProjectPath(state.projectDir, assignment.source) ??
+          PackageTrackAssignment.keyForPath(assignment.source);
       for (final playlistType in assignment.normalizedPlaylistTypes) {
         packageKeys.add(
           '$trackKey|${assignment.radioLabel}|$playlistType|${assignment.slot}',
@@ -4342,6 +4520,9 @@ class StudioController extends StateNotifier<StudioState> {
 
   Future<BaselinePlanSummary?> previewPristineBaselinePlan() async {
     if (state.busy) return null;
+    if (!await _ensureProjectPathMigratedForAction('生成原始备份清单')) {
+      return null;
+    }
     await _withPanelRefresh(_RefreshScope.fileIntegrity, '生成原始备份清单', () async {
       await _refreshIntegrityFromCli();
     });
@@ -4350,6 +4531,7 @@ class StudioController extends StateNotifier<StudioState> {
 
   Future<void> createPristineBaseline() async {
     if (state.busy) return;
+    if (!await _ensureProjectPathMigratedForAction('创建原始备份')) return;
     if (File(state.currentBaselineManifest).existsSync()) {
       _append('原始备份已经存在。如需重建，请先处理当前原始备份。');
       return;
@@ -4387,6 +4569,9 @@ class StudioController extends StateNotifier<StudioState> {
 
   Future<void> bumpBaselineBuildCompatibility() async {
     if (state.busy) return;
+    if (!await _ensureProjectPathMigratedForAction('更新原始备份支持的 Steam build')) {
+      return;
+    }
     if (!File(state.currentBaselineManifest).existsSync()) {
       _append('找不到可更新的原始备份记录。');
       return;
@@ -4410,6 +4595,9 @@ class StudioController extends StateNotifier<StudioState> {
 
   Future<bool> rebuildBaselineFromCurrentGame() async {
     if (state.busy) return false;
+    if (!await _ensureProjectPathMigratedForAction('用当前游戏文件重建原始备份')) {
+      return false;
+    }
     var rebuilt = false;
     await _withBusy('用当前游戏文件重建原始备份', () async {
       final running = await _cli.isGameRunning();
@@ -4452,6 +4640,9 @@ class StudioController extends StateNotifier<StudioState> {
 
   Future<void> createPendingBaselineAndForceDeploy() async {
     if (state.busy) return;
+    if (!await _ensureProjectPathMigratedForAction('保存新文件记录并强制写入')) {
+      return;
+    }
     if (_rejectProjectEditWhenBaselineBroken('保存新文件记录并强制写入')) return;
     final packageDir =
         state.lastPackageDir ??
@@ -4474,11 +4665,13 @@ class StudioController extends StateNotifier<StudioState> {
   }
 
   Future<bool> applyCurrentBaseline() async {
+    if (!await _ensureProjectPathMigratedForAction('写回旧的基线')) return false;
     if (_rejectProjectEditWhenBaselineBroken('写回旧的基线')) return false;
     return _applyBaseline(state.currentBaselineDir, '写回旧的基线');
   }
 
   Future<bool> applyPendingBaseline() async {
+    if (!await _ensureProjectPathMigratedForAction('写回新游戏文件')) return false;
     if (_rejectProjectEditWhenBaselineBroken('写回新游戏文件')) return false;
     final applied = await _applyBaseline(state.pendingBaselineDir, '写回新游戏文件');
     if (applied && state.pendingPackageBuildFailed) {
@@ -4490,11 +4683,13 @@ class StudioController extends StateNotifier<StudioState> {
   }
 
   Future<bool> applyBaselineBackup(String baselineDir, String label) async {
+    if (!await _ensureProjectPathMigratedForAction(label)) return false;
     if (_rejectProjectEditWhenBaselineBroken(label)) return false;
     return _applyBaseline(baselineDir, label);
   }
 
   Future<void> deployOldPackage() async {
+    if (!await _ensureProjectPathMigratedForAction('写入旧准备包')) return;
     if (_rejectProjectEditWhenBaselineBroken('写入旧准备包')) return;
     final packageDir = state.lastPackageDir;
     if (packageDir == null) {
@@ -4507,6 +4702,7 @@ class StudioController extends StateNotifier<StudioState> {
   }
 
   Future<void> deployPendingPackage() async {
+    if (!await _ensureProjectPathMigratedForAction('写入测试准备包')) return;
     if (_rejectProjectEditWhenBaselineBroken('写入测试准备包')) return;
     final packageDir = state.pendingPackageDir;
     if (packageDir == null || !state.pendingPackageReady) {
@@ -4727,6 +4923,7 @@ class StudioController extends StateNotifier<StudioState> {
 
   Future<void> confirmPendingBaseline() async {
     if (state.busy) return;
+    if (!await _ensureProjectPathMigratedForAction('确认新的原始备份')) return;
     if (_rejectProjectEditWhenBaselineBroken('确认新的原始备份')) return;
     if (!File(state.pendingBaselineManifest).existsSync()) {
       _append('没有新文件记录可以确认。');
@@ -4781,6 +4978,7 @@ class StudioController extends StateNotifier<StudioState> {
 
   Future<void> discardPendingBaseline() async {
     if (state.busy) return;
+    if (!await _ensureProjectPathMigratedForAction('放弃新文件记录')) return;
     if (_rejectProjectEditWhenBaselineBroken('放弃新文件记录')) return;
     await _withBusy('放弃新文件记录', () async {
       final result = await _run([
@@ -4805,6 +5003,7 @@ class StudioController extends StateNotifier<StudioState> {
 
   Future<void> deployLastPackage({bool force = false}) async {
     if (state.busy) return;
+    if (!await _ensureProjectPathMigratedForAction('写入游戏')) return;
     if (_rejectProjectEditWhenBaselineBroken('写入游戏')) return;
     final packageDir = state.lastPackageDir;
     if (packageDir == null) {
@@ -4869,6 +5068,14 @@ class StudioController extends StateNotifier<StudioState> {
       '${state.projectEditingLockTitle}${state.projectEditingLockMessage} 已阻止：$action。',
     );
     return true;
+  }
+
+  Future<bool> _ensureProjectPathMigratedForAction(String action) async {
+    if (!state.hasProject) return true;
+    final ok = await _migrateProjectIfNeeded(state.projectDir);
+    if (ok) return true;
+    _append('项目路径引用迁移失败，已阻止：$action。');
+    return false;
   }
 
   void clearRecentArtifacts() {

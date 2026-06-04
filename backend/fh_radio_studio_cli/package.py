@@ -47,8 +47,12 @@ from .loudness import (
 from .metadata import (
     cached_loudness_analysis_for_path,
     infer_metadata_cache_path_from_timing_manifest,
+    load_track_asset_index,
+    metadata_cache_path,
+    resolve_track_key,
     upsert_track_metadata_cache_entry,
 )
+from .project_refs import project_path_or_absolute, track_key_for_project_path
 from .radio_xml import patch_package_xml_tree
 
 PROGRESS_PREFIX = "FH_RADIO_STUDIO_PROGRESS "
@@ -344,6 +348,41 @@ def _metadata_cache_path_for_args(args: argparse.Namespace) -> Optional[Path]:
     return infer_metadata_cache_path_from_timing_manifest(getattr(args, "timing_manifest", None))
 
 
+def _project_dir_for_args(args: argparse.Namespace) -> Optional[Path]:
+    metadata_cache = _metadata_cache_path_for_args(args)
+    if metadata_cache is not None and metadata_cache.name == "track_metadata.json":
+        return metadata_cache.expanduser().parent.parent.resolve()
+    timing_manifest = getattr(args, "timing_manifest", None)
+    if timing_manifest:
+        manifest_path = Path(str(timing_manifest)).expanduser()
+        if manifest_path.parent.name.lower() == "analysis":
+            return manifest_path.parent.parent.resolve()
+    out_dir = getattr(args, "out_dir", None)
+    if out_dir:
+        candidate = Path(str(out_dir)).expanduser()
+        if candidate.parent.name == "packages":
+            return candidate.parent.parent.resolve()
+    return None
+
+
+def _track_key_for_package_source(args: argparse.Namespace, source: Path) -> Optional[str]:
+    project_dir = _project_dir_for_args(args)
+    if project_dir is None:
+        return None
+    track_key = track_key_for_project_path(project_dir, source)
+    if track_key is not None:
+        with _METADATA_CACHE_LOCK:
+            upsert_track_metadata_cache_entry(metadata_cache_path(project_dir), source)
+    return track_key
+
+
+def _project_path_for_manifest(args: argparse.Namespace, path: Path) -> str:
+    project_dir = _project_dir_for_args(args)
+    if project_dir is None:
+        return str(path.resolve())
+    return project_path_or_absolute(project_dir, path)
+
+
 def _all_core_markers_overridden(override: Optional[Dict[str, object]]) -> bool:
     if not isinstance(override, dict):
         return False
@@ -502,18 +541,41 @@ def _package_game_version_fields(game_dir: Path) -> Dict[str, object]:
 
 
 def package_file_fingerprints(package_dir: Path) -> List[Dict[str, object]]:
+    project_dir = _project_dir_from_package_manifest(
+        package_dir / "fh_radio_studio_package_manifest.json"
+    )
     return [
         {
             "kind": str(item.get("kind", "file")),
             "relative_path": str(item["relative_path"]),
             "install_relative_path": str(item["install_relative_path"]),
-            "path": str(src.resolve()),
+            "path": (
+                project_path_or_absolute(project_dir, src)
+                if project_dir is not None
+                else str(src.resolve())
+            ),
             "size": file_size(src),
             "md5": md5_file(src),
         }
         for item in collect_package_deploy_files(package_dir)
         for src in [Path(str(item["source"]))]
     ]
+
+
+def _manifest_entry(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            str(key): _manifest_entry(item)
+            for key, item in value.items()
+            if not str(key).startswith("_runtime_")
+        }
+    if isinstance(value, list):
+        return [_manifest_entry(item) for item in value]
+    return value
+
+
+def _package_unit_for_manifest(unit: Dict[str, object]) -> Dict[str, object]:
+    return _manifest_entry(unit)  # type: ignore[return-value]
 
 
 def _baseline_install_relative_path(item: Dict[str, object]) -> str:
@@ -575,8 +637,15 @@ def complete_package_from_baseline(
         shutil.copy2(backup, dest)
         copied += 1
 
+    project_dir = _project_dir_from_package_manifest(
+        package_root / "fh_radio_studio_package_manifest.json"
+    )
     return {
-        "baseline_manifest": str(manifest_path.resolve()),
+        "baseline_manifest": (
+            project_path_or_absolute(project_dir, manifest_path)
+            if project_dir is not None
+            else str(manifest_path.resolve())
+        ),
         "baseline_files": files,
         "kept_package_files": kept,
         "copied_baseline_files": copied,
@@ -1178,6 +1247,24 @@ def load_plan_document(plan_path: Optional[str]) -> Optional[Dict[str, object]]:
     return data if isinstance(data, dict) else None
 
 
+def _manifest_input_path(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    if value == "-":
+        return "-"
+    return str(Path(value).expanduser().resolve())
+
+
+def _manifest_arg_path(args: argparse.Namespace, value: Optional[str]) -> Optional[str]:
+    raw = _manifest_input_path(value)
+    if raw is None or raw == "-":
+        return raw
+    project_dir = _project_dir_for_args(args)
+    if project_dir is None:
+        return raw
+    return project_path_or_absolute(project_dir, Path(raw))
+
+
 def load_playlist_plan_builtin_targets(
     plan_path: Optional[str], root: ET.Element
 ) -> List[Dict[str, object]]:
@@ -1223,6 +1310,7 @@ def load_playlist_plan_groups(
     plan_path: Optional[str],
     root: ET.Element,
     *,
+    project_dir: Optional[Path] = None,
     skip_radios: Optional[set[int]] = None,
 ) -> List[Dict[str, object]]:
     data = load_plan_document(plan_path)
@@ -1237,16 +1325,35 @@ def load_playlist_plan_groups(
     for item in items:
         if not isinstance(item, dict):
             continue
+        raw_track_key = str(item.get("track_key") or "").strip()
         raw_source = str(item.get("source") or "").strip()
         raw_radio = str(item.get("radio_code") or item.get("radioCode") or "").strip().upper()
-        if not raw_source or not raw_radio:
+        if not raw_radio:
             continue
         radio = _resolve_playlist_plan_radio(raw_radio, code_to_number)
         if radio is None:
             die(f"Playlist plan references unknown radio code: {raw_radio}")
         if radio in skip_radios:
             continue
-        source = Path(raw_source).expanduser()
+        source: Optional[Path] = None
+        if raw_track_key:
+            if project_dir is None:
+                die("Playlist plan uses track_key but no project metadata cache was provided.")
+            source = resolve_track_key(project_dir, raw_track_key)
+            if source is None:
+                die(f"Playlist plan references unknown track_key: {raw_track_key}")
+        elif raw_source:
+            source = Path(raw_source).expanduser()
+            if (
+                project_dir is not None
+                and track_key_for_project_path(project_dir, source) is not None
+            ):
+                die(
+                    "Playlist plan contains a legacy project-internal source "
+                    f"without track_key: {source}. Run migrate-project first."
+                )
+        if source is None:
+            continue
         if not source.is_file():
             die(f"Playlist plan music source not found: {source}")
         playlist_type = normalize_playlist_type(
@@ -1299,6 +1406,14 @@ def _package_manifest_path_from_arg(package_arg: str) -> Path:
     die(f"FH Radio Studio package manifest not found: {path}")
 
 
+def _project_dir_from_package_manifest(manifest_path: Path) -> Optional[Path]:
+    parts = manifest_path.resolve().parts
+    for index in range(len(parts) - 1):
+        if parts[index] == "packages":
+            return Path(*parts[:index])
+    return None
+
+
 def _iter_package_assignment_units(manifest: Dict[str, object]) -> Iterable[Dict[str, object]]:
     radios = manifest.get("radios")
     if isinstance(radios, list):
@@ -1307,7 +1422,9 @@ def _iter_package_assignment_units(manifest: Dict[str, object]) -> Iterable[Dict
                 yield radio
 
 
-def _package_source_by_index(unit: Dict[str, object]) -> Dict[int, str]:
+def _package_source_by_index(
+    unit: Dict[str, object], project_dir: Optional[Path]
+) -> Dict[int, str]:
     result: Dict[int, str] = {}
     music = unit.get("music")
     if not isinstance(music, list):
@@ -1316,6 +1433,10 @@ def _package_source_by_index(unit: Dict[str, object]) -> Dict[int, str]:
         if not isinstance(item, dict):
             continue
         source = str(item.get("source") or "").strip()
+        track_key = str(item.get("track_key") or "").strip()
+        if not source and track_key and project_dir is not None:
+            resolved = resolve_track_key(project_dir, track_key)
+            source = str(resolved) if resolved is not None else ""
         if source:
             result[index] = source
     return result
@@ -1328,11 +1449,12 @@ def _optional_int(value: object, default: int) -> int:
 
 
 def load_playlist_groups_from_package(
-    package_arg: Optional[str], root: ET.Element
+    package_arg: Optional[str], root: ET.Element, *, project_dir: Optional[Path] = None
 ) -> List[Dict[str, object]]:
     if not package_arg:
         return []
     manifest_path = _package_manifest_path_from_arg(package_arg)
+    project_dir = project_dir or _project_dir_from_package_manifest(manifest_path)
     manifest = load_manifest(manifest_path)
     code_to_number = station_number_by_code(root)
     grouped: Dict[int, Dict[str, object]] = {}
@@ -1341,7 +1463,7 @@ def load_playlist_groups_from_package(
     for unit in _iter_package_assignment_units(manifest):
         unit_radio = safe_int(str(unit.get("radio") or ""), 0) or None
         unit_code = str(unit.get("radio_code") or "").strip().upper()
-        source_by_index = _package_source_by_index(unit)
+        source_by_index = _package_source_by_index(unit, project_dir)
         assignments = unit.get("assignments")
         if not isinstance(assignments, list):
             continue
@@ -1362,6 +1484,10 @@ def load_playlist_groups_from_package(
                 die(f"Package assignment references unknown radio code: {raw_radio or '<missing>'}")
 
             source = str(assignment.get("source") or "").strip()
+            track_key = str(assignment.get("track_key") or "").strip()
+            if not source and track_key and project_dir is not None:
+                resolved = resolve_track_key(project_dir, track_key)
+                source = str(resolved) if resolved is not None else ""
             if not source:
                 source_index = _optional_int(assignment.get("source_index"), -1)
                 source = source_by_index.get(source_index, "")
@@ -1502,7 +1628,11 @@ def prepare_music_tracks(
             input_analysis=loudness_by_source.get(source_key(music)),
             verify_output=False,
         )
-        override = timing_override_for(timing_overrides, music)
+        override = timing_override_for(
+            timing_overrides,
+            music,
+            project_dir=_project_dir_for_args(args),
+        )
         bpm_value = bpm_from_override(override, args.bpm)
         if _all_core_markers_overridden(override):
             timing = {}
@@ -1521,10 +1651,17 @@ def prepare_music_tracks(
         markers = build_markers(
             marker_args, timing, int(after["samples"]), int(after["sample_rate"])
         )
+        track_key = _track_key_for_package_source(args, music)
         prepared_tracks.append(
             {
-                "source": str(music.resolve()),
-                "prepared_wav": str(prepared_wav.resolve()),
+                **(
+                    {"track_key": track_key}
+                    if track_key is not None
+                    else {"source": str(music.resolve())}
+                ),
+                "_runtime_source": str(music.resolve()),
+                "prepared_wav": _project_path_for_manifest(args, prepared_wav),
+                "_runtime_prepared_wav": str(prepared_wav.resolve()),
                 "display_name": title,
                 "artist": artist,
                 "sample_rate": int(after["sample_rate"]),
@@ -1627,22 +1764,27 @@ def build_radio_package_unit(
             source_index = slot_index % len(prepared_tracks)
             track = prepared_tracks[source_index]
             staged_wav = stage_dir / f"{slot_index + 1:0{width}d}.wav"
-            shutil.copy2(track["prepared_wav"], staged_wav)
+            runtime_source = Path(str(track.get("_runtime_source") or track.get("source")))
+            shutil.copy2(track["_runtime_prepared_wav"], staged_wav)
             playlist_types = playlist_types_by_source.get(
-                source_key(Path(str(track["source"]))),
+                source_key(runtime_source),
                 list(PLAYLIST_TYPES),
             )
             playlist_slots = playlist_slots_by_source.get(
-                source_key(Path(str(track["source"]))),
+                source_key(runtime_source),
                 {playlist_type: slot_index + 1 for playlist_type in playlist_types},
             )
             assignments.append(
                 {
                     "slot_index": slot_index,
                     "target_sound_name": target_sound_name,
-                    "staged_wav": str(staged_wav.resolve()),
+                    "staged_wav": _project_path_for_manifest(args, staged_wav),
                     "source_index": source_index,
-                    "source": track["source"],
+                    **(
+                        {"track_key": track["track_key"]}
+                        if isinstance(track.get("track_key"), str)
+                        else {"source": track["source"]}
+                    ),
                     "playlist_entry": slot_index < len(prepared_tracks),
                     "playlist_types": playlist_types,
                     "playlist_slots": playlist_slots,
@@ -1691,7 +1833,7 @@ def build_radio_package_unit(
         "radio": radio,
         "radio_code": radio_code_for_station(radio, station.get("Name", "")),
         "station": station.get("Name"),
-        "source_bank": str(target_bank),
+        "source_bank": _project_path_for_manifest(args, target_bank),
         "target_bank_name": target_bank.name,
         "bank_slots": bank_info.num_samples,
         "replaceable_slots": replaceable_slots,
@@ -1824,10 +1966,10 @@ def package_language_settings(
     return {
         "source_lang": source_lang,
         "target_lang": target_lang,
-        "source_string_tables_dir": str(source_string_dir.resolve()),
-        "source_table": str(source_table.resolve()),
-        "target_table": str(target_table.resolve()),
-        "packaged_table": str(packaged_target.resolve()),
+        "source_string_tables_dir": _project_path_for_manifest(args, source_string_dir),
+        "source_table": _project_path_for_manifest(args, source_table),
+        "target_table": _project_path_for_manifest(args, target_table),
+        "packaged_table": _project_path_for_manifest(args, packaged_target),
         "preferred_lang": target_lang,
         "source_md5": md5_file(source_table),
         "target_original_md5": md5_file(target_table),
@@ -1921,13 +2063,13 @@ def cmd_build_current_radio_package(
         "game": "FH6",
         "game_dir": str(game_dir),
         **_package_game_version_fields(game_dir),
-        "source_audio_dir": str(audio_dir.resolve()),
-        "source_radio_info": str(radio_info),
+        "source_audio_dir": _project_path_for_manifest(args, audio_dir),
+        "source_radio_info": _project_path_for_manifest(args, radio_info),
         "playlist_plan": None,
         "radio": args.radio,
         "radio_code": radio_code_for_station(args.radio, station.get("Name", "")),
         "station": station.get("Name"),
-        "source_bank": str(target_bank),
+        "source_bank": _project_path_for_manifest(args, target_bank),
         "target_bank_name": target_bank.name,
         "bank_slots": bank_info.num_samples,
         "replaceable_slots": replaceable_slots,
@@ -1942,7 +2084,7 @@ def cmd_build_current_radio_package(
                 "radio": args.radio,
                 "radio_code": radio_code_for_station(args.radio, station.get("Name", "")),
                 "station": station.get("Name"),
-                "source_bank": str(target_bank),
+                "source_bank": _project_path_for_manifest(args, target_bank),
                 "target_bank_name": target_bank.name,
                 "bank_slots": bank_info.num_samples,
                 "replaceable_slots": replaceable_slots,
@@ -2067,7 +2209,8 @@ def cmd_build_baseline_restore_package(
                     "radio": radio,
                     "radio_code": radio_code_for_station(radio, station.get("Name", "")),
                     "station": station.get("Name"),
-                    "source_bank": str(target_bank),
+                    "source_bank": _project_path_for_manifest(args, target_bank),
+                    "_runtime_source_bank": str(target_bank),
                     "target_bank_name": target_bank.name,
                     "bank_slots": bank_info.num_samples,
                     "replaceable_slots": replaceable_slots,
@@ -2092,7 +2235,7 @@ def cmd_build_baseline_restore_package(
             copied_radio_info.append(source_xml.name)
             print(f"  copied baseline {source_xml.name}")
         for unit in restored_units:
-            source_bank = Path(str(unit["source_bank"]))
+            source_bank = Path(str(unit.get("_runtime_source_bank") or unit["source_bank"]))
             target_bank = package_bank_dir / source_bank.name
             if not target_bank.exists():
                 shutil.copy2(source_bank, target_bank)
@@ -2105,11 +2248,9 @@ def cmd_build_baseline_restore_package(
         "game": "FH6",
         "game_dir": str(game_dir),
         **_package_game_version_fields(game_dir),
-        "source_audio_dir": str(baseline_audio.resolve()),
-        "source_radio_info": str(default_radio_info(baseline_audio)),
-        "playlist_plan": (
-            str(Path(args.playlist_plan).expanduser().resolve()) if args.playlist_plan else None
-        ),
+        "source_audio_dir": _project_path_for_manifest(args, baseline_audio),
+        "source_radio_info": _project_path_for_manifest(args, default_radio_info(baseline_audio)),
+        "playlist_plan": _manifest_arg_path(args, args.playlist_plan),
         "radio": restored_units[0]["radio"] if len(restored_units) == 1 else None,
         "station": (
             restored_units[0]["station"]
@@ -2125,7 +2266,7 @@ def cmd_build_baseline_restore_package(
         "timing_manifest": None,
         "runtime_verified": True,
         "runtime_warning": None,
-        "radios": restored_units,
+        "radios": [_package_unit_for_manifest(item) for item in restored_units],
         "restored_radios": [
             {
                 "radio": item["radio"],
@@ -2312,7 +2453,10 @@ def cmd_build_package_from_plan(
     with progress.stage("inspect_inputs"):
         preflight_build_package_from_plan(args, game_dir, audio_dir, root, groups)
 
-    timing_overrides = load_timing_overrides(args.timing_manifest)
+    timing_overrides = load_timing_overrides(
+        args.timing_manifest,
+        project_dir=_project_dir_for_args(args),
+    )
     out_dir = Path(args.out_dir).expanduser()
     prepared_dir = out_dir / "work" / "prepared"
     stage_root = out_dir / "work" / "fsbank_stage"
@@ -2379,11 +2523,9 @@ def cmd_build_package_from_plan(
         "game": "FH6",
         "game_dir": str(game_dir),
         **_package_game_version_fields(game_dir),
-        "source_audio_dir": str(audio_dir.resolve()),
-        "source_radio_info": str(radio_info),
-        "playlist_plan": (
-            str(Path(args.playlist_plan).expanduser().resolve()) if args.playlist_plan else None
-        ),
+        "source_audio_dir": _project_path_for_manifest(args, audio_dir),
+        "source_radio_info": _project_path_for_manifest(args, radio_info),
+        "playlist_plan": _manifest_arg_path(args, args.playlist_plan),
         "radio": first_radio["radio"] if len(radio_packages) == 1 else None,
         "station": (
             first_radio["station"] if len(radio_packages) == 1 else f"{len(radio_packages)} radios"
@@ -2396,15 +2538,13 @@ def cmd_build_package_from_plan(
         "loudness_mode": "custom-set",
         "loudness_offset_lu": round(_args_loudness_offset_lu(args), 3),
         "skip_bank": args.skip_bank,
-        "timing_manifest": (
-            str(Path(args.timing_manifest).expanduser().resolve()) if args.timing_manifest else None
-        ),
+        "timing_manifest": _manifest_arg_path(args, args.timing_manifest),
         "runtime_verified": False,
         "runtime_warning": (
             "Generated bank has only been tool-validated. Do not deploy unless "
             "you intentionally accept the risk or have verified this package in game."
         ),
-        "radios": radio_packages,
+        "radios": [_package_unit_for_manifest(item) for item in radio_packages],
     }
     if restore_targets:
         package_manifest["restored_radios"] = [
@@ -2507,10 +2647,15 @@ def cmd_build_package(args: argparse.Namespace) -> int:
     playlist_groups = load_playlist_plan_groups(
         args.playlist_plan,
         root,
+        project_dir=_project_dir_for_args(args),
         skip_radios=restore_radios,
     )
     if not playlist_groups and getattr(args, "playlist_from_package", None):
-        playlist_groups = load_playlist_groups_from_package(args.playlist_from_package, root)
+        playlist_groups = load_playlist_groups_from_package(
+            args.playlist_from_package,
+            root,
+            project_dir=_project_dir_for_args(args),
+        )
     if playlist_groups:
         return cmd_build_package_from_plan(
             args,
@@ -2568,7 +2713,10 @@ def cmd_build_package(args: argparse.Namespace) -> int:
         _package_progress_plan(args, [(args.radio, len(music_files), station.get("Name"))])
     )
     with progress.stage("inspect_inputs"):
-        timing_overrides = load_timing_overrides(args.timing_manifest)
+        timing_overrides = load_timing_overrides(
+            args.timing_manifest,
+            project_dir=_project_dir_for_args(args),
+        )
 
         out_dir = Path(args.out_dir).expanduser()
         prepared_dir = out_dir / "work" / "prepared"
@@ -2635,14 +2783,18 @@ def cmd_build_package(args: argparse.Namespace) -> int:
             source_index = slot_index % len(prepared_tracks)
             track = prepared_tracks[source_index]
             staged_wav = stage_dir / f"{slot_index + 1:0{width}d}.wav"
-            shutil.copy2(track["prepared_wav"], staged_wav)
+            shutil.copy2(track["_runtime_prepared_wav"], staged_wav)
             assignments.append(
                 {
                     "slot_index": slot_index,
                     "target_sound_name": target_sound_name,
-                    "staged_wav": str(staged_wav.resolve()),
+                    "staged_wav": _project_path_for_manifest(args, staged_wav),
                     "source_index": source_index,
-                    "source": track["source"],
+                    **(
+                        {"track_key": track["track_key"]}
+                        if isinstance(track.get("track_key"), str)
+                        else {"source": track["source"]}
+                    ),
                     "playlist_entry": slot_index < len(prepared_tracks),
                     "playlist_types": list(PLAYLIST_TYPES),
                     "playlist_slots": {
@@ -2689,7 +2841,7 @@ def cmd_build_package(args: argparse.Namespace) -> int:
         "radio": args.radio,
         "radio_code": radio_code_for_station(args.radio, station.get("Name", "")),
         "station": station.get("Name"),
-        "source_bank": str(target_bank),
+        "source_bank": _project_path_for_manifest(args, target_bank),
         "target_bank_name": target_bank.name,
         "bank_slots": bank_info.num_samples,
         "replaceable_slots": replaceable_slots,
@@ -2705,12 +2857,12 @@ def cmd_build_package(args: argparse.Namespace) -> int:
         "game": "FH6",
         "game_dir": str(game_dir),
         **_package_game_version_fields(game_dir),
-        "source_audio_dir": str(audio_dir.resolve()),
+        "source_audio_dir": _project_path_for_manifest(args, audio_dir),
         "radio": args.radio,
         "radio_code": radio_package["radio_code"],
         "station": station.get("Name"),
-        "source_radio_info": str(radio_info),
-        "source_bank": str(target_bank),
+        "source_radio_info": _project_path_for_manifest(args, radio_info),
+        "source_bank": _project_path_for_manifest(args, target_bank),
         "target_bank_name": target_bank.name,
         "bank_slots": bank_info.num_samples,
         "replaceable_slots": replaceable_slots,
@@ -2719,15 +2871,13 @@ def cmd_build_package(args: argparse.Namespace) -> int:
         "loudness_mode": "custom-set",
         "loudness_offset_lu": round(_args_loudness_offset_lu(args), 3),
         "skip_bank": args.skip_bank,
-        "timing_manifest": (
-            str(Path(args.timing_manifest).expanduser().resolve()) if args.timing_manifest else None
-        ),
+        "timing_manifest": _manifest_arg_path(args, args.timing_manifest),
         "runtime_verified": False,
         "runtime_warning": (
             "Generated bank has only been tool-validated. Do not deploy unless "
             "you intentionally accept the risk or have verified this package in game."
         ),
-        "radios": [radio_package],
+        "radios": [_package_unit_for_manifest(radio_package)],
     }
 
     language_manifest: Optional[Dict[str, object]] = None
@@ -2754,10 +2904,10 @@ def cmd_build_package(args: argparse.Namespace) -> int:
             language_manifest = {
                 "source_lang": source_lang,
                 "target_lang": target_lang,
-                "source_string_tables_dir": str(source_string_dir.resolve()),
-                "source_table": str(source_table.resolve()),
-                "target_table": str(target_table.resolve()),
-                "packaged_table": str(packaged_target.resolve()),
+                "source_string_tables_dir": _project_path_for_manifest(args, source_string_dir),
+                "source_table": _project_path_for_manifest(args, source_table),
+                "target_table": _project_path_for_manifest(args, target_table),
+                "packaged_table": _project_path_for_manifest(args, packaged_target),
                 "preferred_lang": target_lang,
                 "source_md5": md5_file(source_table),
                 "target_original_md5": md5_file(target_table),

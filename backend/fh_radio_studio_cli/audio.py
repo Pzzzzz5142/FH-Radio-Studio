@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .common import *
+from .project_refs import track_key_for_project_path
 
 DJ_LITE_END_GAPS_SECONDS = {
     "StingerStart": 3.0,
@@ -156,7 +157,9 @@ def end_anchored_marker(total_samples: int, sr: int, gap_seconds: float) -> int:
     return max(0, min(total_samples - gap, total_samples - 1))
 
 
-def load_timing_overrides(path: Optional[str]) -> Dict[str, Dict[str, object]]:
+def load_timing_overrides(
+    path: Optional[str], *, project_dir: Optional[Path] = None
+) -> Dict[str, Dict[str, object]]:
     if not path:
         return {}
     manifest_path = Path(path).expanduser()
@@ -173,16 +176,37 @@ def load_timing_overrides(path: Optional[str]) -> Dict[str, Dict[str, object]]:
     for item in tracks:
         if not isinstance(item, dict):
             continue
+        track_key = item.get("track_key")
+        if isinstance(track_key, str) and track_key:
+            out[track_key] = item
+            continue
         source = item.get("source")
         if not source:
             continue
-        out[path_key(Path(str(source)).expanduser())] = item
+        source_path = Path(str(source)).expanduser()
+        if project_dir is not None:
+            derived_key = track_key_for_project_path(project_dir, source_path)
+            if derived_key is not None:
+                die(
+                    "Timing manifest contains a legacy project-internal source "
+                    f"without track_key: {source_path}. Run migrate-project first."
+                )
+        out[path_key(source_path)] = item
     return out
 
 
 def timing_override_for(
-    overrides: Dict[str, Dict[str, object]], source: Path
+    overrides: Dict[str, Dict[str, object]],
+    source: Path,
+    *,
+    project_dir: Optional[Path] = None,
 ) -> Optional[Dict[str, object]]:
+    if project_dir is not None:
+        track_key = track_key_for_project_path(project_dir, source)
+        if track_key is not None:
+            hit = overrides.get(track_key)
+            if hit is not None:
+                return hit
     return overrides.get(path_key(source))
 
 

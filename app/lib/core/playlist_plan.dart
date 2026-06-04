@@ -5,7 +5,9 @@ import 'package:path/path.dart' as p;
 
 import '../domain/radio_library.dart';
 import 'path_keys.dart';
+import 'project_refs.dart';
 import 'project_workspace.dart';
+import 'track_metadata_cache.dart';
 
 class PlaylistAssignment {
   const PlaylistAssignment({
@@ -34,24 +36,41 @@ class PlaylistAssignment {
   Map<String, dynamic> toJson() {
     return {
       'track_key': trackKey,
-      'source': source,
+      if (!_isProjectTrackKey(trackKey)) 'source': source,
       'radio_code': radioCode,
       'playlist_type': playlistType,
       'slot': slot,
     };
   }
 
-  factory PlaylistAssignment.fromJson(Map<String, dynamic> json) {
+  factory PlaylistAssignment.fromJson(
+    Map<String, dynamic> json, {
+    String? projectDir,
+  }) {
     final source = _asString(json['source']);
     final key = _asString(json['track_key']);
+    final resolvedSource = source.isNotEmpty
+        ? source
+        : (projectDir == null || key.isEmpty
+              ? ''
+              : TrackMetadataCache.resolveTrackKey(projectDir, key) ?? '');
+    if (key.isEmpty &&
+        projectDir != null &&
+        _isProjectInternalSource(projectDir, source)) {
+      throw ProjectRefException(
+        'Legacy project playlist source requires migration: $source',
+      );
+    }
     final rawPlaylistType = _asString(json['playlist_type']).isNotEmpty
         ? _asString(json['playlist_type'])
         : _asString(json['playlistType']);
     return PlaylistAssignment(
       trackKey: key.isNotEmpty
           ? key
-          : (source.isEmpty ? '' : PlaylistAssignment.keyForPath(source)),
-      source: source,
+          : (resolvedSource.isEmpty
+                ? ''
+                : PlaylistAssignment.keyForPath(resolvedSource)),
+      source: resolvedSource,
       radioCode: _asString(json['radio_code']).toUpperCase(),
       playlistType: normalizePlaylistType(rawPlaylistType),
       slot: _asInt(json['slot']),
@@ -81,10 +100,14 @@ class PlaylistAssignment {
     return normalizePlaylistType(value) == 'Event' ? '比赛' : '漫游';
   }
 
-  PlaylistAssignment copyWith({String? source, int? slot}) {
+  PlaylistAssignment copyWith({String? source, int? slot, String? trackKey}) {
     final nextSource = source ?? this.source;
     return PlaylistAssignment(
-      trackKey: PlaylistAssignment.keyForPath(nextSource),
+      trackKey:
+          trackKey ??
+          (source == null
+              ? this.trackKey
+              : PlaylistAssignment.keyForPath(nextSource)),
       source: nextSource,
       radioCode: radioCode,
       playlistType: playlistType,
@@ -120,7 +143,10 @@ class PlaylistPlan {
     final key = PlaylistAssignment.keyForPath(path);
     final items = assignments.values
         .where(
-          (assignment) => assignment.trackKey == key && assignment.isAssigned,
+          (assignment) =>
+              assignment.isAssigned &&
+              (assignment.trackKey == key ||
+                  sameCanonicalPath(assignment.source, path)),
         )
         .toList();
     items.sort(_assignmentSort);
@@ -138,7 +164,17 @@ class PlaylistPlan {
       playlistType: playlistType,
     );
     final assignment = assignments[key];
-    return assignment == null || !assignment.isAssigned ? null : assignment;
+    if (assignment != null && assignment.isAssigned) return assignment;
+    for (final item in assignments.values) {
+      if (!item.isAssigned) continue;
+      if (item.radioCode != radioCode.trim().toUpperCase()) continue;
+      if (item.playlistType !=
+          PlaylistAssignment.normalizePlaylistType(playlistType)) {
+        continue;
+      }
+      if (sameCanonicalPath(item.source, source)) return item;
+    }
+    return null;
   }
 
   List<PlaylistAssignment> assignmentsForRadio(
@@ -210,9 +246,13 @@ class PlaylistPlan {
     required String radioCode,
     required String playlistType,
     required int slot,
+    String? projectDir,
   }) {
+    final trackKey = projectDir == null
+        ? PlaylistAssignment.keyForPath(source)
+        : _trackKeyForSource(projectDir, source);
     final assignment = PlaylistAssignment(
-      trackKey: PlaylistAssignment.keyForPath(source),
+      trackKey: trackKey,
       source: source,
       radioCode: radioCode.trim().toUpperCase(),
       playlistType: PlaylistAssignment.normalizePlaylistType(playlistType),
@@ -234,8 +274,11 @@ class PlaylistPlan {
     String source, {
     String? radioCode,
     String? playlistType,
+    String? projectDir,
   }) {
-    final trackKey = PlaylistAssignment.keyForPath(source);
+    final trackKey = projectDir == null
+        ? PlaylistAssignment.keyForPath(source)
+        : _trackKeyForSource(projectDir, source);
     final radio = radioCode?.trim().toUpperCase();
     final type = playlistType == null
         ? null
@@ -252,10 +295,13 @@ class PlaylistPlan {
     );
   }
 
-  PlaylistPlan unassignSources(Iterable<String> sources) {
+  PlaylistPlan unassignSources(Iterable<String> sources, {String? projectDir}) {
     final keys = {
       for (final source in sources)
-        if (source.trim().isNotEmpty) PlaylistAssignment.keyForPath(source),
+        if (source.trim().isNotEmpty)
+          projectDir == null
+              ? PlaylistAssignment.keyForPath(source)
+              : _trackKeyForSource(projectDir, source),
     };
     if (keys.isEmpty) return this;
     final kept = assignments.values.where((assignment) {
@@ -455,14 +501,15 @@ class PlaylistPlanStore {
   static PlaylistPlan read(String projectDir) {
     final file = File(configPath(projectDir));
     if (!file.existsSync()) return const PlaylistPlan.empty();
-    final plan = _readFile(file);
+    final plan = _readFile(file, projectDir: projectDir);
     return projectSourcesOnly(projectDir, plan);
   }
 
-  static PlaylistPlan _readFile(File file) {
+  static PlaylistPlan _readFile(File file, {String? projectDir}) {
     try {
       return PlaylistPlanCodec.fromDecoded(
         jsonDecode(file.readAsStringSync(encoding: utf8)),
+        projectDir: projectDir,
       );
     } on FormatException {
       return const PlaylistPlan.empty();
@@ -513,7 +560,7 @@ class PlaylistPlanStore {
     if (!projectAudioDirs.any((dir) => isCanonicalPathInside(dir, absolute))) {
       return null;
     }
-    return assignment.copyWith(source: absolute);
+    return assignment.copyWith(source: absolute, trackKey: assignment.trackKey);
   }
 }
 
@@ -523,16 +570,16 @@ class PlaylistPlanStore {
 class PlaylistPlanCodec {
   const PlaylistPlanCodec._();
 
-  static PlaylistPlan decodeJson(String source) {
+  static PlaylistPlan decodeJson(String source, {String? projectDir}) {
     if (source.trim().isEmpty) return const PlaylistPlan.empty();
     try {
-      return fromDecoded(jsonDecode(source));
+      return fromDecoded(jsonDecode(source), projectDir: projectDir);
     } on FormatException {
       return const PlaylistPlan.empty();
     }
   }
 
-  static PlaylistPlan fromDecoded(Object? decoded) {
+  static PlaylistPlan fromDecoded(Object? decoded, {String? projectDir}) {
     final items = decoded is Map ? decoded['assignments'] : null;
     final rawBuiltinTargets = decoded is Map
         ? decoded['builtin_targets']
@@ -543,6 +590,7 @@ class PlaylistPlanCodec {
       if (item is! Map) continue;
       final assignment = PlaylistAssignment.fromJson(
         item.map((key, value) => MapEntry('$key', value)),
+        projectDir: projectDir,
       );
       if (!assignment.isValid) continue;
       if (!assignment.isAssigned) continue;
@@ -566,4 +614,28 @@ int _asInt(Object? value) {
   if (value is num) return value.round();
   if (value is String) return int.tryParse(value) ?? 0;
   return 0;
+}
+
+bool _isProjectTrackKey(String value) => value.startsWith('trkref_');
+
+String _trackKeyForSource(String projectDir, String source) {
+  try {
+    return trackKeyForProjectPath(projectDir, source) ??
+        PlaylistAssignment.keyForPath(source);
+  } on ProjectRefException {
+    return PlaylistAssignment.keyForPath(source);
+  } on ArgumentError {
+    return PlaylistAssignment.keyForPath(source);
+  }
+}
+
+bool _isProjectInternalSource(String projectDir, String source) {
+  if (source.trim().isEmpty) return false;
+  try {
+    return trackKeyForProjectPath(projectDir, source) != null;
+  } on ProjectRefException {
+    return false;
+  } on ArgumentError {
+    return false;
+  }
 }

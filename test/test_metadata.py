@@ -7,7 +7,17 @@ from pathlib import Path
 from backend.fh_radio_studio_cli.cli import main
 from backend.fh_radio_studio_cli.common import guess_metadata
 from backend.fh_radio_studio_cli.loudness import LOUDNESS_ALGORITHM_VERSION
-from backend.fh_radio_studio_cli.metadata import read_track_metadata, write_track_metadata_tags
+from backend.fh_radio_studio_cli.metadata import (
+    load_track_asset_index,
+    read_track_metadata,
+    resolve_track_key,
+    write_track_metadata_tags,
+)
+from backend.fh_radio_studio_cli.project_refs import (
+    project_ref_for_path,
+    resolve_project_ref,
+    track_key_for_source_ref,
+)
 
 _PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -110,9 +120,20 @@ def test_scan_metadata_writes_project_cache(tmp_path: Path, capsys) -> None:
     assert summary["scanned"] == 1
     cache_path = project / ".fh-radio-studio" / "track_metadata.json"
     payload = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert payload["tracks"][0]["artist"] == "Laura Shigihara"
-    assert payload["tracks"][0]["title"] == "Everything's Alright"
-    assert payload["tracks"][0]["from_tags"] is True
+    item = payload["tracks"][0]
+    assert payload["schema_version"] == 2
+    assert item["artist"] == "Laura Shigihara"
+    assert item["title"] == "Everything's Alright"
+    assert item["from_tags"] is True
+    assert (
+        item["source_ref"] == "fh-project:/sources/01%20-%20Wrong%20Artist%20-%20Wrong%20Title.mp3"
+    )
+    assert item["track_key"] == track_key_for_source_ref(item["source_ref"])
+
+    # track_metadata.json doubles as the project track asset index.
+    index = load_track_asset_index(project)
+    assert index == {item["track_key"]: item["source_ref"]}
+    assert resolve_track_key(project, item["track_key"]) == track.resolve()
 
 
 def test_scan_metadata_writes_audio_info(tmp_path: Path, capsys) -> None:
@@ -172,8 +193,10 @@ def test_scan_metadata_extracts_embedded_cover_art(tmp_path: Path, capsys) -> No
     cache_path = project / ".fh-radio-studio" / "track_metadata.json"
     item = json.loads(cache_path.read_text(encoding="utf-8"))["tracks"][0]
     assert item["cover_art_mime"] == "image/png"
-    assert Path(item["cover_art_path"]).parent == project / ".fh-radio-studio" / "artwork"
-    assert Path(item["cover_art_path"]).read_bytes() == _PNG_BYTES
+    assert item["cover_art_path"].startswith("fh-project:/.fh-radio-studio/artwork/")
+    cover_path = resolve_project_ref(project, item["cover_art_path"])
+    assert cover_path.parent == project / ".fh-radio-studio" / "artwork"
+    assert cover_path.read_bytes() == _PNG_BYTES
 
 
 def test_scan_metadata_preserves_fresh_loudness_cache(tmp_path: Path, capsys) -> None:
@@ -185,14 +208,16 @@ def test_scan_metadata_preserves_fresh_loudness_cache(tmp_path: Path, capsys) ->
     stat = track.stat()
     cache_path = project / ".fh-radio-studio" / "track_metadata.json"
     cache_path.parent.mkdir(parents=True)
+    source_ref = project_ref_for_path(project, track)
+    assert source_ref is not None
     cache_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "tracks": [
                     {
-                        "source": str(track.resolve()),
-                        "path_key": str(track.resolve()).lower(),
+                        "source_ref": source_ref,
+                        "track_key": track_key_for_source_ref(source_ref),
                         "artist": "Old",
                         "title": "Old",
                         "loudness_analysis": {
@@ -200,6 +225,7 @@ def test_scan_metadata_preserves_fresh_loudness_cache(tmp_path: Path, capsys) ->
                             "algorithm_version": LOUDNESS_ALGORITHM_VERSION,
                             "integrated_lufs": -18.0,
                             "true_peak_dbtp": -2.0,
+                            "source": str(track.resolve()),
                             "source_size": stat.st_size,
                             "source_mtime_ms": int(stat.st_mtime * 1000),
                             "cached_at": "2026-05-24T00:00:00+00:00",
@@ -227,6 +253,7 @@ def test_scan_metadata_preserves_fresh_loudness_cache(tmp_path: Path, capsys) ->
     item = json.loads(cache_path.read_text(encoding="utf-8"))["tracks"][0]
     assert item["loudness_analysis"]["integrated_lufs"] == -18.0
     assert item["loudness_analysis"]["true_peak_dbtp"] == -2.0
+    assert "source" not in item["loudness_analysis"]
 
 
 def test_scan_metadata_all_sources_includes_siren_folder(tmp_path: Path, capsys) -> None:
@@ -253,7 +280,7 @@ def test_scan_metadata_all_sources_includes_siren_folder(tmp_path: Path, capsys)
     assert summary["scanned"] == 2
     cache_path = project / ".fh-radio-studio" / "track_metadata.json"
     tracks = json.loads(cache_path.read_text(encoding="utf-8"))["tracks"]
-    assert {Path(item["source"]).parent.name for item in tracks} == {
+    assert {Path(item["source_ref"].removeprefix("fh-project:/")).parts[0] for item in tracks} == {
         "sources",
         "siren",
     }

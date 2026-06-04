@@ -20,6 +20,16 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.fh_radio_studio_cli.cli import main as fh_radio_studio_main
+from backend.fh_radio_studio_cli.metadata import (
+    metadata_cache_path,
+    upsert_track_metadata_cache_entry,
+)
+from backend.fh_radio_studio_cli.project_refs import (
+    is_project_ref,
+    project_path_or_absolute,
+    resolve_project_ref,
+    track_key_for_project_path,
+)
 from tools.test.create_mock_game import (
     DEFAULT_BUILD_ID,
     GAME_ROOT_REL,
@@ -122,6 +132,25 @@ def md5_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def project_manifest_path(ctx: FixtureContext, path: Path) -> str:
+    return project_path_or_absolute(ctx.project_dir, path)
+
+
+def project_track_key(ctx: FixtureContext, source: Path) -> str:
+    key = track_key_for_project_path(ctx.project_dir, source)
+    if key is None:
+        raise RuntimeError(f"Fixture source is outside the project: {source}")
+    upsert_track_metadata_cache_entry(metadata_cache_path(ctx.project_dir), source)
+    return key
+
+
+def resolve_fixture_project_path(ctx: FixtureContext, value: object) -> Path:
+    text = str(value or "")
+    if is_project_ref(text):
+        return resolve_project_ref(ctx.project_dir, text)
+    return Path(text)
 
 
 def run_cli(args: list[str]) -> CliResult:
@@ -265,12 +294,13 @@ def create_package(
     package_file = package_root / Path(*PACKAGE_REL.split("/"))
     source = ctx.project_dir / "sources" / f"{slot}-{label}.wav"
     write_test_tone(source)
+    track_key = project_track_key(ctx, source)
     write_radioinfo_variant(package_file, label)
     package_item = {
         "kind": "radio_info",
         "relative_path": "RadioInfo_CN.xml",
         "install_relative_path": PACKAGE_REL,
-        "path": str(package_file),
+        "path": project_manifest_path(ctx, package_file),
         "size": package_file.stat().st_size,
         "md5": md5_file(package_file),
     }
@@ -282,7 +312,7 @@ def create_package(
         "bank_slots": 3,
         "music": [
             {
-                "source": str(source),
+                "track_key": track_key,
                 "display_name": label,
                 "artist": "FH Radio Studio Fixture",
             }
@@ -291,7 +321,7 @@ def create_package(
             {
                 "slot_index": 0,
                 "source_index": 0,
-                "source": str(source),
+                "track_key": track_key,
                 "playlist_entry": True,
                 "playlist_types": ["FreeRoam", "Event"],
                 "display_name": label,
@@ -362,10 +392,11 @@ def write_last_applied_from_package(ctx: FixtureContext, package_dir: Path) -> N
             "schema_version": 1,
             "kind": "last_applied_package",
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "source_package_manifest": str(
-                package_dir / "package" / "fh_radio_studio_package_manifest.json"
+            "source_package_manifest": project_manifest_path(
+                ctx,
+                package_dir / "package" / "fh_radio_studio_package_manifest.json",
             ),
-            "package_root": str(package_dir / "package"),
+            "package_root": project_manifest_path(ctx, package_dir / "package"),
             "game_version_id": manifest.get("game_version_id"),
             "supported_game_version_ids": manifest.get("supported_game_version_ids", []),
             "package_name": manifest.get("package_name"),
@@ -416,7 +447,7 @@ def corrupt_current_baseline(ctx: FixtureContext) -> None:
         (ctx.current_baseline_dir / "baseline_manifest.json").read_text(encoding="utf-8")
     )
     first = manifest["files"][0]
-    backup_path = Path(first["backup_path"])
+    backup_path = resolve_fixture_project_path(ctx, first["backup_path"])
     write_text(backup_path, "corrupted baseline fixture\n")
     ctx.notes.append(f"Corrupted baseline file: {backup_path}")
 

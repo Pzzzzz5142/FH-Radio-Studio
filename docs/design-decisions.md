@@ -4,6 +4,20 @@ This file records notable architectural decisions and the reasoning behind them.
 Newest entries go on top. Keep each entry short: what was decided, why, and what
 it implies for future work.
 
+## 2026-06-01 — 项目内路径使用 `fh-project:/` 引用
+
+**决策。** 项目拥有的文件应持久化为 `fh-project:/...` 引用，而不是操作系统绝对路径。规范格式是 `fh-project:/sources/foo.flac`，运行时基于当前打开的项目目录解析。曲目 key 应从规范 `source_ref` 确定性派生，避免依赖项目根目录绝对路径。详见 [项目路径引用设计]。
+
+**原因。** 项目目录应当可以被移动。元数据缓存、时间点配置、塞壬导入记录、baseline manifest 和 package manifest 中的绝对路径会在目录移动后失效。项目本地 URI scheme 可以让项目内存储具备可移植性，同时保留外部游戏、Steam、工具链路径的显式绝对路径语义。
+
+**影响。**
+- 新的 durable project JSON 应通过共享路径引用 codec 写入项目内文件路径，避免直接持久化 `File(...).absolute.path` / `Path.resolve()`。
+- `fh-project:/...` 只存在于持久化读写边界；读入后立即解析成运行时绝对路径，业务处理、音频分析、package 构建等流程继续使用本机绝对路径和 `track_key`。
+- JSON writer / repository 层不能原样落盘上层传入的 entry map；只要字段表示项目相关资源，写入前必须统一编码成 `fh-project:/...` 或 `track_key -> source_ref`。
+- legacy 绝对路径迁移只作为 0.1.0 -> 0.2.0+ 的一次性兼容桥；项目缺少 `path_schema` / `current_project_dir` 时才运行，不做每次打开的通用刷新，也不推断未知旧根目录。
+- 迁移完成后的正常 reader 不允许用项目内 legacy 绝对 `source` / `path` fallback；遇到这种记录应视为 migration/schema 错误。
+- 过渡期 schema 如果输出兼容的绝对 `source` 字段，它只能服务旧消费者或人工诊断；长期权威字段是 `source_ref` 和由它派生的 `track_key`。
+
 ## 2026-05-30 — Playlist plans flow over stdin/stdout, not a shared file
 
 **Decision.** The playlist draft is authoritative in memory (Dart
@@ -72,3 +86,4 @@ mechanism in Dart that could drift out of sync with the CLI's resolution rules.
   is authoritative; `title|artist` pool matching is only a fallback.
 
 [Frontend/Backend Separation in `AGENTS.md`]: ../AGENTS.md
+[项目路径引用设计]: project-path-references.md

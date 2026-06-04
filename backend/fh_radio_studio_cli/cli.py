@@ -21,6 +21,7 @@ from .loudness import (
     MIN_CUSTOM_LOUDNESS_OFFSET_LU,
 )
 from .metadata import cmd_scan_metadata
+from .migration import cmd_migrate_project
 from .package import cmd_build_package
 from .prepare import cmd_prepare_track
 from .radio_xml import cmd_patch_xml
@@ -235,6 +236,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scan_metadata.add_argument("--json", action="store_true", help="Print JSON summary only")
     scan_metadata.set_defaults(func=cmd_scan_metadata)
+
+    migrate_project = sub.add_parser(
+        "migrate-project",
+        help="Migrate a 0.1.0 FH Radio Studio project to path_schema 2",
+    )
+    migrate_project.add_argument(
+        "--project-dir",
+        required=True,
+        help="Current FH Radio Studio project directory; this is the only trusted project root",
+    )
+    migrate_project.set_defaults(func=cmd_migrate_project)
 
     reconstruct_plan = sub.add_parser(
         "reconstruct-plan",

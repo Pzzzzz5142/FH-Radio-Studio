@@ -38,7 +38,9 @@ class PlaylistState {
       radioCode,
       playlistType,
     )) {
-      final track = bySource[assignment.trackKey];
+      final track =
+          bySource[assignment.trackKey] ??
+          _poolTrackForSource(pool, assignment.source);
       if (track == null) continue;
       out.add(
         track.copyWith(assignedTo: assignment.radioCode, slot: assignment.slot),
@@ -84,6 +86,17 @@ class PlaylistState {
       splitPlaylistTypes: splitPlaylistTypes ?? this.splitPlaylistTypes,
     );
   }
+}
+
+PoolTrack? _poolTrackForSource(List<PoolTrack> pool, String source) {
+  for (final item in pool) {
+    if (item.source == source ||
+        PlaylistAssignment.keyForPath(item.source) ==
+            PlaylistAssignment.keyForPath(source)) {
+      return item;
+    }
+  }
+  return null;
 }
 
 class PlaylistNotifier extends StateNotifier<PlaylistState> {
@@ -155,6 +168,7 @@ class PlaylistNotifier extends StateNotifier<PlaylistState> {
       radioCode: targetRadio,
       playlistType: targetType,
       slot: nextSlot,
+      projectDir: ref.read(studioProvider).projectDir,
     );
     if (!state.splitPlaylistTypes) {
       nextPlan = nextPlan.assign(
@@ -162,6 +176,7 @@ class PlaylistNotifier extends StateNotifier<PlaylistState> {
         radioCode: targetRadio,
         playlistType: _otherPlaylistType(targetType),
         slot: nextSlot,
+        projectDir: ref.read(studioProvider).projectDir,
       );
     }
     nextPlan = _removeMoveOrigin(
@@ -207,10 +222,15 @@ class PlaylistNotifier extends StateNotifier<PlaylistState> {
         source,
         radioCode: originRadio,
         playlistType: originType,
+        projectDir: ref.read(studioProvider).projectDir,
       );
     }
     if (originRadio == targetRadioCode) return plan;
-    return plan.unassign(source, radioCode: originRadio);
+    return plan.unassign(
+      source,
+      radioCode: originRadio,
+      projectDir: ref.read(studioProvider).projectDir,
+    );
   }
 
   /// 把曲目移回池子（取消分配）。
@@ -259,7 +279,11 @@ class PlaylistNotifier extends StateNotifier<PlaylistState> {
 
   int copyGameLayout(PlaylistCatalog catalog) {
     if (_editingLocked) return 0;
-    final plan = playlistPlanFromCatalog(catalog, state.pool);
+    final plan = playlistPlanFromCatalog(
+      catalog,
+      state.pool,
+      projectDir: ref.read(studioProvider).projectDir,
+    );
     ref.read(playlistPlanProvider.notifier).replaceWith(plan);
     return plan.assignments.length;
   }
@@ -291,6 +315,7 @@ class PlaylistNotifier extends StateNotifier<PlaylistState> {
     final detected = playlistPlanFromCatalog(
       catalog,
       state.pool,
+      projectDir: ref.read(studioProvider).projectDir,
       includeBuiltinTargets: false,
     );
     if (detected.assignments.isEmpty) return effective;
@@ -308,6 +333,7 @@ class PlaylistNotifier extends StateNotifier<PlaylistState> {
 PlaylistPlan playlistPlanFromCatalog(
   PlaylistCatalog catalog,
   List<PoolTrack> pool, {
+  String? projectDir,
   bool includeBuiltinTargets = true,
 }) {
   final poolByMeta = <String, String>{};
@@ -343,6 +369,7 @@ PlaylistPlan playlistPlanFromCatalog(
           radioCode: radio.code,
           playlistType: playlistType,
           slot: slot,
+          projectDir: projectDir,
         );
         slot += 1;
       }

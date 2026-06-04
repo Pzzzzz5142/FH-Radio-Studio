@@ -27,6 +27,7 @@ from .package import (
     normalize_playlist_type,
     radio_code_for_station,
 )
+from .project_refs import ProjectRefError, resolve_project_ref, track_key_for_project_path
 
 PLAYLIST_TYPES = ("FreeRoam", "Event")
 _UNKNOWN_ARTIST = "Unknown Artist"
@@ -141,10 +142,22 @@ def _project_sources_by_metadata(
 ) -> Dict[str, str]:
     cache_by_key: Dict[str, tuple[str, str]] = {}
     if metadata_cache is not None and metadata_cache.is_file():
+        project_dir = metadata_cache.parent.parent
         for entry in _load_cache_entries(metadata_cache).values():
-            source = entry.get("source")
+            source_ref = entry.get("source_ref")
             title = entry.get("title")
             artist = entry.get("artist")
+            # `source_ref` is authoritative; resolve it against the current
+            # project root. The legacy absolute `source` is only a fallback for
+            # pre-migration entries and goes stale once the project moves.
+            source: Optional[str] = None
+            if isinstance(source_ref, str):
+                try:
+                    source = str(resolve_project_ref(project_dir, source_ref))
+                except ProjectRefError:
+                    source = None
+            if source is None and isinstance(entry.get("source"), str):
+                source = entry.get("source")
             if isinstance(source, str) and isinstance(title, str) and isinstance(artist, str):
                 cache_by_key[path_key(Path(source))] = (artist, title)
 
@@ -179,6 +192,13 @@ def reconstruct_playlist_plan(
         return []
 
     sources_by_meta = _project_sources_by_metadata(music_dirs, metadata_cache)
+    project_dir = (
+        metadata_cache.parent.parent
+        if metadata_cache is not None
+        and metadata_cache.name == "track_metadata.json"
+        and metadata_cache.parent.name == ".fh-radio-studio"
+        else None
+    )
 
     assignments: List[Dict[str, object]] = []
     for radio_code, game_lists in game.items():
@@ -192,9 +212,18 @@ def reconstruct_playlist_plan(
                 source = sources_by_meta.get(_diff_meta_key(track.title, track.artist))
                 if not source:
                     continue
+                track_key = (
+                    track_key_for_project_path(project_dir, Path(source))
+                    if project_dir is not None
+                    else None
+                )
                 assignments.append(
                     {
-                        "source": source,
+                        **(
+                            {"track_key": track_key}
+                            if track_key is not None
+                            else {"source": source}
+                        ),
                         "radio_code": radio_code,
                         "playlist_type": playlist_type,
                         "slot": index + 1,

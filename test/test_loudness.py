@@ -13,6 +13,7 @@ from backend.fh_radio_studio_cli.loudness import (
     DEFAULT_TRUE_PEAK_CEILING_DBTP,
     LOUDNESS_ALGORITHM_VERSION,
     MAX_CUSTOM_LOUDNESS_OFFSET_LU,
+    _resolve_baseline_bank_path,
     analyze_loudness_file,
     build_custom_set_loudness_profile,
     ensure_baseline_loudness_envelope,
@@ -160,6 +161,26 @@ def test_heuristic_envelope_contains_required_global_stats() -> None:
         "safe_max_lufs",
     ):
         assert isinstance(envelope[key], float)
+
+
+def test_resolve_baseline_bank_path_accepts_project_ref_backup_path(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    baseline_dir = project / "backups" / "baseline-current"
+    bank = baseline_dir / "media" / "audio" / "FMODBanks" / "R4_Tracks_CU1.assets.bank"
+    bank.parent.mkdir(parents=True)
+    bank.write_bytes(b"bank")
+
+    resolved = _resolve_baseline_bank_path(
+        baseline_dir / "baseline_manifest.json",
+        {
+            "backup_path": (
+                "fh-project:/backups/baseline-current/media/audio/FMODBanks/"
+                "R4_Tracks_CU1.assets.bank"
+            )
+        },
+    )
+
+    assert resolved == bank
 
 
 def test_loudness_worker_count_uses_two_as_auto_floor(monkeypatch) -> None:

@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:fh_radio_studio/core/playlist_plan.dart';
+import 'package:fh_radio_studio/core/project_refs.dart';
 import 'package:fh_radio_studio/core/project_workspace.dart';
 import 'package:fh_radio_studio/core/track_metadata_cache.dart';
 import 'package:fh_radio_studio/domain/radio_library.dart';
@@ -326,6 +327,7 @@ void main() {
       'packages',
       'r4-full-flow',
     );
+    _ensureCliFullFlowMetadata(repoRoot);
     final temp = Directory.systemTemp.createTempSync(
       'fh-radio-studio-game-playlist-',
     );
@@ -370,6 +372,7 @@ void main() {
       'packages',
       'r4-full-flow',
     );
+    _ensureCliFullFlowMetadata(repoRoot);
 
     final catalog = loadPlaylistCatalog(
       view: PlaylistCatalogView.package,
@@ -431,6 +434,7 @@ void main() {
   test('seeds the draft plan from package assignments', () {
     final source = p.join(Directory.current.path, 'test-fixtures', 'song.wav');
     final plan = playlistPlanFromPackageSummaries(
+      projectDir: Directory.current.path,
       pending: PackageArtifactSummary(
         radio: 4,
         station: 'Horizon XS',
@@ -459,6 +463,7 @@ void main() {
   test('seeding a draft plan skips Streamer Mode package assignments', () {
     final source = p.join(Directory.current.path, 'test-fixtures', 'song.wav');
     final plan = playlistPlanFromPackageSummaries(
+      projectDir: Directory.current.path,
       pending: PackageArtifactSummary(
         radio: 10,
         station: 'Streamer Mode',
@@ -998,10 +1003,81 @@ String _tempProjectDir() {
   return project.path;
 }
 
+void _ensureCliFullFlowMetadata(String repoRoot) {
+  final projectDir = p.join(repoRoot, 'test', 'project', 'cli-full-flow');
+  _upsertTrackMetadata(
+    projectDir,
+    p.join(projectDir, 'sources', 'FH Radio Studio Dev - Full Flow Test.wav'),
+  );
+}
+
 void _writeLegacyPlaylistPlan(String projectDir, PlaylistPlan plan) {
   final file = File(PlaylistPlanStore.configPath(projectDir));
   file.parent.createSync(recursive: true);
-  file.writeAsStringSync(plan.encodeForCli(), encoding: utf8);
+  final assignments = <Map<String, Object?>>[];
+  for (final assignment in plan.assignments.values) {
+    final source = assignment.source;
+    final projectTrackKey = _upsertTrackMetadata(projectDir, source);
+    assignments.add({
+      'track_key': projectTrackKey ?? assignment.trackKey,
+      if (projectTrackKey == null) 'source': source,
+      'radio_code': assignment.radioCode,
+      'playlist_type': assignment.playlistType,
+      'slot': assignment.slot,
+    });
+  }
+  final builtinTargets = plan.builtinTargets.map((target) {
+    final parts = target.split('|');
+    return {
+      'radio_code': parts.isNotEmpty ? parts.first : '',
+      'playlist_type': parts.length > 1 ? parts[1] : 'FreeRoam',
+    };
+  }).toList();
+  file.writeAsStringSync(
+    const JsonEncoder.withIndent('  ').convert({
+      'schema_version': 2,
+      'assignments': assignments,
+      'builtin_targets': builtinTargets,
+    }),
+    encoding: utf8,
+  );
+}
+
+String? _upsertTrackMetadata(String projectDir, String source) {
+  final sourceRef = projectRefForPath(projectDir, source);
+  if (sourceRef == null) return null;
+  final trackKey = trackKeyForSourceRef(sourceRef);
+  final file = File(TrackMetadataCache.configPath(projectDir));
+  file.parent.createSync(recursive: true);
+  Map<String, dynamic> payload = {'schema_version': 2, 'tracks': <Object>[]};
+  if (file.existsSync()) {
+    try {
+      final decoded = jsonDecode(file.readAsStringSync(encoding: utf8));
+      if (decoded is Map) {
+        payload = decoded.map((key, value) => MapEntry('$key', value));
+      }
+    } on FormatException {
+      payload = {'schema_version': 2, 'tracks': <Object>[]};
+    }
+  }
+  final tracks = payload['tracks'] is List
+      ? List<Object?>.from(payload['tracks'] as List)
+      : <Object?>[];
+  tracks.removeWhere((item) => item is Map && item['track_key'] == trackKey);
+  tracks.add({
+    'track_key': trackKey,
+    'source_ref': sourceRef,
+    'artist': 'Local Artist',
+    'title': p.basenameWithoutExtension(source),
+    'from_tags': true,
+  });
+  payload['schema_version'] = 2;
+  payload['tracks'] = tracks;
+  file.writeAsStringSync(
+    const JsonEncoder.withIndent('  ').convert(payload),
+    encoding: utf8,
+  );
+  return trackKey;
 }
 
 void _writeFsb5Bank(File file, {required int samples}) {

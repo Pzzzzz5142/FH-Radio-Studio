@@ -9,6 +9,7 @@ from .language import (
     write_user_preferred_lang,
 )
 from .package import collect_package_deploy_files
+from .project_refs import project_path_or_absolute
 
 
 def _write_last_applied_manifest(
@@ -22,6 +23,10 @@ def _write_last_applied_manifest(
 ) -> None:
     if not path:
         return
+    manifest_path = Path(path).expanduser()
+    project_dir = (
+        manifest_path.parent.parent if manifest_path.parent.name == ".fh-radio-studio" else None
+    )
     package_files = []
     for item in deploy_files:
         package_md5 = item.get("package_md5")
@@ -40,8 +45,16 @@ def _write_last_applied_manifest(
         "schema_version": 1,
         "kind": "last_applied_package",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "source_package_manifest": str(package_manifest_path.resolve()),
-        "package_root": str(package_root.resolve()),
+        "source_package_manifest": (
+            project_path_or_absolute(project_dir, package_manifest_path)
+            if project_dir is not None
+            else str(package_manifest_path.resolve())
+        ),
+        "package_root": (
+            project_path_or_absolute(project_dir, package_root)
+            if project_dir is not None
+            else str(package_root.resolve())
+        ),
         "game_version": game_version,
         "game_version_id": baseline_version_id(game_version),
         "supported_game_version_ids": [baseline_version_id(game_version)],
@@ -50,7 +63,7 @@ def _write_last_applied_manifest(
         ),
         "package_files": package_files,
     }
-    write_json(Path(path).expanduser(), manifest)
+    write_json(manifest_path, manifest)
 
 
 def _last_applied_md5s(path: Optional[str]) -> Dict[str, str]:
