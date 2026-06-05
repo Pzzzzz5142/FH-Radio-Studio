@@ -8,6 +8,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:path/path.dart' as p;
 import 'package:fh_radio_studio/core/playlist_plan.dart';
+import 'package:fh_radio_studio/core/project_json_guard.dart';
+import 'package:fh_radio_studio/core/project_refs.dart';
 import 'package:fh_radio_studio/core/project_workspace.dart';
 import 'package:fh_radio_studio/core/track_metadata_cache.dart';
 import 'package:fh_radio_studio/core/track_timing_config.dart';
@@ -885,6 +887,12 @@ void main() {
         updatedAt: DateTime.utc(2026, 5, 22),
       ),
     );
+    _upsertTrackMetadata(
+      projectDir,
+      audio.path,
+      artist: 'Local Artist',
+      title: 'User Song',
+    );
     _writeLegacyPlaylistPlan(
       projectDir,
       const PlaylistPlan.empty().assign(
@@ -893,22 +901,6 @@ void main() {
         playlistType: 'FreeRoam',
         slot: 1,
       ),
-    );
-    final cacheFile = File(TrackMetadataCache.configPath(projectDir));
-    cacheFile.writeAsStringSync(
-      const JsonEncoder.withIndent('  ').convert({
-        'schema_version': 1,
-        'tracks': [
-          {
-            'source': audio.path,
-            'path_key': TrackTimingConfig.keyForPath(audio.path),
-            'artist': 'Local Artist',
-            'title': 'User Song',
-            'from_tags': true,
-          },
-        ],
-      }),
-      encoding: utf8,
     );
 
     SharedPreferences.setMockInitialValues({_projectDirKey: projectDir});
@@ -2280,8 +2272,33 @@ BaselinePlanSummary _lockedBaselinePlan() {
 
 void _writeLegacyPlaylistPlan(String projectDir, PlaylistPlan plan) {
   final file = File(PlaylistPlanStore.configPath(projectDir));
-  file.parent.createSync(recursive: true);
-  file.writeAsStringSync(plan.encodeForCli(), encoding: utf8);
+  final assignments = <Map<String, Object?>>[];
+  for (final assignment in plan.assignments.values) {
+    final projectTrackKey = _upsertTrackMetadata(projectDir, assignment.source);
+    assignments.add({
+      'track_key': projectTrackKey ?? assignment.trackKey,
+      if (projectTrackKey == null) 'source': assignment.source,
+      'radio_code': assignment.radioCode,
+      'playlist_type': assignment.playlistType,
+      'slot': assignment.slot,
+    });
+  }
+  final builtinTargets = plan.builtinTargets.map((target) {
+    final parts = target.split('|');
+    return {
+      'radio_code': parts.isNotEmpty ? parts.first : '',
+      'playlist_type': parts.length > 1 ? parts[1] : 'FreeRoam',
+    };
+  }).toList();
+  writeProjectJsonSync(
+    projectDir: projectDir,
+    file: file,
+    payload: {
+      'schema_version': 2,
+      'assignments': assignments,
+      'builtin_targets': builtinTargets,
+    },
+  );
 }
 
 void _writeIntegrityFixture(
@@ -2301,33 +2318,35 @@ void _writeIntegrityFixture(
       ..createSync(recursive: true)
       ..writeAsStringSync(bytes, encoding: utf8);
     final packageMd5 = _md5(packageXml);
-    File(p.join(root, 'package', 'fh_radio_studio_package_manifest.json'))
-      ..createSync(recursive: true)
-      ..writeAsStringSync('''
-{
-  "schema_version": 2,
-  "radio": 4,
-  "station": "Horizon XS",
-  "target_bank_name": "R4_Tracks_CU1.assets.bank",
-  "radios": [
-    {
-      "radio": 4,
-      "radio_code": "XS",
-      "station": "Horizon XS",
-      "target_bank_name": "R4_Tracks_CU1.assets.bank",
-      "music": [],
-      "assignments": []
-    }
-  ],
-  "package_files": [
-    {
-      "relative_path": "RadioInfo_CN.xml",
-      "path": "${_jsonPath(packageXml.path)}",
-      "md5": "$packageMd5"
-    }
-  ]
-}
-''', encoding: utf8);
+    writeProjectJsonSync(
+      projectDir: projectDir,
+      file: File(
+        p.join(root, 'package', 'fh_radio_studio_package_manifest.json'),
+      ),
+      payload: {
+        'schema_version': 2,
+        'radio': 4,
+        'station': 'Horizon XS',
+        'target_bank_name': 'R4_Tracks_CU1.assets.bank',
+        'radios': [
+          {
+            'radio': 4,
+            'radio_code': 'XS',
+            'station': 'Horizon XS',
+            'target_bank_name': 'R4_Tracks_CU1.assets.bank',
+            'music': [],
+            'assignments': [],
+          },
+        ],
+        'package_files': [
+          {
+            'relative_path': 'RadioInfo_CN.xml',
+            'path': projectPathOrAbsolute(projectDir, packageXml.path),
+            'md5': packageMd5,
+          },
+        ],
+      },
+    );
   }
 
   writePackage(
@@ -2358,32 +2377,34 @@ void _writeIntegrityFixture(
     final baselineXml = File(p.join(dir, 'media', 'audio', 'RadioInfo_CN.xml'))
       ..createSync(recursive: true)
       ..writeAsStringSync(bytes, encoding: utf8);
-    File(p.join(dir, 'baseline_manifest.json')).writeAsStringSync('''
-{
-  "schema_version": 1,
-  "kind": "game_baseline",
-  "state": "$state",
-  "backup_name": "fh6-$versionId-baseline-$state",
-  "created_at": "2026-05-20T00:00:00.000Z",
-  "game_version_id": "$versionId",
-  "game_version": {
-    "source": "steam",
-    "version_id": "$versionId",
-    "app_id": "2483190",
-    "build_id": "${versionId.replaceFirst('steam-b', '')}"
-  },
-  "game_dir": "${_jsonPath(gameDir)}",
-  "files": [
-    {
-      "relative_path": "RadioInfo_CN.xml",
-      "source_game_path": "${_jsonPath(gameXml.path)}",
-      "backup_path": "${_jsonPath(baselineXml.path)}",
-      "size": ${baselineXml.lengthSync()},
-      "md5": "${_md5(baselineXml)}"
-    }
-  ]
-}
-''', encoding: utf8);
+    writeProjectJsonSync(
+      projectDir: projectDir,
+      file: File(p.join(dir, 'baseline_manifest.json')),
+      payload: {
+        'schema_version': 1,
+        'kind': 'game_baseline',
+        'state': state,
+        'backup_name': 'fh6-$versionId-baseline-$state',
+        'created_at': '2026-05-20T00:00:00.000Z',
+        'game_version_id': versionId,
+        'game_version': {
+          'source': 'steam',
+          'version_id': versionId,
+          'app_id': '2483190',
+          'build_id': versionId.replaceFirst('steam-b', ''),
+        },
+        'game_dir': gameDir,
+        'files': [
+          {
+            'relative_path': 'RadioInfo_CN.xml',
+            'source_game_path': gameXml.path,
+            'backup_path': projectPathOrAbsolute(projectDir, baselineXml.path),
+            'size': baselineXml.lengthSync(),
+            'md5': _md5(baselineXml),
+          },
+        ],
+      },
+    );
   }
 
   writeBaseline(
@@ -2404,4 +2425,49 @@ String _md5(File file) {
   return crypto.md5.convert(file.readAsBytesSync()).toString();
 }
 
-String _jsonPath(String path) => path.replaceAll(r'\', r'\\');
+String? _upsertTrackMetadata(
+  String projectDir,
+  String source, {
+  String? artist,
+  String? title,
+}) {
+  final sourceRef = projectRefForPath(projectDir, source);
+  if (sourceRef == null) return null;
+  final trackKey = trackKeyForSourceRef(sourceRef);
+  final file = File(TrackMetadataCache.configPath(projectDir));
+  Map<String, dynamic> payload = {'schema_version': 2, 'tracks': <Object>[]};
+  if (file.existsSync()) {
+    try {
+      final decoded = jsonDecode(file.readAsStringSync(encoding: utf8));
+      if (decoded is Map) {
+        payload = decoded.map((key, value) => MapEntry('$key', value));
+      }
+    } on FormatException {
+      payload = {'schema_version': 2, 'tracks': <Object>[]};
+    } on FileSystemException {
+      payload = {'schema_version': 2, 'tracks': <Object>[]};
+    }
+  }
+  final tracks = payload['tracks'] is List
+      ? List<Object?>.from(payload['tracks'] as List)
+      : <Object?>[];
+  final existing = tracks.whereType<Map>().cast<Map<Object?, Object?>>().where(
+    (item) => item['track_key'] == trackKey,
+  );
+  final previous = existing.isEmpty
+      ? const <Object?, Object?>{}
+      : existing.first;
+  tracks.removeWhere((item) => item is Map && item['track_key'] == trackKey);
+  tracks.add({
+    ...previous,
+    'track_key': trackKey,
+    'source_ref': sourceRef,
+    'artist': artist ?? previous['artist'] ?? 'Local Artist',
+    'title': title ?? previous['title'] ?? p.basenameWithoutExtension(source),
+    'from_tags': previous['from_tags'] ?? true,
+  });
+  payload['schema_version'] = 2;
+  payload['tracks'] = tracks;
+  writeProjectJsonSync(projectDir: projectDir, file: file, payload: payload);
+  return trackKey;
+}
