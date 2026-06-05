@@ -15,7 +15,10 @@ import 'package:fh_radio_studio/core/track_timing_config.dart';
 import 'package:fh_radio_studio/domain/radio_library.dart';
 import 'package:fh_radio_studio/domain/replacement_models.dart';
 import 'package:fh_radio_studio/screens/replace_editor/replace_editor.dart'
-    show ReplaceEditorScreen, loopPreviewAuditionStartForTesting;
+    show
+        ReplaceEditorScreen,
+        loopPreviewAuditionStartForTesting,
+        pointPreviewWindowForTesting;
 import 'package:fh_radio_studio/screens/replace_editor/manual_focus_waveform.dart';
 import 'package:fh_radio_studio/screens/replace_editor/replace_state.dart';
 import 'package:fh_radio_studio/screens/replace_editor/side_panel.dart';
@@ -455,6 +458,23 @@ void main() {
     expect(find.text('端点 A'), findsNothing);
     expect(_manualMainIcon('skip-back'), findsNothing);
     expect(_manualMainIcon('skip-fwd'), findsNothing);
+
+    final secondAi = container.read(replaceEditorProvider('cp-1')).ai.td[1];
+    await tester.tap(find.byKey(const ValueKey('manual-refine-ai-apply-1')));
+    await tester.pump();
+    final previewState = container.read(replaceEditorProvider('cp-1'));
+    expect(previewState.playbackMode, PlaybackMode.pointPreview);
+    expect(previewState.playing, isTrue);
+    expect(
+      previewState.playhead,
+      closeTo(
+        pointPreviewWindowForTesting(
+          timeSec: secondAi.t,
+          durationSec: previewState.ai.durationSec,
+        ).start,
+        0.001,
+      ),
+    );
     expect(tester.takeException(), isNull);
   });
 

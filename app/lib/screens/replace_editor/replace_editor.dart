@@ -827,7 +827,19 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       }
       return;
     }
-    unawaited(_seekTo(state, notifier, updated.focusTime));
+    if (widget.enableAudio) {
+      unawaited(_playPointPreview(state, notifier, updated.pointTime));
+    } else {
+      final window = pointPreviewWindowForTesting(
+        timeSec: updated.pointTime,
+        durationSec: _previewDuration(
+          state,
+          updated.pointTime + pointPreviewDurationSec,
+        ),
+      );
+      notifier.setPlayhead(window.start);
+      notifier.setPlayback(PlaybackMode.pointPreview, playing: true);
+    }
   }
 
   void _setManualFineTarget(FineTarget target) {
