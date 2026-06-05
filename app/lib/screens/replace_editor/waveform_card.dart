@@ -19,6 +19,7 @@ class WaveformCard extends StatelessWidget {
     required this.onSeek,
     required this.onZoomIn,
     required this.onZoomOut,
+    this.compact = false,
   });
 
   final ReplaceEditorState state;
@@ -26,6 +27,10 @@ class WaveformCard extends StatelessWidget {
   final ValueChanged<double> onSeek;
   final VoidCallback onZoomIn;
   final VoidCallback onZoomOut;
+
+  /// 精简模式：用于人工选点面板，去掉无关的视图切换 toolbar 与 zoom 概览条，
+  /// 只保留可点选的波形和时间轴。
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -52,14 +57,16 @@ class WaveformCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _toolbar(context),
+          if (!compact) _toolbar(context),
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+            padding: EdgeInsets.fromLTRB(14, compact ? 10 : 12, 14, 0),
             child: _waveformArea(context, bars: bars, markers: markers),
           ),
           _timeAxis(context, ai.durationSec),
-          Container(height: 1, color: rm.border),
-          _zoom(context, bars: bars),
+          if (!compact) ...[
+            Container(height: 1, color: rm.border),
+            _zoom(context, bars: bars),
+          ],
         ],
       ),
     );
