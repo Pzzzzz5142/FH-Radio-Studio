@@ -5,6 +5,7 @@ import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:path/path.dart' as p;
@@ -288,6 +289,7 @@ void main() {
       await tester.pump();
 
       final manualTl = find.byKey(const ValueKey('editor-manual-refine-tl'));
+      final expectedLoop = container.read(replaceEditorProvider('cp-1')).tl;
       await Scrollable.ensureVisible(
         tester.element(manualTl),
         alignment: 0.45,
@@ -323,9 +325,29 @@ void main() {
         find.byKey(const ValueKey('manual-refine-loop-preview')),
         findsOneWidget,
       );
+      final finePanel = find.byKey(const ValueKey('manual-refine-fine-panel'));
+      expect(
+        find.descendant(
+          of: finePanel,
+          matching: find.text(
+            _formatManualFineTimecodeForTest(expectedLoop.start),
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: finePanel,
+          matching: find.text(
+            _formatManualFineTimecodeForTest(expectedLoop.end),
+          ),
+        ),
+        findsOneWidget,
+      );
       expect(_manualMainIcon('skip-back'), findsNothing);
       expect(_manualMainIcon('skip-fwd'), findsNothing);
       expect(find.textContaining('←/→ 1拍'), findsOneWidget);
+      expect(find.textContaining('Ctrl+←/→ 1ms'), findsOneWidget);
       expect(find.byKey(const ValueKey('manual-refine-lock')), findsNothing);
       expect(find.text('锁定选点'), findsNothing);
       expect(find.text('套用 AI 建议'), findsOneWidget);
@@ -432,6 +454,7 @@ void main() {
     await tester.pump();
 
     final manualTd = find.byKey(const ValueKey('editor-manual-refine-td'));
+    final expectedPoint = container.read(replaceEditorProvider('cp-1')).td;
     await Scrollable.ensureVisible(
       tester.element(manualTd),
       alignment: 0.45,
@@ -455,6 +478,13 @@ void main() {
       find.byKey(const ValueKey('manual-refine-loop-preview')),
       findsNothing,
     );
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('manual-refine-fine-panel')),
+        matching: find.text(_formatManualFineTimecodeForTest(expectedPoint.t)),
+      ),
+      findsOneWidget,
+    );
     expect(find.text('端点 A'), findsNothing);
     expect(_manualMainIcon('skip-back'), findsNothing);
     expect(_manualMainIcon('skip-fwd'), findsNothing);
@@ -474,6 +504,132 @@ void main() {
         ).start,
         0.001,
       ),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('manual refine alt indicator responds to rapid toggles', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1200, 1100);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'replace_editor_manual_alt_toggle_',
+    );
+    addTearDown(() {
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    await _pumpEditor(tester, tempRoot.path);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ReplaceEditorScreen)),
+    );
+    final notifier = container.read(replaceEditorProvider('cp-1').notifier);
+    notifier.setConfirmed(GroupKind.tl, false);
+    await tester.pump();
+
+    final manualTl = find.byKey(const ValueKey('editor-manual-refine-tl'));
+    await Scrollable.ensureVisible(
+      tester.element(manualTl),
+      alignment: 0.45,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+    await tester.tap(manualTl);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    expect(find.text('磁吸到拍'), findsOneWidget);
+    for (var i = 0; i < 3; i += 1) {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+      await tester.pump();
+      try {
+        expect(find.text('自由放置 · Alt'), findsOneWidget);
+        expect(find.text('磁吸到拍'), findsNothing);
+      } finally {
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+        await tester.pump();
+      }
+      expect(find.text('磁吸到拍'), findsOneWidget);
+      expect(find.text('自由放置 · Alt'), findsNothing);
+    }
+
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('manual refine supports synced ctrl and shift keyboard nudges', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1200, 1100);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'replace_editor_manual_ctrl_nudge_',
+    );
+    addTearDown(() {
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    await _pumpEditor(tester, tempRoot.path);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ReplaceEditorScreen)),
+    );
+    final notifier = container.read(replaceEditorProvider('cp-1').notifier);
+    notifier.setConfirmed(GroupKind.td, false);
+    await tester.pump();
+
+    final editorState = container.read(replaceEditorProvider('cp-1'));
+    final initialPoint = editorState.td.t;
+    final beatSec = 60 / editorState.ai.bpm;
+    final manualTd = find.byKey(const ValueKey('editor-manual-refine-td'));
+    await Scrollable.ensureVisible(
+      tester.element(manualTd),
+      alignment: 0.45,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+    await tester.tap(manualTd);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    try {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    } finally {
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    }
+    await tester.pump();
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    try {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    } finally {
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    }
+    await tester.pump();
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+
+    await tester.tap(find.text('确认选点'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    final state = container.read(replaceEditorProvider('cp-1'));
+    expect(state.tdManual, isNotNull);
+    expect(state.selectedManualOf(GroupKind.td), isTrue);
+    expect(
+      state.tdManual!.t,
+      closeTo(initialPoint + 0.001 + 0.010 + beatSec, 0.0001),
     );
     expect(tester.takeException(), isNull);
   });
@@ -1160,4 +1316,16 @@ Finder _manualMainIcon(String name) {
       (widget) => widget is RmIcon && widget.name == name,
     ),
   );
+}
+
+String _formatManualFineTimecodeForTest(double seconds) {
+  final neg = seconds < 0;
+  final totalMs = (seconds.abs() * 1000).round();
+  final minutes = totalMs ~/ 60000;
+  final secondsMs = totalMs % 60000;
+  final wholeSeconds = secondsMs ~/ 1000;
+  final milliseconds = secondsMs % 1000;
+  return '${neg ? "-" : ""}$minutes:'
+      '${wholeSeconds.toString().padLeft(2, "0")}.'
+      '${milliseconds.toString().padLeft(3, "0")}';
 }

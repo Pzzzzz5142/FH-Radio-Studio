@@ -124,6 +124,8 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
   _TransportDockMetrics? _transportDockMetrics;
   _ManualRefineSession? _manualSession;
   bool _altHeld = false;
+  bool _shiftHeld = false;
+  bool _ctrlHeld = false;
 
   @override
   void initState() {
@@ -203,20 +205,78 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     return _player = next;
   }
 
-  /// 跟随 Alt 键的按下状态，仅在人工选点面板开启时刷新磁吸指示灯。
-  void _syncAltHeld() {
+  /// 跟随 modifier 键的按下状态，避免快速按放时读到滞后的硬件状态。
+  void _syncModifierHeld(KeyEvent event) {
     if (_manualSession == null) return;
-    final held = HardwareKeyboard.instance.isAltPressed;
-    if (held != _altHeld) {
-      setState(() => _altHeld = held);
+    final altHeld = _modifierHeldForEvent(
+      event,
+      isModifierKey: _isAltKey,
+      isPressed: () => HardwareKeyboard.instance.isAltPressed,
+    );
+    final shiftHeld = _modifierHeldForEvent(
+      event,
+      isModifierKey: _isShiftKey,
+      isPressed: () => HardwareKeyboard.instance.isShiftPressed,
+    );
+    final ctrlHeld = _modifierHeldForEvent(
+      event,
+      isModifierKey: _isControlKey,
+      isPressed: () => HardwareKeyboard.instance.isControlPressed,
+    );
+    if (altHeld != _altHeld ||
+        shiftHeld != _shiftHeld ||
+        ctrlHeld != _ctrlHeld) {
+      setState(() {
+        _altHeld = altHeld;
+        _shiftHeld = shiftHeld;
+        _ctrlHeld = ctrlHeld;
+      });
     }
+  }
+
+  bool _modifierHeldForEvent(
+    KeyEvent event, {
+    required bool Function(LogicalKeyboardKey key) isModifierKey,
+    required bool Function() isPressed,
+  }) {
+    if (!isModifierKey(event.logicalKey)) {
+      return isPressed();
+    }
+    if (event is KeyUpEvent) {
+      return HardwareKeyboard.instance.logicalKeysPressed.any(
+        (key) => isModifierKey(key) && key != event.logicalKey,
+      );
+    }
+    return true;
+  }
+
+  bool _isAltKey(LogicalKeyboardKey key) {
+    return key == LogicalKeyboardKey.altLeft ||
+        key == LogicalKeyboardKey.altRight;
+  }
+
+  bool _isShiftKey(LogicalKeyboardKey key) {
+    return key == LogicalKeyboardKey.shiftLeft ||
+        key == LogicalKeyboardKey.shiftRight;
+  }
+
+  bool _isControlKey(LogicalKeyboardKey key) {
+    return key == LogicalKeyboardKey.controlLeft ||
+        key == LogicalKeyboardKey.controlRight;
   }
 
   void _onKey(KeyEvent e) {
     if (e is! KeyDownEvent) return;
     final n = ref.read(replaceEditorProvider(widget.trackId).notifier);
     final s = ref.read(replaceEditorProvider(widget.trackId));
-    final shift = HardwareKeyboard.instance.isShiftPressed;
+    final manualOpen = _manualSession != null;
+    final shift = manualOpen
+        ? _shiftHeld
+        : HardwareKeyboard.instance.isShiftPressed;
+    final ctrl = manualOpen
+        ? _ctrlHeld
+        : HardwareKeyboard.instance.isControlPressed;
+    final manualNudge = ctrl ? 0.001 : (shift ? 0.010 : (60 / s.ai.bpm));
     if (_manualSession != null && e.logicalKey == LogicalKeyboardKey.escape) {
       _cancelManualRefine();
     } else if (_manualSession != null &&
@@ -224,10 +284,10 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       _confirmManualRefine(n);
     } else if (_manualSession != null &&
         e.logicalKey == LogicalKeyboardKey.arrowLeft) {
-      _nudgeManualDraft(shift ? -0.010 : -(60 / s.ai.bpm));
+      _nudgeManualDraft(-manualNudge);
     } else if (_manualSession != null &&
         e.logicalKey == LogicalKeyboardKey.arrowRight) {
-      _nudgeManualDraft(shift ? 0.010 : (60 / s.ai.bpm));
+      _nudgeManualDraft(manualNudge);
     } else if (e.logicalKey == LogicalKeyboardKey.space) {
       unawaited(_togglePlayback(s, n));
     } else if ((HardwareKeyboard.instance.isControlPressed ||
@@ -293,7 +353,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       focusNode: _hotkeysFocus,
       autofocus: true,
       onKeyEvent: (_, e) {
-        _syncAltHeld();
+        _syncModifierHeld(e);
         _onKey(e);
         return KeyEventResult.handled;
       },
@@ -694,6 +754,8 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     setState(() {
       _manualSession = session;
       _altHeld = HardwareKeyboard.instance.isAltPressed;
+      _shiftHeld = HardwareKeyboard.instance.isShiftPressed;
+      _ctrlHeld = HardwareKeyboard.instance.isControlPressed;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || _manualSession != session) return;
@@ -762,7 +824,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     if (session == null) return;
     final state = ref.read(replaceEditorProvider(widget.trackId));
     // 默认磁吸到最近的拍；按住 Alt 时放弃磁吸，自由放置。
-    final bypassSnap = HardwareKeyboard.instance.isAltPressed;
+    final bypassSnap = _altHeld;
     final target = (snap && !bypassSnap)
         ? _snapToBeat(seconds, state.ai.beats)
         : seconds;
@@ -2524,7 +2586,7 @@ class _ManualRefineOverlay extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      formatTimecode(value),
+                      _formatManualFineTimecode(value),
                       style: RmText.mono(
                         22,
                         weight: FontWeight.w700,
@@ -2898,7 +2960,7 @@ class _ManualRefineOverlay extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  '←/→ 1拍 · Shift+←/→ 10ms · Alt 自由放置 · Enter 确认 · Esc 取消',
+                  '←/→ 1拍 · Shift+←/→ 10ms · Ctrl+←/→ 1ms · Alt 自由放置 · Enter 确认 · Esc 取消',
                   style: RmText.sans(12.5, color: rm.fg3),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -3129,6 +3191,18 @@ class _ManualRefineSession {
 int _barsForManual(double start, double end, double bpm) {
   final beat = bpm <= 0 ? 0.5 : 60 / bpm;
   return ((end - start) / beat / 4).round().clamp(1, 128).toInt();
+}
+
+String _formatManualFineTimecode(double seconds) {
+  final neg = seconds < 0;
+  final totalMs = (seconds.abs() * 1000).round();
+  final minutes = totalMs ~/ 60000;
+  final secondsMs = totalMs % 60000;
+  final wholeSeconds = secondsMs ~/ 1000;
+  final milliseconds = secondsMs % 1000;
+  return '${neg ? "-" : ""}$minutes:'
+      '${wholeSeconds.toString().padLeft(2, "0")}.'
+      '${milliseconds.toString().padLeft(3, "0")}';
 }
 
 class _PreviewRange {
