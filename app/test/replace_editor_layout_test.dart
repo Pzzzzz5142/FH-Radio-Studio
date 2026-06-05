@@ -1,17 +1,26 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:path/path.dart' as p;
 import 'package:fh_radio_studio/core/fh_radio_studio_cli.dart';
+import 'package:fh_radio_studio/core/project_refs.dart';
+import 'package:fh_radio_studio/core/track_metadata_cache.dart';
 import 'package:fh_radio_studio/core/track_timing_config.dart';
 import 'package:fh_radio_studio/domain/radio_library.dart';
 import 'package:fh_radio_studio/domain/replacement_models.dart';
-import 'package:fh_radio_studio/screens/replace_editor.dart';
+import 'package:fh_radio_studio/screens/replace_editor/replace_editor.dart'
+    show
+        ReplaceEditorScreen,
+        loopPreviewAuditionStartForTesting,
+        pointPreviewWindowForTesting;
+import 'package:fh_radio_studio/screens/replace_editor/manual_focus_waveform.dart';
 import 'package:fh_radio_studio/screens/replace_editor/replace_state.dart';
 import 'package:fh_radio_studio/screens/replace_editor/side_panel.dart';
 import 'package:fh_radio_studio/screens/replace_editor/time_group_card.dart';
@@ -20,6 +29,9 @@ import 'package:fh_radio_studio/state/audio_analysis_state.dart';
 import 'package:fh_radio_studio/state/custom_pool_tracks.dart';
 import 'package:fh_radio_studio/theme/accents.dart';
 import 'package:fh_radio_studio/theme/app_theme.dart';
+import 'package:fh_radio_studio/theme/tokens.dart';
+import 'package:fh_radio_studio/widgets/rm_button.dart';
+import 'package:fh_radio_studio/widgets/rm_icon.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -148,7 +160,7 @@ void main() {
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
-    tester.view.physicalSize = const Size(900, 620);
+    tester.view.physicalSize = const Size(900, 760);
     addTearDown(() {
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
@@ -183,6 +195,9 @@ void main() {
             confirmed: false,
             lowConfidence: false,
             onSelect: (_) {},
+            manualCandidate: null,
+            manualSelected: false,
+            onManualRefine: () {},
             onConfirm: (_) {},
             onCancelConfirm: () {},
             onPreview: (_) {},
@@ -196,6 +211,528 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('候选 (top 5)'), findsOneWidget);
     expect(find.text('候选 (top 3)'), findsNothing);
+    expect(find.text('人工选点'), findsOneWidget);
+    expect(find.widgetWithText(RmButton, '人工精修'), findsNothing);
+    expect(find.text('这都什么玩意，我自己来！'), findsNothing);
+    expect(find.textContaining('点击后居中波形'), findsNothing);
+
+    final manualRow = find.byKey(const ValueKey('editor-manual-refine-tl'));
+    final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    addTearDown(gesture.removePointer);
+    await gesture.addPointer(location: tester.getCenter(manualRow));
+    await tester.pump();
+    await gesture.moveTo(tester.getCenter(manualRow));
+    await tester.pump(const Duration(milliseconds: 1100));
+    expect(find.text('这都什么玩意，我自己来！'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('ghost button hover fades from hover-toned transparency', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _TestTheme(
+        child: Center(
+          child: RmButton(
+            onPressed: () {},
+            variant: RmButtonVariant.ghost,
+            label: 'Ghost',
+          ),
+        ),
+      ),
+    );
+
+    final idle = tester.widget<AnimatedContainer>(
+      find.byType(AnimatedContainer),
+    );
+    expect(
+      (idle.decoration as BoxDecoration).color,
+      RmTokens.hoverLight.withAlpha(0),
+    );
+
+    final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    addTearDown(gesture.removePointer);
+    await gesture.addPointer(location: tester.getCenter(find.text('Ghost')));
+    await gesture.moveTo(tester.getCenter(find.text('Ghost')));
+    await tester.pump();
+
+    final hovered = tester.widget<AnimatedContainer>(
+      find.byType(AnimatedContainer),
+    );
+    expect((hovered.decoration as BoxDecoration).color, RmTokens.hoverLight);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'manual refine overlay aligns AI panel and previews loop drafts',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1200, 1100);
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final tempRoot = Directory.systemTemp.createTempSync(
+        'replace_editor_manual_refine_',
+      );
+      addTearDown(() {
+        if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+      });
+
+      await _pumpEditor(tester, tempRoot.path);
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(ReplaceEditorScreen)),
+      );
+      final notifier = container.read(replaceEditorProvider('cp-1').notifier);
+      notifier.setConfirmed(GroupKind.tl, false);
+      await tester.pump();
+
+      final manualTl = find.byKey(const ValueKey('editor-manual-refine-tl'));
+      final expectedLoop = container.read(replaceEditorProvider('cp-1')).tl;
+      await Scrollable.ensureVisible(
+        tester.element(manualTl),
+        alignment: 0.45,
+        duration: Duration.zero,
+      );
+      await tester.pump();
+      await tester.tap(manualTl);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 260));
+
+      expect(tester.takeException(), isNull);
+      final overlay = find.byKey(const ValueKey('manual-refine-overlay'));
+      expect(overlay, findsOneWidget);
+      expect(tester.getSize(overlay).width, greaterThan(1000));
+      expect(tester.getSize(overlay).height, greaterThan(900));
+      expect(
+        find.byKey(const ValueKey('manual-refine-ai-panel')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('manual-refine-main-editor')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('manual-refine-footer-divider')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('manual-refine-fine-panel')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('manual-refine-loop-preview')),
+        findsOneWidget,
+      );
+      final finePanel = find.byKey(const ValueKey('manual-refine-fine-panel'));
+      expect(
+        find.descendant(
+          of: finePanel,
+          matching: find.text(
+            _formatManualFineTimecodeForTest(expectedLoop.start),
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: finePanel,
+          matching: find.text(
+            _formatManualFineTimecodeForTest(expectedLoop.end),
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(_manualMainIcon('skip-back'), findsNothing);
+      expect(_manualMainIcon('skip-fwd'), findsNothing);
+      expect(find.textContaining('←/→ 1拍'), findsOneWidget);
+      expect(find.textContaining('Ctrl+←/→ 1ms'), findsOneWidget);
+      expect(find.byKey(const ValueKey('manual-refine-lock')), findsNothing);
+      expect(find.text('锁定选点'), findsNothing);
+      expect(find.text('套用 AI 建议'), findsOneWidget);
+      final aiPanelTop = tester
+          .getTopLeft(find.byKey(const ValueKey('manual-refine-ai-panel')))
+          .dy;
+      final mainEditorTop = tester
+          .getTopLeft(find.byKey(const ValueKey('manual-refine-main-editor')))
+          .dy;
+      final footerDividerLeft = tester
+          .getTopLeft(
+            find.byKey(const ValueKey('manual-refine-footer-divider')),
+          )
+          .dx;
+      final footerDividerRight = tester
+          .getTopRight(
+            find.byKey(const ValueKey('manual-refine-footer-divider')),
+          )
+          .dx;
+      final mainEditorLeft = tester
+          .getTopLeft(find.byKey(const ValueKey('manual-refine-main-editor')))
+          .dx;
+      final aiPanelRight = tester
+          .getTopRight(find.byKey(const ValueKey('manual-refine-ai-panel')))
+          .dx;
+      final aiPanelBottom = tester
+          .getBottomLeft(find.byKey(const ValueKey('manual-refine-ai-panel')))
+          .dy;
+      final mainEditorBottom = tester
+          .getBottomLeft(
+            find.byKey(const ValueKey('manual-refine-main-editor')),
+          )
+          .dy;
+      expect(aiPanelTop, closeTo(mainEditorTop, 1));
+      expect(footerDividerLeft, closeTo(mainEditorLeft, 1));
+      expect(footerDividerRight, closeTo(aiPanelRight, 1));
+      expect(aiPanelBottom, closeTo(mainEditorBottom, 1));
+      expect(
+        tester
+            .getSize(find.byKey(const ValueKey('manual-refine-ai-panel')))
+            .height,
+        closeTo(
+          tester
+              .getSize(find.byKey(const ValueKey('manual-refine-main-editor')))
+              .height,
+          1,
+        ),
+      );
+
+      final secondAi = container.read(replaceEditorProvider('cp-1')).ai.tl[1];
+      await tester.tap(find.byKey(const ValueKey('manual-refine-ai-apply-1')));
+      await tester.pump();
+      final previewState = container.read(replaceEditorProvider('cp-1'));
+      expect(previewState.playbackMode, PlaybackMode.loopPreview);
+      expect(previewState.playing, isTrue);
+      expect(
+        previewState.playhead,
+        closeTo(
+          loopPreviewAuditionStartForTesting(
+            startSec: secondAi.start,
+            endSec: secondAi.end,
+          ),
+          0.001,
+        ),
+      );
+
+      await tester.tap(find.text('确认选点'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 260));
+
+      final state = container.read(replaceEditorProvider('cp-1'));
+      expect(state.tlManual, isNotNull);
+      expect(state.tlConfirmed, isTrue);
+      expect(state.selectedManualOf(GroupKind.tl), isTrue);
+      expect((state.tl.start - secondAi.start).abs(), lessThan(0.001));
+      expect((state.tl.end - secondAi.end).abs(), lessThan(0.001));
+      expect(find.byKey(const ValueKey('manual-refine-overlay')), findsNothing);
+    },
+  );
+
+  testWidgets('manual refine point mode puts audition in the transport bar', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1200, 1100);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'replace_editor_manual_point_transport_',
+    );
+    addTearDown(() {
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    await _pumpEditor(tester, tempRoot.path);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ReplaceEditorScreen)),
+    );
+    final notifier = container.read(replaceEditorProvider('cp-1').notifier);
+    notifier.setConfirmed(GroupKind.td, false);
+    await tester.pump();
+
+    final manualTd = find.byKey(const ValueKey('editor-manual-refine-td'));
+    final expectedPoint = container.read(replaceEditorProvider('cp-1')).td;
+    await Scrollable.ensureVisible(
+      tester.element(manualTd),
+      alignment: 0.45,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+    await tester.tap(manualTd);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    final mainEditor = find.byKey(const ValueKey('manual-refine-main-editor'));
+    expect(mainEditor, findsOneWidget);
+    expect(
+      find.descendant(
+        of: mainEditor,
+        matching: find.byKey(const ValueKey('manual-refine-point-preview')),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('manual-refine-loop-preview')),
+      findsNothing,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('manual-refine-fine-panel')),
+        matching: find.text(_formatManualFineTimecodeForTest(expectedPoint.t)),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('端点 A'), findsNothing);
+    expect(_manualMainIcon('skip-back'), findsNothing);
+    expect(_manualMainIcon('skip-fwd'), findsNothing);
+
+    final secondAi = container.read(replaceEditorProvider('cp-1')).ai.td[1];
+    await tester.tap(find.byKey(const ValueKey('manual-refine-ai-apply-1')));
+    await tester.pump();
+    final previewState = container.read(replaceEditorProvider('cp-1'));
+    expect(previewState.playbackMode, PlaybackMode.pointPreview);
+    expect(previewState.playing, isTrue);
+    expect(
+      previewState.playhead,
+      closeTo(
+        pointPreviewWindowForTesting(
+          timeSec: secondAi.t,
+          durationSec: previewState.ai.durationSec,
+        ).start,
+        0.001,
+      ),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('manual refine alt indicator responds to rapid toggles', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1200, 1100);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'replace_editor_manual_alt_toggle_',
+    );
+    addTearDown(() {
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    await _pumpEditor(tester, tempRoot.path);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ReplaceEditorScreen)),
+    );
+    final notifier = container.read(replaceEditorProvider('cp-1').notifier);
+    notifier.setConfirmed(GroupKind.tl, false);
+    await tester.pump();
+
+    final manualTl = find.byKey(const ValueKey('editor-manual-refine-tl'));
+    await Scrollable.ensureVisible(
+      tester.element(manualTl),
+      alignment: 0.45,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+    await tester.tap(manualTl);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    expect(find.text('磁吸到拍'), findsOneWidget);
+    for (var i = 0; i < 3; i += 1) {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+      await tester.pump();
+      try {
+        expect(find.text('自由放置 · Alt'), findsOneWidget);
+        expect(find.text('磁吸到拍'), findsNothing);
+      } finally {
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+        await tester.pump();
+      }
+      expect(find.text('磁吸到拍'), findsOneWidget);
+      expect(find.text('自由放置 · Alt'), findsNothing);
+    }
+
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('manual refine supports synced ctrl and shift keyboard nudges', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1200, 1100);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'replace_editor_manual_ctrl_nudge_',
+    );
+    addTearDown(() {
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    await _pumpEditor(tester, tempRoot.path);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ReplaceEditorScreen)),
+    );
+    final notifier = container.read(replaceEditorProvider('cp-1').notifier);
+    notifier.setConfirmed(GroupKind.td, false);
+    await tester.pump();
+
+    final editorState = container.read(replaceEditorProvider('cp-1'));
+    final initialPoint = editorState.td.t;
+    final beatSec = 60 / editorState.ai.bpm;
+    final manualTd = find.byKey(const ValueKey('editor-manual-refine-td'));
+    await Scrollable.ensureVisible(
+      tester.element(manualTd),
+      alignment: 0.45,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+    await tester.tap(manualTd);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    try {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    } finally {
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    }
+    await tester.pump();
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    try {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    } finally {
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    }
+    await tester.pump();
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+
+    await tester.tap(find.text('确认选点'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    final state = container.read(replaceEditorProvider('cp-1'));
+    expect(state.tdManual, isNotNull);
+    expect(state.selectedManualOf(GroupKind.td), isTrue);
+    expect(
+      state.tdManual!.t,
+      closeTo(initialPoint + 0.001 + 0.010 + beatSec, 0.0001),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('manual refine overlay follows the active playback playhead', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1200, 1100);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'replace_editor_manual_playhead_',
+    );
+    addTearDown(() {
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    await _pumpEditor(tester, tempRoot.path);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ReplaceEditorScreen)),
+    );
+    final notifier = container.read(replaceEditorProvider('cp-1').notifier);
+    notifier.setConfirmed(GroupKind.tl, false);
+    await tester.pump();
+
+    final manualTl = find.byKey(const ValueKey('editor-manual-refine-tl'));
+    await Scrollable.ensureVisible(
+      tester.element(manualTl),
+      alignment: 0.45,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+    await tester.tap(manualTl);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    notifier.setPlayback(PlaybackMode.full, playing: true);
+    notifier.setPlayhead(80);
+    await tester.pump();
+
+    final focusWaveform = tester.widget<ManualFocusWaveform>(
+      find.byType(ManualFocusWaveform),
+    );
+    expect(focusWaveform.playhead, 80);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('manual-refine-overlay')),
+        matching: find.textContaining('1:20.00', findRichText: true),
+      ),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('manual refine cancel pauses active playback', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1200, 1100);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'replace_editor_manual_cancel_pause_',
+    );
+    addTearDown(() {
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    await _pumpEditor(tester, tempRoot.path);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ReplaceEditorScreen)),
+    );
+    final notifier = container.read(replaceEditorProvider('cp-1').notifier);
+    notifier.setConfirmed(GroupKind.tl, false);
+    await tester.pump();
+
+    final manualTl = find.byKey(const ValueKey('editor-manual-refine-tl'));
+    await Scrollable.ensureVisible(
+      tester.element(manualTl),
+      alignment: 0.45,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+    await tester.tap(manualTl);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    notifier.setPlayback(PlaybackMode.full, playing: true);
+    await tester.pump();
+    expect(container.read(replaceEditorProvider('cp-1')).playing, isTrue);
+
+    await tester.tap(find.byTooltip('取消人工选点'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    expect(find.byKey(const ValueKey('manual-refine-overlay')), findsNothing);
+    expect(container.read(replaceEditorProvider('cp-1')).playing, isFalse);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('replace editor sticky controls pin below shell chrome', (
@@ -376,19 +913,80 @@ void main() {
       if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
     });
 
-    await _pumpEditor(tester, tempRoot.path);
+    final audioFile = File(
+      p.join(tempRoot.path, 'sources', 'midnight-cascade.flac'),
+    );
+    audioFile.parent.createSync(recursive: true);
+    audioFile.writeAsBytesSync(const [0, 1, 2, 3]);
+    _writeTrackMetadataEntry(
+      tempRoot.path,
+      audioFile,
+      artist: 'Telemetry',
+      title: 'Midnight Cascade',
+      durationSec: 214.3,
+      sampleRate: 48000,
+      channels: 2,
+      samples: 10286400,
+    );
+    final track = PoolTrack(
+      id: realTrackIdForPath(audioFile.path),
+      title: 'Midnight Cascade',
+      artist: 'Telemetry',
+      source: audioFile.path,
+      durationSec: 214.3,
+      bpm: 128,
+      key: 'F#m',
+      configured: false,
+      confirmed: 2,
+      sampleRate: 48000,
+      channels: 2,
+      samples: 10286400,
+      assignedTo: 'HOR',
+      slot: 1,
+      added: 'test fixture',
+    );
+    final analysis = Completer<CliRunResult>();
+    addTearDown(() {
+      if (!analysis.isCompleted) {
+        analysis.complete(
+          const CliRunResult(
+            exitCode: -1,
+            stdout: '',
+            stderr: 'cancelled by test',
+            commandLine: 'fake analyze-audio',
+            cancelled: true,
+          ),
+        );
+      }
+    });
+
+    await _pumpEditor(
+      tester,
+      tempRoot.path,
+      trackId: track.id,
+      overrides: [
+        realPoolTracksProvider.overrideWithValue([track]),
+        audioAnalysisCliRunnerProvider.overrideWithValue((
+          repoRoot,
+          args, {
+          cancellationToken,
+          onStdout,
+          onStderr,
+        }) {
+          return analysis.future;
+        }),
+      ],
+    );
     final container = ProviderScope.containerOf(
       tester.element(find.byType(ReplaceEditorScreen)),
     );
+    final provider = replaceEditorProvider(track.id);
     ReplaceEditorNotifier notifier() {
-      return container.read(replaceEditorProvider('cp-1').notifier);
+      return container.read(provider.notifier);
     }
 
-    Future<void> tapConfirm() async {
-      final confirm = find.text('确认').first;
-      await tester.ensureVisible(confirm);
-      await tester.pump();
-      await tester.tap(confirm);
+    Future<void> confirmPl() async {
+      notifier().setConfirmed(GroupKind.pl, true);
       await tester.pump();
       await tester.pump();
     }
@@ -397,7 +995,7 @@ void main() {
     await tester.pump();
     expect(find.text('保存这首歌的配置？'), findsNothing);
 
-    await tapConfirm();
+    await confirmPl();
     expect(find.text('保存这首歌的配置？'), findsOneWidget);
 
     await tester.tap(find.text('保存配置'));
@@ -411,17 +1009,17 @@ void main() {
 
     notifier().setConfirmed(GroupKind.pl, false);
     await tester.pump();
-    await tapConfirm();
+    await confirmPl();
     expect(find.text('保存这首歌的配置？'), findsNothing);
 
     notifier().setConfirmed(GroupKind.pl, false);
     await tester.pump();
-    expect(container.read(replaceEditorProvider('cp-1')).plConfirmed, isFalse);
+    expect(container.read(provider).plConfirmed, isFalse);
     notifier().selectCandidate(GroupKind.pl, 1);
     await tester.pump();
-    expect(container.read(replaceEditorProvider('cp-1')).plIdx, 1);
-    await tapConfirm();
-    final changedState = container.read(replaceEditorProvider('cp-1'));
+    expect(container.read(provider).plIdx, 1);
+    await confirmPl();
+    final changedState = container.read(provider);
     final savedConfig = TrackTimingStore.readAll(tempRoot.path).values.single;
     expect(
       (changedState.markerSeconds['PostRaceLoopStart']! -
@@ -452,25 +1050,15 @@ void main() {
       ..createSync(recursive: true);
     final track = File(p.join(sources.path, 'Artist - Cached.wav'))
       ..writeAsBytesSync(const [0, 1, 2, 3]);
-    final metadataDir = Directory(p.join(tempRoot.path, '.fh-radio-studio'))
-      ..createSync(recursive: true);
-    File(p.join(metadataDir.path, 'track_metadata.json')).writeAsStringSync(
-      jsonEncode({
-        'schema_version': 1,
-        'tracks': [
-          {
-            'source': track.path,
-            'artist': 'Artist',
-            'title': 'Cached',
-            'from_tags': false,
-            'duration_sec': 98.75,
-            'sample_rate': 44100,
-            'channels': 2,
-            'samples': 4354875,
-          },
-        ],
-      }),
-      encoding: utf8,
+    _writeTrackMetadataEntry(
+      tempRoot.path,
+      track,
+      artist: 'Artist',
+      title: 'Cached',
+      durationSec: 98.75,
+      sampleRate: 44100,
+      channels: 2,
+      samples: 4354875,
     );
     final analysis = Completer<CliRunResult>();
     addTearDown(() {
@@ -491,6 +1079,11 @@ void main() {
       tempRoot.path,
       trackId: realTrackIdForPath(track.path),
       overrides: [
+        realPoolTracksProvider.overrideWithValue(
+          buildRealPoolTracks([
+            track.path,
+          ], metadata: TrackMetadataCache.read(tempRoot.path)),
+        ),
         audioAnalysisCliRunnerProvider.overrideWithValue((
           repoRoot,
           args, {
@@ -661,6 +1254,43 @@ Future<void> _pumpEditor(
   await tester.pump(const Duration(milliseconds: 100));
 }
 
+void _writeTrackMetadataEntry(
+  String projectDir,
+  File source, {
+  required String artist,
+  required String title,
+  required double durationSec,
+  required int sampleRate,
+  required int channels,
+  required int samples,
+}) {
+  final sourceRef = projectRefForPath(projectDir, source.path);
+  if (sourceRef == null) {
+    throw StateError('Test source is not inside the project: ${source.path}');
+  }
+  final file = File(TrackMetadataCache.configPath(projectDir));
+  file.parent.createSync(recursive: true);
+  file.writeAsStringSync(
+    jsonEncode({
+      'schema_version': 2,
+      'tracks': [
+        {
+          'track_key': trackKeyForSourceRef(sourceRef),
+          'source_ref': sourceRef,
+          'artist': artist,
+          'title': title,
+          'from_tags': false,
+          'duration_sec': durationSec,
+          'sample_rate': sampleRate,
+          'channels': channels,
+          'samples': samples,
+        },
+      ],
+    }),
+    encoding: utf8,
+  );
+}
+
 class _TestTheme extends StatelessWidget {
   const _TestTheme({required this.child});
 
@@ -677,4 +1307,25 @@ class _TestTheme extends StatelessWidget {
       home: Scaffold(body: child),
     );
   }
+}
+
+Finder _manualMainIcon(String name) {
+  return find.descendant(
+    of: find.byKey(const ValueKey('manual-refine-main-editor')),
+    matching: find.byWidgetPredicate(
+      (widget) => widget is RmIcon && widget.name == name,
+    ),
+  );
+}
+
+String _formatManualFineTimecodeForTest(double seconds) {
+  final neg = seconds < 0;
+  final totalMs = (seconds.abs() * 1000).round();
+  final minutes = totalMs ~/ 60000;
+  final secondsMs = totalMs % 60000;
+  final wholeSeconds = secondsMs ~/ 1000;
+  final milliseconds = secondsMs % 1000;
+  return '${neg ? "-" : ""}$minutes:'
+      '${wholeSeconds.toString().padLeft(2, "0")}.'
+      '${milliseconds.toString().padLeft(3, "0")}';
 }

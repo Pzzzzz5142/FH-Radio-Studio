@@ -87,6 +87,8 @@ class _RmButtonState extends State<RmButton> {
     };
 
     final isIcon = widget.size == RmButtonSize.icon;
+    final transparentHover = rm.hover.withAlpha(0);
+    final transparentBorder = rm.border.withAlpha(0);
 
     Color bg;
     Color fg;
@@ -101,9 +103,9 @@ class _RmButtonState extends State<RmButton> {
         fg = rm.accent.onAccent;
         border = rm.accent.base;
       case RmButtonVariant.ghost:
-        bg = _hover ? rm.hover : Colors.transparent;
+        bg = _hover ? rm.hover : transparentHover;
         fg = _hover ? rm.fg : rm.fg2;
-        border = Colors.transparent;
+        border = transparentBorder;
       case RmButtonVariant.danger:
         bg = _hover ? rm.dangerBg : rm.raised;
         fg = rm.danger;

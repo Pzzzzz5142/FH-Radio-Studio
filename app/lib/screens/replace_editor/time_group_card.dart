@@ -22,6 +22,9 @@ class TimeGroupCard extends StatelessWidget {
     required this.confirmed,
     required this.lowConfidence,
     required this.onSelect,
+    required this.manualCandidate,
+    required this.manualSelected,
+    required this.onManualRefine,
     required this.onConfirm,
     required this.onCancelConfirm,
     required this.onPreview,
@@ -35,6 +38,9 @@ class TimeGroupCard extends StatelessWidget {
   final bool confirmed;
   final bool lowConfidence;
   final ValueChanged<int> onSelect;
+  final dynamic manualCandidate; // PointCandidate or LoopCandidate
+  final bool manualSelected;
+  final VoidCallback onManualRefine;
   final ValueChanged<int> onConfirm; // idx
   final VoidCallback onCancelConfirm;
   final ValueChanged<int> onPreview;
@@ -75,6 +81,8 @@ class TimeGroupCard extends StatelessWidget {
                   if (i != 0) const SizedBox(height: 8),
                   _candRow(context, i),
                 ],
+                const SizedBox(height: 8),
+                _manualRow(context),
                 const SizedBox(height: 12),
                 _fine(context),
                 if (kind.isLoop) ...[
@@ -319,6 +327,131 @@ class TimeGroupCard extends StatelessWidget {
     );
   }
 
+  Widget _manualRow(BuildContext context) {
+    final rm = context.rm;
+    final hasManual = manualCandidate != null;
+    final lockedOut = confirmed && !manualSelected;
+    final highlight = manualSelected;
+    final bg = highlight ? rm.accent.bg : (lockedOut ? rm.panel : rm.raised);
+    final muted = lockedOut;
+
+    return _RainbowManualRefineCard(
+      key: ValueKey('editor-manual-refine-${kind.code.toLowerCase()}'),
+      enabled: !confirmed,
+      background: bg,
+      onTap: confirmed ? null : onManualRefine,
+      childBuilder: (context, hovered) {
+        return Row(
+          children: [
+            Container(
+              width: 22,
+              height: 22,
+              decoration: BoxDecoration(
+                color: highlight ? rm.accent.base : rm.bg,
+                border: Border.all(
+                  color: highlight ? rm.accent.base : rm.border,
+                ),
+                borderRadius: BorderRadius.circular(5),
+              ),
+              alignment: Alignment.center,
+              child: lockedOut
+                  ? RmIcon('lock', size: 10, color: rm.fg4)
+                  : Text(
+                      'M',
+                      style: RmText.mono(
+                        10.5,
+                        weight: FontWeight.w700,
+                        color: highlight ? rm.accent.onAccent : rm.fg2,
+                      ),
+                    ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: hasManual
+                  ? _timeBlock(context, manualCandidate, muted: muted)
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        AnimatedSlide(
+                          offset: hovered
+                              ? const Offset(0, -0.08)
+                              : Offset.zero,
+                          duration: const Duration(milliseconds: 150),
+                          curve: Curves.easeOutCubic,
+                          child: Text(
+                            '人工选点',
+                            style: RmText.sans(
+                              13,
+                              weight: FontWeight.w600,
+                              color: muted ? rm.fg3 : rm.fg,
+                            ),
+                          ),
+                        ),
+                        AnimatedSize(
+                          duration: const Duration(milliseconds: 150),
+                          curve: Curves.easeOutCubic,
+                          alignment: Alignment.topLeft,
+                          child: hovered
+                              ? Padding(
+                                  padding: const EdgeInsets.only(top: 2),
+                                  child: Text(
+                                    '这都什么玩意，我自己来！',
+                                    style: RmText.sans(
+                                      11.5,
+                                      color: muted ? rm.fg4 : rm.fg3,
+                                    ),
+                                  ),
+                                )
+                              : const SizedBox.shrink(),
+                        ),
+                      ],
+                    ),
+            ),
+            const SizedBox(width: 12),
+            SizedBox(
+              width: 112,
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: confirmed
+                    ? RmChip(
+                        label: manualSelected ? '人工锁定' : '锁定',
+                        variant: manualSelected
+                            ? RmChipVariant.accent
+                            : RmChipVariant.muted,
+                        leading: const RmIcon('lock', size: 10),
+                      )
+                    : MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: onManualRefine,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 2,
+                              vertical: 4,
+                            ),
+                            child: Text(
+                              hasManual ? '继续精修' : '人工精修',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: RmText.sans(
+                                12.5,
+                                weight: FontWeight.w600,
+                                color: hovered ? rm.fg : rm.fg2,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Widget _timeBlock(BuildContext context, dynamic c, {required bool muted}) {
     final rm = context.rm;
     final primary = muted ? rm.fg3 : rm.fg;
@@ -380,8 +513,14 @@ class TimeGroupCard extends StatelessWidget {
 
   // ---------------- fine tune row ----------------
   Widget _fine(BuildContext context) {
-    if (candidates.isEmpty) return const SizedBox.shrink();
-    final c = candidates[selectedIdx];
+    if (candidates.isEmpty && manualCandidate == null) {
+      return const SizedBox.shrink();
+    }
+    final c = candidates.isEmpty
+        ? manualCandidate
+        : manualSelected && manualCandidate != null
+        ? manualCandidate
+        : candidates[selectedIdx.clamp(0, candidates.length - 1).toInt()];
     if (kind.isLoop) {
       final lc = c as LoopCandidate;
       return Row(
@@ -519,6 +658,233 @@ class TimeGroupCard extends StatelessWidget {
       ],
     );
   }
+}
+
+class _RainbowManualRefineCard extends StatefulWidget {
+  const _RainbowManualRefineCard({
+    super.key,
+    required this.enabled,
+    required this.background,
+    required this.onTap,
+    required this.childBuilder,
+  });
+
+  final bool enabled;
+  final Color background;
+  final VoidCallback? onTap;
+  final Widget Function(BuildContext context, bool hovered) childBuilder;
+
+  @override
+  State<_RainbowManualRefineCard> createState() =>
+      _RainbowManualRefineCardState();
+}
+
+class _RainbowManualRefineCardState extends State<_RainbowManualRefineCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _flow;
+  bool _hovered = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _flow = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1600),
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant _RainbowManualRefineCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!widget.enabled && _flow.isAnimating) {
+      _flow.stop();
+    } else if (widget.enabled && _hovered && !_flow.isAnimating) {
+      _flow.repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    _flow.dispose();
+    super.dispose();
+  }
+
+  void _setHovered(bool value) {
+    if (_hovered == value) return;
+    setState(() => _hovered = value);
+    if (value && widget.enabled) {
+      _flow.repeat();
+    } else {
+      _flow.stop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final radius = BorderRadius.circular(RmTokens.rSm);
+    return MouseRegion(
+      cursor: widget.enabled
+          ? SystemMouseCursors.click
+          : SystemMouseCursors.basic,
+      onEnter: (_) => _setHovered(true),
+      onExit: (_) => _setHovered(false),
+      child: GestureDetector(
+        onTap: widget.enabled ? widget.onTap : null,
+        child: AnimatedSlide(
+          offset: _hovered && widget.enabled
+              ? const Offset(0, -0.035)
+              : Offset.zero,
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOutCubic,
+          child: CustomPaint(
+            painter: _RainbowManualRefineGlowPainter(
+              animation: _flow,
+              hovered: _hovered,
+              enabled: widget.enabled,
+              borderRadius: radius,
+            ),
+            foregroundPainter: _RainbowManualRefineBorderPainter(
+              animation: _flow,
+              hovered: _hovered,
+              enabled: widget.enabled,
+              borderRadius: radius,
+            ),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: widget.background,
+                borderRadius: radius,
+              ),
+              child: Container(
+                constraints: const BoxConstraints(minHeight: 74),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                child: widget.childBuilder(context, _hovered && widget.enabled),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RainbowManualRefineGlowPainter extends CustomPainter {
+  _RainbowManualRefineGlowPainter({
+    required this.animation,
+    required this.hovered,
+    required this.enabled,
+    required this.borderRadius,
+  }) : super(repaint: animation);
+
+  final Animation<double> animation;
+  final bool hovered;
+  final bool enabled;
+  final BorderRadius borderRadius;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty || !hovered || !enabled) return;
+
+    final rect = Offset.zero & size;
+    final shader = SweepGradient(
+      colors: _rainbowManualRefineGradientColors(animation.value, 220),
+    ).createShader(rect.inflate(10));
+    final glowPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 9
+      ..shader = shader
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+
+    canvas.drawRRect(borderRadius.toRRect(rect.inflate(1.5)), glowPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _RainbowManualRefineGlowPainter oldDelegate) {
+    return oldDelegate.hovered != hovered ||
+        oldDelegate.enabled != enabled ||
+        oldDelegate.borderRadius != borderRadius ||
+        oldDelegate.animation != animation;
+  }
+}
+
+class _RainbowManualRefineBorderPainter extends CustomPainter {
+  _RainbowManualRefineBorderPainter({
+    required this.animation,
+    required this.hovered,
+    required this.enabled,
+    required this.borderRadius,
+  }) : super(repaint: animation);
+
+  final Animation<double> animation;
+  final bool hovered;
+  final bool enabled;
+  final BorderRadius borderRadius;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+
+    final active = hovered && enabled;
+    final alpha = enabled ? 230 : 120;
+    final rect = Offset.zero & size;
+    final phase = active ? animation.value : 0.08;
+    final colors = _rainbowManualRefineGradientColors(phase, alpha);
+    final strokeWidth = active ? 1.65 : 1.05;
+    final borderRect = rect.deflate(strokeWidth / 2);
+    final border = borderRadius.toRRect(borderRect);
+
+    final borderPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..shader = SweepGradient(colors: colors).createShader(rect);
+    canvas.drawRRect(border, borderPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _RainbowManualRefineBorderPainter oldDelegate) {
+    return oldDelegate.hovered != hovered ||
+        oldDelegate.enabled != enabled ||
+        oldDelegate.borderRadius != borderRadius ||
+        oldDelegate.animation != animation;
+  }
+}
+
+const _rainbowManualRefinePalette = <Color>[
+  Color(0xFFFF3CAC),
+  Color(0xFFFF4D6D),
+  Color(0xFFFFA928),
+  Color(0xFFFFFF45),
+  Color(0xFF00F5A0),
+  Color(0xFF00D9FF),
+  Color(0xFF6C63FF),
+];
+
+List<Color> _rainbowManualRefineGradientColors(
+  double phase,
+  int alpha, {
+  int samples = 32,
+}) {
+  final colors = <Color>[
+    for (var i = 0; i < samples; i += 1)
+      _rainbowManualRefineColorAt(i / samples + phase, alpha),
+  ];
+  colors.add(colors.first);
+  return colors;
+}
+
+Color _rainbowManualRefineColorAt(double value, int alpha) {
+  final wrapped = value - value.floorToDouble();
+  final position = wrapped * _rainbowManualRefinePalette.length;
+  final index = position.floor() % _rainbowManualRefinePalette.length;
+  final next = (index + 1) % _rainbowManualRefinePalette.length;
+  final t = position - position.floorToDouble();
+  return Color.lerp(
+    _rainbowManualRefinePalette[index],
+    _rainbowManualRefinePalette[next],
+    t,
+  )!.withAlpha(alpha);
 }
 
 class _LockedStripePainter extends CustomPainter {

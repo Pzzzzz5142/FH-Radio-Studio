@@ -17,6 +17,8 @@ class TransportBar extends StatelessWidget {
     required this.onRewind,
     required this.onSkipFwd,
     this.floating = false,
+    this.compact = false,
+    this.trailing,
   });
 
   final ReplaceEditorState state;
@@ -25,6 +27,12 @@ class TransportBar extends StatelessWidget {
   final VoidCallback onRewind;
   final VoidCallback onSkipFwd;
   final bool floating;
+
+  /// 精简模式：人工选点面板里只保留传输键、时间码与 BPM，去掉段落标签和快捷键提示。
+  final bool compact;
+
+  /// 行尾追加的自定义控件（人工选点里放 A/B 端点切换）。
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -36,7 +44,7 @@ class TransportBar extends StatelessWidget {
         : '--:--';
 
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: EdgeInsets.all(compact ? 9 : 12),
       decoration: BoxDecoration(
         color: rm.panel,
         border: Border.all(color: floating ? rm.borderStrong : rm.border),
@@ -45,17 +53,21 @@ class TransportBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          RmButton.icon(
-            onPressed: onRewind,
-            icon: const RmIcon('skip-back', size: 12),
-          ),
-          const SizedBox(width: 8),
+          if (!compact) ...[
+            RmButton.icon(
+              onPressed: onRewind,
+              icon: const RmIcon('skip-back', size: 12),
+            ),
+            const SizedBox(width: 8),
+          ],
           _playButton(context),
-          const SizedBox(width: 8),
-          RmButton.icon(
-            onPressed: onSkipFwd,
-            icon: const RmIcon('skip-fwd', size: 12),
-          ),
+          if (!compact) ...[
+            const SizedBox(width: 8),
+            RmButton.icon(
+              onPressed: onSkipFwd,
+              icon: const RmIcon('skip-fwd', size: 12),
+            ),
+          ],
           const SizedBox(width: 12),
           RichText(
             text: TextSpan(
@@ -70,17 +82,19 @@ class TransportBar extends StatelessWidget {
             ),
           ),
           const Spacer(),
-          Text(
-            aiPending ? '段：分析中' : '段：${currentSeg.label}',
-            style: RmText.mono(11, color: rm.fg3),
-          ),
-          const SizedBox(width: 14),
+          if (!compact) ...[
+            Text(
+              aiPending ? '段：分析中' : '段：${currentSeg.label}',
+              style: RmText.mono(11, color: rm.fg3),
+            ),
+            const SizedBox(width: 14),
+          ],
           Text(
             aiPending ? 'BPM --' : 'BPM ${ai.bpm.toStringAsFixed(1)}',
             style: RmText.mono(11, color: rm.fg3),
           ),
-          const SizedBox(width: 14),
-          _kbd(context, 'Space'),
+          if (!compact) ...[const SizedBox(width: 14), _kbd(context, 'Space')],
+          if (trailing != null) ...[const SizedBox(width: 12), trailing!],
         ],
       ),
     );
