@@ -280,33 +280,192 @@ def _migrate_track_key_file(
     return int(changed)
 
 
+# Legacy name-based radio codes (HOR/XS/…) that older app versions persisted in
+# playlist plans. Codes are always `R{number}` now, so a one-time migration maps
+# any survivors back to the canonical code. Real FH6 only ever produced
+# HOR/BAS/BLK/XS; the rest are retained as historical demo aliases.
+_LEGACY_RADIO_CODES: Dict[str, str] = {
+    "HOR": "R1",
+    "BAS": "R2",
+    "BLK": "R3",
+    "XS": "R4",
+    "ROC": "R5",
+    "TIM": "R6",
+    "EUR": "R7",
+    "MIX": "R8",
+}
+
+
+def _normalized_radio_code(raw: object) -> Optional[str]:
+    if not isinstance(raw, str):
+        return None
+    code = raw.strip().upper()
+    if not code:
+        return None
+    return _LEGACY_RADIO_CODES.get(code, code)
+
+
+def _normalized_playlist_type(raw: object) -> Optional[str]:
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    if not value:
+        return None
+    return "Event" if value.lower() == "event" else "FreeRoam"
+
+
+def _migrate_radio_code_fields(value: Any) -> bool:
+    changed = False
+    if isinstance(value, list):
+        for item in value:
+            if _migrate_radio_code_fields(item):
+                changed = True
+        return changed
+    if not isinstance(value, dict):
+        return False
+
+    raw = value.get("radio_code")
+    if raw is None and "radioCode" in value:
+        raw = value.get("radioCode")
+    normalized = _normalized_radio_code(raw)
+    if normalized is not None:
+        if value.get("radio_code") != normalized:
+            value["radio_code"] = normalized
+            changed = True
+        if "radioCode" in value:
+            value.pop("radioCode", None)
+            changed = True
+
+    for item in value.values():
+        if _migrate_radio_code_fields(item):
+            changed = True
+    return changed
+
+
+def _migrate_playlist_type_fields(value: Any) -> bool:
+    changed = False
+    if isinstance(value, list):
+        for item in value:
+            if _migrate_playlist_type_fields(item):
+                changed = True
+        return changed
+    if not isinstance(value, dict):
+        return False
+
+    raw = value.get("playlist_type")
+    if raw is None and "playlistType" in value:
+        raw = value.get("playlistType")
+    normalized = _normalized_playlist_type(raw)
+    if normalized is not None:
+        if value.get("playlist_type") != normalized:
+            value["playlist_type"] = normalized
+            changed = True
+        if "playlistType" in value:
+            value.pop("playlistType", None)
+            changed = True
+
+    for item in value.values():
+        if _migrate_playlist_type_fields(item):
+            changed = True
+    return changed
+
+
 def _migrate_playlist_plan(project_dir: Path, path: Path, track_key_for_project_path: Any) -> int:
     payload = _read_json(path)
     if not isinstance(payload, dict):
         return 0
-    assignments = payload.get("assignments")
-    if not isinstance(assignments, list):
-        return 0
     changed = False
-    out = []
-    for item in assignments:
-        if not isinstance(item, dict):
-            out.append(item)
-            continue
-        entry = dict(item)
-        track_key = entry.get("track_key")
-        if not isinstance(track_key, str) or not track_key:
-            track_key = track_key_for_project_path(entry.get("source"))
-            if track_key is not None:
-                entry["track_key"] = track_key
+
+    assignments = payload.get("assignments")
+    if isinstance(assignments, list):
+        out = []
+        for item in assignments:
+            if not isinstance(item, dict):
+                out.append(item)
+                continue
+            entry = dict(item)
+            track_key = entry.get("track_key")
+            if not isinstance(track_key, str) or not track_key:
+                track_key = track_key_for_project_path(entry.get("source"))
+                if track_key is not None:
+                    entry["track_key"] = track_key
+                    changed = True
+            if isinstance(track_key, str) and track_key and "source" in entry:
+                entry.pop("source", None)
                 changed = True
-        if isinstance(track_key, str) and track_key and "source" in entry:
-            entry.pop("source", None)
-            changed = True
-        out.append(entry)
+            canonical = _normalized_radio_code(entry.get("radio_code") or entry.get("radioCode"))
+            if canonical is not None:
+                if entry.get("radio_code") != canonical:
+                    entry["radio_code"] = canonical
+                    changed = True
+                if "radioCode" in entry:
+                    entry.pop("radioCode", None)
+                    changed = True
+            playlist_type = _normalized_playlist_type(
+                entry.get("playlist_type") or entry.get("playlistType")
+            )
+            if playlist_type is not None:
+                if entry.get("playlist_type") != playlist_type:
+                    entry["playlist_type"] = playlist_type
+                    changed = True
+                if "playlistType" in entry:
+                    entry.pop("playlistType", None)
+                    changed = True
+            out.append(entry)
+        payload["assignments"] = out
+
+    builtin_targets = payload.get("builtin_targets")
+    if isinstance(builtin_targets, list):
+        targets_out = []
+        for item in builtin_targets:
+            if isinstance(item, dict):
+                target = dict(item)
+                canonical = _normalized_radio_code(
+                    target.get("radio_code") or target.get("radioCode")
+                )
+                if canonical is not None:
+                    if target.get("radio_code") != canonical:
+                        target["radio_code"] = canonical
+                        changed = True
+                    if "radioCode" in target:
+                        target.pop("radioCode", None)
+                        changed = True
+                playlist_type = _normalized_playlist_type(
+                    target.get("playlist_type") or target.get("playlistType")
+                )
+                if playlist_type is not None:
+                    if target.get("playlist_type") != playlist_type:
+                        target["playlist_type"] = playlist_type
+                        changed = True
+                    if "playlistType" in target:
+                        target.pop("playlistType", None)
+                        changed = True
+                targets_out.append(target)
+            elif isinstance(item, str) and "|" in item:
+                radio, _, rest = item.partition("|")
+                canonical = _normalized_radio_code(radio)
+                playlist_type = _normalized_playlist_type(rest)
+                if canonical is not None:
+                    targets_out.append(
+                        {
+                            "radio_code": canonical,
+                            "playlist_type": playlist_type or "FreeRoam",
+                        }
+                    )
+                    changed = True
+                else:
+                    targets_out.append(item)
+            else:
+                canonical = _normalized_radio_code(item)
+                if canonical is not None:
+                    targets_out.append({"radio_code": canonical, "playlist_type": "FreeRoam"})
+                    changed = True
+                else:
+                    targets_out.append(item)
+        payload["builtin_targets"] = targets_out
+
     if changed:
         payload["schema_version"] = max(int(payload.get("schema_version") or 1), 2)
-        payload["assignments"] = out
         write_project_json(path, payload, project_dir=project_dir)
     return int(changed)
 
@@ -332,6 +491,10 @@ def _migrate_package_manifest(
             changed = True
     language = payload.get("language")
     if isinstance(language, dict) and _migrate_language_manifest(project_dir, language):
+        changed = True
+    if _migrate_radio_code_fields(payload):
+        changed = True
+    if _migrate_playlist_type_fields(payload):
         changed = True
     for unit in payload.get("radios") if isinstance(payload.get("radios"), list) else []:
         if not isinstance(unit, dict):

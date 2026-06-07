@@ -2262,10 +2262,13 @@ PackageArtifactSummary? _readPackageSummaryFromManifest(File? manifest) {
   void readPackageUnit(Map<String, dynamic> unit) {
     final radio = _objectInt(unit['radio']);
     final station = _objectString(unit['station']) ?? '';
-    final radioLabel =
-        _objectString(unit['radio_code']) ??
-        _radioAssignmentLabel(radio, station);
-    if (!isUiSupportedRadio(number: radio, code: radioLabel, name: station)) {
+    final radioLabel = canonicalRadioCode(
+      _objectString(unit['radio_code']) ??
+          _radioAssignmentLabel(radio, station),
+      number: radio,
+      name: station,
+    );
+    if (!isUiSupportedRadio(name: station)) {
       return;
     }
     visibleUnits += 1;
@@ -2471,17 +2474,7 @@ String _buildPackageFailureMessage(CliRunResult result) {
 }
 
 String _radioAssignmentLabel(int? radio, String station) {
-  final normalized = station.toLowerCase();
-  if (normalized.contains('horizon pulse')) return 'HOR';
-  if (normalized.contains('bass arena')) return 'BAS';
-  if (normalized.contains('block party')) return 'BLK';
-  if (normalized.contains('eurobeat')) return 'EUR';
-  if (normalized.contains('rocas')) return 'ROC';
-  if (normalized == 'xs' || normalized.contains('horizon xs')) return 'XS';
-  if (normalized.contains('timeless')) return 'TIM';
-  if (normalized.contains('mixmaster')) return 'MIX';
-  if (radio != null) return 'R$radio';
-  return station.trim().isEmpty ? 'R?' : station;
+  return radioCodeForNumber(radio, fallback: station);
 }
 
 String? _steamBuildLabel(String? versionId) {
@@ -2720,7 +2713,13 @@ class StudioController extends StateNotifier<StudioState> {
     final preferredPath =
         _objectString(projectSettings['preferred_path']) ?? '';
     final storedRadio = _objectInt(projectSettings['radio']) ?? state.radio;
-    final radio = isUiSupportedRadio(number: storedRadio) ? storedRadio : 4;
+    // Validate the stored selection against the CLI-reported visible radios
+    // when they are known.
+    final supportedNumbers = state.radioOptions.map((o) => o.number).toSet();
+    final radio =
+        supportedNumbers.isEmpty || supportedNumbers.contains(storedRadio)
+        ? storedRadio
+        : 4;
     final sourceLang =
         _objectString(projectSettings['source_lang'])?.toUpperCase() ??
         state.sourceLang;
@@ -3220,7 +3219,8 @@ class StudioController extends StateNotifier<StudioState> {
   }
 
   void setRadioNumber(int next) {
-    if (!isUiSupportedRadio(number: next)) return;
+    final supportedNumbers = state.radioOptions.map((o) => o.number).toSet();
+    if (supportedNumbers.isNotEmpty && !supportedNumbers.contains(next)) return;
     state = state.copyWith(radio: next);
     FhRadioStudioProject.writeSettings(
       state.projectDir,
@@ -4409,14 +4409,17 @@ class StudioController extends StateNotifier<StudioState> {
   // 把一份已构建准备包的 manifest assignments 还原成 PlaylistPlan。assignment.source
   // 指向项目 sources/siren 里的原始文件，所以重建出的 plan 不依赖准备包目录本身。
   PlaylistPlan _planFromPackageSummary(PackageArtifactSummary summary) {
+    if (!isUiSupportedRadio(name: summary.station)) {
+      return const PlaylistPlan.empty();
+    }
     var plan = const PlaylistPlan.empty();
     for (final item in summary.assignments) {
       if (item.source.trim().isEmpty || item.slot <= 0) continue;
-      if (!isUiSupportedRadio(code: item.radioLabel)) continue;
+      final radioCode = canonicalRadioCode(item.radioLabel);
       for (final playlistType in item.normalizedPlaylistTypes) {
         plan = plan.assign(
           source: item.source,
-          radioCode: item.radioLabel,
+          radioCode: radioCode,
           playlistType: playlistType,
           slot: item.slot,
         );
@@ -4491,12 +4494,13 @@ class StudioController extends StateNotifier<StudioState> {
     }
     final packageKeys = <String>{};
     for (final assignment in summary.assignments) {
+      final radioCode = canonicalRadioCode(assignment.radioLabel);
       final trackKey =
           trackKeyForProjectPath(state.projectDir, assignment.source) ??
           PackageTrackAssignment.keyForPath(assignment.source);
       for (final playlistType in assignment.normalizedPlaylistTypes) {
         packageKeys.add(
-          '$trackKey|${assignment.radioLabel}|$playlistType|${assignment.slot}',
+          '$trackKey|$radioCode|$playlistType|${assignment.slot}',
         );
       }
     }
@@ -5811,7 +5815,9 @@ class StudioController extends StateNotifier<StudioState> {
       final number = _asInt(map['number']);
       final name = _asString(map['name']);
       if (number == null || name == null || name.isEmpty) continue;
-      if (!isUiSupportedRadio(number: number, name: name)) continue;
+      if (!isUiSupportedRadio(name: name)) {
+        continue;
+      }
       final playlists = _asMap(map['playlists']);
       options.add(
         RadioStatusOption(

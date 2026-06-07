@@ -632,7 +632,7 @@ void main() {
         key: '待分析',
         configured: true,
         confirmed: 4,
-        assignedTo: 'XS',
+        assignedTo: 'R4',
         slot: 1,
         added: '刚刚',
       );
@@ -897,7 +897,7 @@ void main() {
       projectDir,
       const PlaylistPlan.empty().assign(
         source: audio.path,
-        radioCode: 'XS',
+        radioCode: 'R4',
         playlistType: 'FreeRoam',
         slot: 1,
       ),
@@ -1015,7 +1015,7 @@ void main() {
       tester.view.physicalSize = const Size(1280, 900);
 
       const radio = RadioStation(
-        code: 'XS',
+        code: 'R4',
         name: 'Horizon XS',
         hue: 'violet',
         genre: 'Rock',
@@ -1034,18 +1034,18 @@ void main() {
         origin: PlaylistCatalogOrigin.package,
         sourcePath: null,
         radios: [radio],
-        modes: {'XS': StationMode.custom},
-        freeRoamTracks: {'XS': tracks},
-        eventTracks: {'XS': tracks},
+        modes: {'R4': StationMode.custom},
+        freeRoamTracks: {'R4': tracks},
+        eventTracks: {'R4': tracks},
       );
       const gameCatalog = PlaylistCatalog(
         view: PlaylistCatalogView.game,
         origin: PlaylistCatalogOrigin.game,
         sourcePath: null,
         radios: [radio],
-        modes: {'XS': StationMode.builtin},
-        freeRoamTracks: {'XS': tracks},
-        eventTracks: {'XS': tracks},
+        modes: {'R4': StationMode.builtin},
+        freeRoamTracks: {'R4': tracks},
+        eventTracks: {'R4': tracks},
       );
 
       final projectDir = p.join(tempRoot.path, 'project');
@@ -1134,7 +1134,7 @@ void main() {
     tester.view.physicalSize = const Size(1280, 900);
 
     const radio = RadioStation(
-      code: 'XS',
+      code: 'R4',
       name: 'Horizon XS',
       hue: 'violet',
       genre: 'Rock',
@@ -1154,7 +1154,7 @@ void main() {
     );
     final plan = const PlaylistPlan.empty().assign(
       source: track.source,
-      radioCode: 'XS',
+      radioCode: 'R4',
       playlistType: 'FreeRoam',
       slot: 1,
     );
@@ -1162,9 +1162,9 @@ void main() {
       origin: PlaylistCatalogOrigin.game,
       sourcePath: null,
       radios: const [radio],
-      modes: const {'XS': StationMode.builtin},
+      modes: const {'R4': StationMode.builtin},
       freeRoamTracks: const {
-        'XS': [
+        'R4': [
           TrackRef(
             id: 'xs-original',
             title: 'Original XS',
@@ -1174,7 +1174,7 @@ void main() {
         ],
       },
       eventTracks: const {
-        'XS': [
+        'R4': [
           TrackRef(
             id: 'xs-original-event',
             title: 'Original XS Event',
@@ -1212,7 +1212,7 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('User Song'), findsNWidgets(2));
     expect(find.text('Original XS'), findsNothing);
-    expect(find.text('XS · 1'), findsOneWidget);
+    expect(find.text('R4 · 1'), findsOneWidget);
     expect(find.text('custom'), findsWidgets);
     expect(find.byTooltip('恢复当前列表为 builtin'), findsOneWidget);
   });
@@ -1233,7 +1233,7 @@ void main() {
     tester.view.physicalSize = const Size(1280, 900);
 
     const radio = RadioStation(
-      code: 'XS',
+      code: 'R4',
       name: 'Horizon XS',
       hue: 'violet',
       genre: 'Rock',
@@ -1255,9 +1255,9 @@ void main() {
       origin: PlaylistCatalogOrigin.game,
       sourcePath: null,
       radios: [radio],
-      modes: {'XS': StationMode.custom},
+      modes: {'R4': StationMode.custom},
       freeRoamTracks: {
-        'XS': [
+        'R4': [
           TrackRef(
             id: 'xs-current',
             title: 'User Song',
@@ -1268,7 +1268,7 @@ void main() {
         ],
       },
       eventTracks: {
-        'XS': [
+        'R4': [
           TrackRef(
             id: 'xs-current-event',
             title: 'User Song',
@@ -1308,7 +1308,7 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.text('User Song'), findsWidgets);
-    expect(find.text('XS · 1'), findsOneWidget);
+    expect(find.text('R4 · 1'), findsOneWidget);
     expect(
       find.byWidgetPredicate((widget) => widget is Draggable).evaluate().length,
       greaterThanOrEqualTo(2),
@@ -1520,7 +1520,7 @@ void main() {
     tester.view.physicalSize = const Size(1280, 900);
 
     const radio = RadioStation(
-      code: 'XS',
+      code: 'R4',
       name: 'Horizon XS',
       hue: 'violet',
       genre: 'Rock',
@@ -1540,7 +1540,7 @@ void main() {
     );
     final plan = const PlaylistPlan.empty().assign(
       source: track.source,
-      radioCode: 'XS',
+      radioCode: 'R4',
       playlistType: 'FreeRoam',
       slot: 1,
     );
@@ -1548,9 +1548,9 @@ void main() {
       origin: PlaylistCatalogOrigin.game,
       sourcePath: null,
       radios: [radio],
-      modes: {'XS': StationMode.builtin},
+      modes: {'R4': StationMode.builtin},
       freeRoamTracks: {
-        'XS': [
+        'R4': [
           TrackRef(
             id: 'xs-original',
             title: 'Original XS',
@@ -1560,7 +1560,7 @@ void main() {
         ],
       },
       eventTracks: {
-        'XS': [
+        'R4': [
           TrackRef(
             id: 'xs-original-event',
             title: 'Original XS Event',
@@ -2331,7 +2331,7 @@ void _writeIntegrityFixture(
         'radios': [
           {
             'radio': 4,
-            'radio_code': 'XS',
+            'radio_code': 'R4',
             'station': 'Horizon XS',
             'target_bank_name': 'R4_Tracks_CU1.assets.bank',
             'music': [],

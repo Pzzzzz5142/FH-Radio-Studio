@@ -61,9 +61,7 @@ class PlaylistAssignment {
         'Legacy project playlist source requires migration: $source',
       );
     }
-    final rawPlaylistType = _asString(json['playlist_type']).isNotEmpty
-        ? _asString(json['playlist_type'])
-        : _asString(json['playlistType']);
+    final rawPlaylistType = _asString(json['playlist_type']);
     return PlaylistAssignment(
       trackKey: key.isNotEmpty
           ? key
@@ -71,7 +69,7 @@ class PlaylistAssignment {
                 ? ''
                 : PlaylistAssignment.keyForPath(resolvedSource)),
       source: resolvedSource,
-      radioCode: _asString(json['radio_code']).toUpperCase(),
+      radioCode: _canonicalRadioCodeOrEmpty(_asString(json['radio_code'])),
       playlistType: normalizePlaylistType(rawPlaylistType),
       slot: _asInt(json['slot']),
     );
@@ -87,7 +85,7 @@ class PlaylistAssignment {
     required String playlistType,
   }) {
     final trackKey = keyForPath(source);
-    final radio = radioCode.trim().toUpperCase();
+    final radio = _canonicalRadioCodeOrEmpty(radioCode);
     final type = normalizePlaylistType(playlistType);
     return '$trackKey|$radio|$type';
   }
@@ -165,9 +163,10 @@ class PlaylistPlan {
     );
     final assignment = assignments[key];
     if (assignment != null && assignment.isAssigned) return assignment;
+    final radio = _canonicalRadioCodeOrEmpty(radioCode);
     for (final item in assignments.values) {
       if (!item.isAssigned) continue;
-      if (item.radioCode != radioCode.trim().toUpperCase()) continue;
+      if (item.radioCode != radio) continue;
       if (item.playlistType !=
           PlaylistAssignment.normalizePlaylistType(playlistType)) {
         continue;
@@ -181,7 +180,7 @@ class PlaylistPlan {
     String radioCode,
     String playlistType,
   ) {
-    final radio = radioCode.trim().toUpperCase();
+    final radio = _canonicalRadioCodeOrEmpty(radioCode);
     final type = PlaylistAssignment.normalizePlaylistType(playlistType);
     final items = assignments.values
         .where(
@@ -209,7 +208,7 @@ class PlaylistPlan {
   }
 
   List<String> sourcesForRadio(String radioCode) {
-    final radio = radioCode.trim().toUpperCase();
+    final radio = _canonicalRadioCodeOrEmpty(radioCode);
     final out = <String>[];
     final seen = <String>{};
     final items = assignments.values
@@ -254,7 +253,7 @@ class PlaylistPlan {
     final assignment = PlaylistAssignment(
       trackKey: trackKey,
       source: source,
-      radioCode: radioCode.trim().toUpperCase(),
+      radioCode: _canonicalRadioCodeOrEmpty(radioCode),
       playlistType: PlaylistAssignment.normalizePlaylistType(playlistType),
       slot: slot,
     );
@@ -279,7 +278,9 @@ class PlaylistPlan {
     final trackKey = projectDir == null
         ? PlaylistAssignment.keyForPath(source)
         : _trackKeyForSource(projectDir, source);
-    final radio = radioCode?.trim().toUpperCase();
+    final radio = radioCode == null
+        ? null
+        : _canonicalRadioCodeOrEmpty(radioCode);
     final type = playlistType == null
         ? null
         : PlaylistAssignment.normalizePlaylistType(playlistType);
@@ -317,7 +318,7 @@ class PlaylistPlan {
     required String radioCode,
     required String playlistType,
   }) {
-    final radio = radioCode.trim().toUpperCase();
+    final radio = _canonicalRadioCodeOrEmpty(radioCode);
     final type = PlaylistAssignment.normalizePlaylistType(playlistType);
     final kept = assignments.values.where((assignment) {
       return assignment.radioCode != radio || assignment.playlistType != type;
@@ -426,7 +427,7 @@ class PlaylistPlan {
   }
 
   static String _targetKey(String radioCode, String playlistType) {
-    final radio = radioCode.trim().toUpperCase();
+    final radio = _canonicalRadioCodeOrEmpty(radioCode);
     final type = PlaylistAssignment.normalizePlaylistType(playlistType);
     return '$radio|$type';
   }
@@ -463,7 +464,7 @@ class PlaylistPlan {
   static String? _targetRadioCode(String key) {
     final parts = key.split('|');
     if (parts.isEmpty || parts.first.trim().isEmpty) return null;
-    return parts.first.trim().toUpperCase();
+    return _canonicalRadioCodeOrEmpty(parts.first);
   }
 
   static Map<String, String> _targetJson(String key) {
@@ -475,17 +476,19 @@ class PlaylistPlan {
   }
 
   static String? _targetKeyFromJson(Object? item) {
-    if (item is String) {
-      final parts = item.split('|');
-      if (parts.isEmpty || parts.first.trim().isEmpty) return null;
-      return _targetKey(parts.first, parts.length > 1 ? parts[1] : 'FreeRoam');
-    }
     if (item is! Map) return null;
-    final radio = _asString(item['radio_code'] ?? item['radioCode']);
+    final radio = _asString(item['radio_code']);
     if (radio.trim().isEmpty) return null;
-    final type = _asString(item['playlist_type'] ?? item['playlistType']);
-    return _targetKey(radio, type);
+    final type = _asString(item['playlist_type']);
+    return _targetKey(_canonicalRadioCodeOrEmpty(radio), type);
   }
+}
+
+/// Normalizes current-schema radio codes. Legacy abbreviations (HOR/XS/…)
+/// belong to the project migration step, not runtime loading.
+String _canonicalRadioCodeOrEmpty(String raw) {
+  final code = raw.trim().toUpperCase();
+  return code.isEmpty ? '' : code;
 }
 
 class PlaylistPlanStore {
@@ -531,17 +534,11 @@ class PlaylistPlanStore {
   static PlaylistPlan projectSourcesOnly(String projectDir, PlaylistPlan plan) {
     final out = <String, PlaylistAssignment>{};
     for (final assignment in plan.assignments.values) {
-      if (!isUiSupportedRadio(code: assignment.radioCode)) continue;
       final normalized = _normalizeProjectSource(projectDir, assignment);
       if (normalized == null) continue;
       out[normalized.assignmentKey] = normalized;
     }
-    final builtinTargets = {
-      for (final target in plan.builtinTargets)
-        if (isUiSupportedRadio(code: PlaylistPlan._targetRadioCode(target)))
-          target,
-    };
-    return PlaylistPlan(assignments: out, builtinTargets: builtinTargets);
+    return PlaylistPlan(assignments: out, builtinTargets: plan.builtinTargets);
   }
 
   static PlaylistAssignment? _normalizeProjectSource(

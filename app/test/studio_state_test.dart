@@ -339,6 +339,37 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
       expect(FhRadioStudioProject.needsPathMigration(projectDir), isFalse);
     });
 
+    test('legacy radio codes trigger project migration', () {
+      final projectDir = p.join(tempRoot.path, 'legacy-radio-project');
+      FhRadioStudioProject.ensure(projectDir);
+      final plan = File(
+        p.join(
+          FhRadioStudioProject.metadataDir(projectDir),
+          'playlist_plan.json',
+        ),
+      );
+      plan.writeAsStringSync(
+        const JsonEncoder.withIndent('  ').convert({
+          'schema_version': 2,
+          'assignments': [
+            {
+              'track_key': 'fh-project:/sources/song.wav',
+              'radioCode': 'R4',
+              'playlistType': 'FreeRoam',
+              'slot': 1,
+            },
+          ],
+          'builtin_targets': [
+            'R4|Event',
+            {'radio_code': 'R4', 'playlistType': 'Event'},
+          ],
+        }),
+        encoding: utf8,
+      );
+
+      expect(FhRadioStudioProject.needsPathMigration(projectDir), isTrue);
+    });
+
     test(
       'project readers are gated while opening project migration runs',
       () async {
@@ -1068,7 +1099,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
             ),
           ),
           source: source.path,
-          radioCode: 'XS',
+          radioCode: 'R4',
           playlistType: 'FreeRoam',
           slot: 1,
           loudnessOffsetLu: kDefaultPackageLoudnessOffsetLu,
@@ -1077,7 +1108,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
           projectDir,
           const PlaylistPlan.empty().assign(
             source: source.path,
-            radioCode: 'XS',
+            radioCode: 'R4',
             playlistType: 'FreeRoam',
             slot: 1,
           ),
@@ -1119,7 +1150,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
             ),
           ),
           source: source.path,
-          radioCode: 'XS',
+          radioCode: 'R4',
           playlistType: 'FreeRoam',
           slot: 1,
           loudnessOffsetLu: 0.0,
@@ -1128,7 +1159,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
           projectDir,
           const PlaylistPlan.empty().assign(
             source: source.path,
-            radioCode: 'XS',
+            radioCode: 'R4',
             playlistType: 'FreeRoam',
             slot: 1,
           ),
@@ -1177,7 +1208,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
           ),
         ),
         source: source.path,
-        radioCode: 'XS',
+        radioCode: 'R4',
         playlistType: 'FreeRoam',
         slot: 1,
       );
@@ -1185,7 +1216,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         projectDir,
         const PlaylistPlan.empty().assign(
           source: source.path,
-          radioCode: 'XS',
+          radioCode: 'R4',
           playlistType: 'FreeRoam',
           slot: 1,
         ),
@@ -1236,7 +1267,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
             ),
           ),
           source: source.path,
-          radioCode: 'XS',
+          radioCode: 'R4',
           playlistType: 'FreeRoam',
           slot: 1,
           loudnessOffsetLu: 0.0,
@@ -1287,7 +1318,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         _writePackageManifestFile(
           File(FhRadioStudioProject.lastAppliedPackageManifestPath(projectDir)),
           source: missingSource,
-          radioCode: 'XS',
+          radioCode: 'R4',
           playlistType: 'FreeRoam',
           slot: 1,
         );
@@ -1317,7 +1348,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         projectDir,
         PlaylistPlan.empty().assign(
           source: source.path,
-          radioCode: 'XS',
+          radioCode: 'R4',
           playlistType: 'FreeRoam',
           slot: 1,
         ),
@@ -1577,7 +1608,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
   "radios": [
     {
       "radio": 4,
-      "radio_code": "XS",
+      "radio_code": "R4",
       "station": "Horizon XS",
       "music": [
         {
@@ -1638,8 +1669,8 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
         pending: null,
         last: summary,
       );
-      expect(plan.assignmentsForRadio('XS', 'FreeRoam'), hasLength(1));
-      expect(plan.assignmentsForRadio('XS', 'Event'), isEmpty);
+      expect(plan.assignmentsForRadio('R4', 'FreeRoam'), hasLength(1));
+      expect(plan.assignmentsForRadio('R4', 'Event'), isEmpty);
       expect(plan.assignmentsForRadio('R5', 'Event'), hasLength(1));
     });
 
@@ -1674,7 +1705,7 @@ Created AI model manifest scaffold: C:\\FH Radio Studio\\models\\ai_tools_manife
   "radios": [
     {
       "radio": 4,
-      "radio_code": "XS",
+      "radio_code": "R4",
       "station": "Horizon XS",
       "bank_slots": 3,
       "replaceable_slots": {"FreeRoam": 1, "Event": 1},
@@ -2414,7 +2445,7 @@ _writeIntegrityFixture(
   "radios": [
     {
       "radio": 4,
-      "radio_code": "XS",
+      "radio_code": "R4",
       "station": "Horizon XS",
       "target_bank_name": "R4_Tracks_CU1.assets.bank",
       "music": [],

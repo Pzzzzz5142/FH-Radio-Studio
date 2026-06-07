@@ -941,7 +941,7 @@ void main() {
       sampleRate: 48000,
       channels: 2,
       samples: 10286400,
-      assignedTo: 'HOR',
+      assignedTo: 'R1',
       slot: 1,
       added: 'test fixture',
     );

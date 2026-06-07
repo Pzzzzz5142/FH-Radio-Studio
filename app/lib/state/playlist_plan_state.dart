@@ -127,16 +127,19 @@ PlaylistPlan playlistPlanFromPackageSummaries({
   if (package == null || package.assignments.isEmpty) {
     return const PlaylistPlan.empty();
   }
+  if (!isUiSupportedRadio(name: package.station)) {
+    return const PlaylistPlan.empty();
+  }
   final assignments = <String, PlaylistAssignment>{};
   for (final item in package.assignments) {
     if (item.source.trim().isEmpty || item.slot <= 0) continue;
-    if (!isUiSupportedRadio(code: item.radioLabel)) continue;
+    final radioCode = canonicalRadioCode(item.radioLabel);
     final playlistTypes = item.normalizedPlaylistTypes;
     for (final playlistType in playlistTypes) {
       final assignment = PlaylistAssignment(
         trackKey: _playlistTrackKey(projectDir, item.source),
         source: item.source,
-        radioCode: item.radioLabel,
+        radioCode: radioCode,
         playlistType: playlistType,
         slot: item.slot,
       );

@@ -229,7 +229,7 @@ class EditDraft {
 
 const List<EditDraft> kDrafts = [
   EditDraft(
-    radio: 'HOR',
+    radio: 'R1',
     slot: 5,
     title: 'Midnight Cascade',
     artist: 'User Import',
@@ -238,7 +238,7 @@ const List<EditDraft> kDrafts = [
     bpm: 128,
   ),
   EditDraft(
-    radio: 'BLK',
+    radio: 'R3',
     slot: 3,
     title: 'Velvet Avenue',
     artist: 'User Import',
@@ -247,7 +247,7 @@ const List<EditDraft> kDrafts = [
     bpm: 96,
   ),
   EditDraft(
-    radio: 'XS',
+    radio: 'R4',
     slot: 2,
     title: 'Iron in the Carburetor',
     artist: 'User Import',
@@ -267,7 +267,7 @@ List<double> _genBeats(double duration, double bpm) {
 }
 
 final ReplacementEdit kReplacementEdit = ReplacementEdit(
-  radio: 'HOR',
+  radio: 'R1',
   slot: 5,
   originalTitle: 'Daybreak Highway',
   originalArtist: 'Atlas Run',

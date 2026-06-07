@@ -306,7 +306,7 @@ def create_package(
     }
     radio_package = {
         "radio": 4,
-        "radio_code": "XS",
+        "radio_code": "R4",
         "station": "Horizon XS",
         "target_bank_name": "R4_Tracks_CU1.assets.bank",
         "bank_slots": 3,
