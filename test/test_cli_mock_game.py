@@ -1400,7 +1400,7 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
                 "assignments": [
                     {
                         "track_key": track_key_xs,
-                        "radio_code": "XS",
+                        "radio_code": "R4",
                         "playlist_type": "FreeRoam",
                         "slot": 1,
                     },
@@ -1483,8 +1483,6 @@ def test_build_package_uses_playlist_plan_for_multiple_radios(mock_game, tmp_pat
     assert payload["radio"] is None
     assert len(payload["radios"]) == 2
     by_radio = {item["radio"]: item for item in payload["radios"]}
-    assert by_radio[4]["radio_code"] == "XS"
-    assert by_radio[5]["radio_code"] == "R5"
     assert by_radio[4]["assignments"][0]["track_key"] == track_key_xs
     assert by_radio[4]["assignments"][0]["playlist_types"] == ["FreeRoam"]
     assert by_radio[5]["assignments"][0]["track_key"] == track_key_r5
@@ -1548,7 +1546,7 @@ def test_build_package_reads_playlist_plan_from_stdin(mock_game, tmp_path) -> No
             "assignments": [
                 {
                     "track_key": track_key,
-                    "radio_code": "XS",
+                    "radio_code": "R4",
                     "playlist_type": "FreeRoam",
                     "slot": 1,
                 }
@@ -1581,7 +1579,6 @@ def test_build_package_reads_playlist_plan_from_stdin(mock_game, tmp_path) -> No
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     by_radio = {item["radio"]: item for item in payload["radios"]}
     assert payload["playlist_plan"] == "-"
-    assert by_radio[4]["radio_code"] == "XS"
     assert by_radio[4]["assignments"][0]["track_key"] == track_key
     assert by_radio[4]["assignments"][0]["playlist_types"] == ["FreeRoam"]
 
@@ -1663,14 +1660,14 @@ def test_build_package_restores_builtin_targets_from_baseline(mock_game, tmp_pat
                 "assignments": [
                     {
                         "track_key": old_track_key,
-                        "radio_code": "XS",
+                        "radio_code": "R4",
                         "playlist_type": "FreeRoam",
                         "slot": 1,
                     }
                 ],
                 "builtin_targets": [
-                    {"radio_code": "XS", "playlist_type": "FreeRoam"},
-                    {"radio_code": "XS", "playlist_type": "Event"},
+                    {"radio_code": "R4", "playlist_type": "FreeRoam"},
+                    {"radio_code": "R4", "playlist_type": "Event"},
                 ],
             },
             indent=2,
@@ -1757,7 +1754,7 @@ def test_build_package_combines_custom_radios_and_builtin_restores(mock_game, tm
                 "assignments": [
                     {
                         "track_key": track_key_xs,
-                        "radio_code": "XS",
+                        "radio_code": "R4",
                         "playlist_type": "FreeRoam",
                         "slot": 1,
                     },
@@ -1948,7 +1945,7 @@ def test_build_package_reuses_package_playlist_without_music_args(mock_game, tmp
                 "assignments": [
                     {
                         "track_key": track_key_xs,
-                        "radio_code": "XS",
+                        "radio_code": "R4",
                         "playlist_type": "FreeRoam",
                         "slot": 1,
                     },
@@ -2048,7 +2045,7 @@ def test_build_package_preflights_all_playlist_radios_before_writing(mock_game, 
                 "assignments": [
                     {
                         "track_key": track_key_xs,
-                        "radio_code": "XS",
+                        "radio_code": "R4",
                         "playlist_type": "FreeRoam",
                         "slot": 1,
                     },

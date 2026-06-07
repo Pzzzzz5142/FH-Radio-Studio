@@ -149,7 +149,7 @@ const _captureCatalog = PlaylistCatalog(
 
 final _capturePlan = const PlaylistPlan.empty().assign(
   source: r'C:\music\done.wav',
-  radioCode: 'HOR',
+  radioCode: 'R1',
   playlistType: 'FreeRoam',
   slot: 1,
 );

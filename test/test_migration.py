@@ -139,7 +139,16 @@ def test_migrate_project_paths_rewrites_010_durable_project_json(tmp_path: Path)
         {
             "schema_version": 1,
             "assignments": [
-                {"source": str(source), "radio_code": "XS", "slot": 1},
+                {
+                    "source": str(source),
+                    "radio_code": "XS",
+                    "playlistType": "Event",
+                    "slot": 1,
+                },
+            ],
+            "builtin_targets": [
+                "HOR|Event",
+                {"radioCode": "XS", "playlistType": "FreeRoam"},
             ],
         },
     )
@@ -161,6 +170,7 @@ def test_migrate_project_paths_rewrites_010_durable_project_json(tmp_path: Path)
                 / "FMODBanks"
                 / "R4_Tracks.bank"
             ),
+            "radio_code": "XS",
             "playlist_plan": str(playlist),
             "timing_manifest": str(build_timing),
             "baseline_manifest": str(baseline_manifest),
@@ -184,6 +194,7 @@ def test_migrate_project_paths_rewrites_010_durable_project_json(tmp_path: Path)
             },
             "radios": [
                 {
+                    "radio_code": "XS",
                     "source_bank": str(
                         project
                         / "backups"
@@ -206,6 +217,8 @@ def test_migrate_project_paths_rewrites_010_durable_project_json(tmp_path: Path)
                         {
                             "source_index": 0,
                             "path_key": "legacy-source-key",
+                            "radioCode": "XS",
+                            "playlistType": "Event",
                             "staged_wav": str(
                                 project / "packages" / "current" / "work" / "stage" / "1.wav"
                             ),
@@ -298,6 +311,7 @@ def test_migrate_project_paths_rewrites_010_durable_project_json(tmp_path: Path)
                         {
                             "source_index": 0,
                             "path_key": "legacy-source-key",
+                            "playlistType": "Event",
                             "playlist_entry": True,
                         }
                     ],
@@ -350,7 +364,14 @@ def test_migrate_project_paths_rewrites_010_durable_project_json(tmp_path: Path)
     }
     migrated_assignment = _read_json(playlist)["assignments"][0]
     assert migrated_assignment["track_key"] == track_key
+    assert migrated_assignment["radio_code"] == "R4"
+    assert migrated_assignment["playlist_type"] == "Event"
+    assert "playlistType" not in migrated_assignment
     assert "source" not in migrated_assignment
+    assert _read_json(playlist)["builtin_targets"] == [
+        {"radio_code": "R1", "playlist_type": "Event"},
+        {"radio_code": "R4", "playlist_type": "FreeRoam"},
+    ]
 
     migrated_package = _read_json(package_manifest)
     assert migrated_package["game_dir"] == str(external_game)
@@ -363,6 +384,7 @@ def test_migrate_project_paths_rewrites_010_durable_project_json(tmp_path: Path)
     assert migrated_package["source_bank"] == (
         "fh-project:/backups/baseline-current/media/audio/FMODBanks/R4_Tracks.bank"
     )
+    assert migrated_package["radio_code"] == "R4"
     assert migrated_package["playlist_plan"] == "fh-project:/.fh-radio-studio/playlist_plan.json"
     assert migrated_package["timing_manifest"] == "fh-project:/analysis/build_timing_manifest.json"
     assert migrated_package["baseline_manifest"] == (
@@ -380,11 +402,16 @@ def test_migrate_project_paths_rewrites_010_durable_project_json(tmp_path: Path)
     assert radio["source_bank"] == (
         "fh-project:/backups/baseline-current/media/audio/FMODBanks/R4_Tracks.bank"
     )
+    assert radio["radio_code"] == "R4"
     assert radio["music"][0]["track_key"] == track_key
     assert "source" not in radio["music"][0]
     assert "path_key" not in radio["music"][0]
     assert radio["music"][0]["prepared_wav"] == "fh-project:/packages/current/work/prepared/1.wav"
     assert radio["assignments"][0]["track_key"] == track_key
+    assert radio["assignments"][0]["radio_code"] == "R4"
+    assert radio["assignments"][0]["playlist_type"] == "Event"
+    assert "radioCode" not in radio["assignments"][0]
+    assert "playlistType" not in radio["assignments"][0]
     assert "source" not in radio["assignments"][0]
     assert "path_key" not in radio["assignments"][0]
     assert radio["assignments"][0]["staged_wav"] == "fh-project:/packages/current/work/stage/1.wav"
@@ -421,9 +448,12 @@ def test_migrate_project_paths_rewrites_010_durable_project_json(tmp_path: Path)
         "fh-project:/packages/current/package/fh_radio_studio_package_manifest.json"
     )
     assert migrated_last_applied["package_root"] == "fh-project:/packages/current/package"
+    assert migrated_last_applied["radios"][0]["radio_code"] == "R4"
     assert migrated_last_applied["radios"][0]["music"][0]["track_key"] == track_key
     assert "source" not in migrated_last_applied["radios"][0]["music"][0]
     assert migrated_last_applied["radios"][0]["assignments"][0]["track_key"] == track_key
+    assert migrated_last_applied["radios"][0]["assignments"][0]["playlist_type"] == "Event"
+    assert "playlistType" not in migrated_last_applied["radios"][0]["assignments"][0]
     assert "source" not in migrated_last_applied["radios"][0]["assignments"][0]
 
     migrated_project = _read_json(project_json)

@@ -95,18 +95,21 @@ class PlaylistCatalog {
   }
 
   StationMode modeOf(String radioCode) {
-    return modes[radioCode] ?? StationMode.builtin;
+    final radio = canonicalRadioCode(radioCode);
+    return modes[radio] ?? StationMode.builtin;
   }
 
   StationMode modeOfList(String radioCode, String playlistType) {
+    final radio = canonicalRadioCode(radioCode);
     final type = PlaylistAssignment.normalizePlaylistType(playlistType);
-    return listModes[radioCode]?[type] ?? modeOf(radioCode);
+    return listModes[radio]?[type] ?? modeOf(radio);
   }
 
   List<TrackRef> tracksOfRadio(String radioCode, String playlistType) {
+    final radio = canonicalRadioCode(radioCode);
     final primary = playlistType == 'Event' ? eventTracks : freeRoamTracks;
     final fallback = playlistType == 'Event' ? freeRoamTracks : eventTracks;
-    return primary[radioCode] ?? fallback[radioCode] ?? const <TrackRef>[];
+    return primary[radio] ?? fallback[radio] ?? const <TrackRef>[];
   }
 
   String? sourceForTrack(TrackRef track) {
@@ -330,7 +333,7 @@ PlaylistCatalog? _readXmlCatalog(
       final number = _objectInt(station.getAttribute('Number'));
       final name = station.getAttribute('Name')?.trim() ?? '';
       final code = _radioCodeFor(number, name);
-      if (!isUiSupportedRadio(number: number, code: code, name: name)) {
+      if (!isUiSupportedRadio(name: name)) {
         continue;
       }
       final samples = _samplesBySoundName(station, code, packageSounds);
@@ -433,7 +436,7 @@ Map<String, Map<String, List<TrackRef>>> _baselineTracksByList(File? xmlFile) {
       final number = _objectInt(station.getAttribute('Number'));
       final name = station.getAttribute('Name')?.trim() ?? '';
       final code = _radioCodeFor(number, name);
-      if (!isUiSupportedRadio(number: number, code: code, name: name)) {
+      if (!isUiSupportedRadio(name: name)) {
         continue;
       }
       final samples = _samplesBySoundName(station, code, const {});
@@ -825,17 +828,7 @@ bool _tracksContainModded(List<TrackRef>? tracks) {
 }
 
 String _radioCodeFor(int? number, String station) {
-  final normalized = station.toLowerCase();
-  if (normalized.contains('horizon pulse')) return 'HOR';
-  if (normalized.contains('bass arena')) return 'BAS';
-  if (normalized.contains('block party')) return 'BLK';
-  if (normalized.contains('eurobeat')) return 'EUR';
-  if (normalized.contains('rocas')) return 'ROC';
-  if (normalized == 'xs' || normalized.contains('horizon xs')) return 'XS';
-  if (normalized.contains('timeless')) return 'TIM';
-  if (normalized.contains('mixmaster')) return 'MIX';
-  if (number != null) return 'R$number';
-  return station.trim().isEmpty ? 'R?' : station.trim();
+  return radioCodeForNumber(number, fallback: station);
 }
 
 String _radioHue(String code) {

@@ -50,9 +50,7 @@ def _diff_meta_key(title: str, artist: str) -> str:
 
 
 def is_ui_supported_radio(name: str) -> bool:
-    # Scope by station name only. The "Streamer Mode" station is the one we hide;
-    # its radio number is not a reliable key, so we never gate on R10 / Number.
-    return "streamer mode" not in name.strip().lower()
+    return name.strip().lower() != "streamer mode"
 
 
 def _radio_info_file_for_diff(

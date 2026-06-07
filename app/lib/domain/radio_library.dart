@@ -20,14 +20,24 @@ class RadioStation {
 
 enum StationMode { builtin, custom }
 
-bool isUiSupportedRadio({int? number, String? code, String? name}) {
-  final radioCode = code?.trim().toUpperCase();
-  final stationName = name?.trim().toLowerCase() ?? '';
-  if (number == 10 || radioCode == 'R10') return false;
-  if (stationName == 'streamer mode' || stationName.contains('streamer mode')) {
-    return false;
+String radioCodeForNumber(int? number, {String fallback = 'R?'}) {
+  if (number != null && number > 0) return 'R$number';
+  return fallback.trim().isEmpty ? 'R?' : fallback.trim().toUpperCase();
+}
+
+String canonicalRadioCode(String? code, {int? number, String? name}) {
+  if (number != null && number > 0) return radioCodeForNumber(number);
+  final raw = code?.trim().toUpperCase() ?? '';
+  if (raw.isEmpty) {
+    final fallback = name?.trim();
+    return fallback == null || fallback.isEmpty ? 'R?' : fallback;
   }
-  return true;
+  return raw;
+}
+
+/// Whether a radio should be offered in the UI / included in plans.
+bool isUiSupportedRadio({String? name}) {
+  return name?.trim().toLowerCase() != 'streamer mode';
 }
 
 class TrackRef {
@@ -147,72 +157,72 @@ class RecentProject {
 // ============================================================
 const List<RadioStation> kRadios = [
   RadioStation(
-    code: 'HOR',
+    code: 'R1',
     name: 'Horizon Pulse',
     hue: 'lime',
     genre: '电子 / 节拍',
     slot: 8,
   ),
   RadioStation(
-    code: 'BAS',
-    name: 'Bass Arena',
+    code: 'R2',
+    name: 'Horizon Bass Arena',
     hue: 'magenta',
     genre: 'Bass / DnB',
     slot: 6,
   ),
   RadioStation(
-    code: 'BLK',
-    name: 'Block Party',
+    code: 'R3',
+    name: 'Horizon Block Party',
     hue: 'orange',
     genre: 'Hip-hop',
     slot: 6,
   ),
   RadioStation(
-    code: 'EUR',
-    name: 'Eurobeat Express',
-    hue: 'cyan',
-    genre: 'Eurobeat',
-    slot: 4,
-  ),
-  RadioStation(
-    code: 'ROC',
-    name: 'Rocas Negras',
-    hue: 'red',
-    genre: 'Latin / Rock',
-    slot: 6,
-  ),
-  RadioStation(
-    code: 'XS',
-    name: 'XS',
+    code: 'R4',
+    name: 'Horizon XS',
     hue: 'violet',
     genre: 'Metal / Rock',
     slot: 6,
   ),
   RadioStation(
-    code: 'TIM',
-    name: 'Timeless FM',
+    code: 'R5',
+    name: 'Radio Eterna',
     hue: 'yellow',
     genre: 'Classics',
     slot: 8,
   ),
   RadioStation(
-    code: 'MIX',
-    name: 'Mixmaster',
+    code: 'R6',
+    name: 'Hospital Records',
     hue: 'teal',
+    genre: 'Drum & Bass',
+    slot: 6,
+  ),
+  RadioStation(
+    code: 'R7',
+    name: 'Future Classic',
+    hue: 'cyan',
+    genre: 'Electronic',
+    slot: 4,
+  ),
+  RadioStation(
+    code: 'R8',
+    name: 'Horizon Mixtape',
+    hue: 'red',
     genre: 'DJ Mix',
     slot: 4,
   ),
 ];
 
 const Map<String, StationMode> kStationModes = {
-  'HOR': StationMode.custom,
-  'BAS': StationMode.builtin,
-  'BLK': StationMode.custom,
-  'EUR': StationMode.builtin,
-  'ROC': StationMode.builtin,
-  'XS': StationMode.builtin,
-  'TIM': StationMode.builtin,
-  'MIX': StationMode.builtin,
+  'R1': StationMode.custom,
+  'R2': StationMode.builtin,
+  'R3': StationMode.custom,
+  'R4': StationMode.builtin,
+  'R5': StationMode.builtin,
+  'R6': StationMode.builtin,
+  'R7': StationMode.builtin,
+  'R8': StationMode.builtin,
 };
 
 // ============================================================
@@ -220,7 +230,7 @@ const Map<String, StationMode> kStationModes = {
 // （为了节省篇幅，只保留前几条；完整可对照 data.jsx 第 32 行起）
 // ============================================================
 const Map<String, List<TrackRef>> kTracks = {
-  'HOR': [
+  'R1': [
     TrackRef(
       id: 'hor-1',
       title: 'Aurora Coast',
@@ -271,7 +281,7 @@ const Map<String, List<TrackRef>> kTracks = {
       durationSec: 235.4,
     ),
   ],
-  'BAS': [
+  'R2': [
     TrackRef(
       id: 'bas-1',
       title: 'Subterrain',
@@ -309,7 +319,7 @@ const Map<String, List<TrackRef>> kTracks = {
       durationSec: 241.5,
     ),
   ],
-  'BLK': [
+  'R3': [
     TrackRef(
       id: 'blk-1',
       title: 'Block Party Anthem',
@@ -347,7 +357,7 @@ const Map<String, List<TrackRef>> kTracks = {
       durationSec: 208.6,
     ),
   ],
-  'EUR': [
+  'R7': [
     TrackRef(
       id: 'eur-1',
       title: 'Initial Charge',
@@ -373,7 +383,7 @@ const Map<String, List<TrackRef>> kTracks = {
       durationSec: 218.9,
     ),
   ],
-  'ROC': [
+  'R5': [
     TrackRef(
       id: 'roc-1',
       title: 'Brisa del Sur',
@@ -411,7 +421,7 @@ const Map<String, List<TrackRef>> kTracks = {
       durationSec: 244.2,
     ),
   ],
-  'XS': [
+  'R4': [
     TrackRef(
       id: 'xs-1',
       title: 'Iron Procession',
@@ -449,7 +459,7 @@ const Map<String, List<TrackRef>> kTracks = {
       durationSec: 226.0,
     ),
   ],
-  'TIM': [
+  'R6': [
     TrackRef(
       id: 'tim-1',
       title: 'Easy Cruiser',
@@ -499,7 +509,7 @@ const Map<String, List<TrackRef>> kTracks = {
       durationSec: 218.3,
     ),
   ],
-  'MIX': [
+  'R8': [
     TrackRef(
       id: 'mix-1',
       title: 'Studio Continuum',
@@ -541,7 +551,7 @@ const List<PoolTrack> kCustomPool = [
     key: 'F#m',
     configured: false,
     confirmed: 2,
-    assignedTo: 'HOR',
+    assignedTo: 'R1',
     slot: 1,
     added: '2 hours ago',
   ),
@@ -555,7 +565,7 @@ const List<PoolTrack> kCustomPool = [
     key: 'Bm',
     configured: true,
     confirmed: 4,
-    assignedTo: 'BLK',
+    assignedTo: 'R3',
     slot: 1,
     added: 'yesterday',
   ),
@@ -583,7 +593,7 @@ const List<PoolTrack> kCustomPool = [
     key: 'D',
     configured: true,
     confirmed: 4,
-    assignedTo: 'BLK',
+    assignedTo: 'R3',
     slot: 2,
     added: 'last week',
   ),
@@ -597,7 +607,7 @@ const List<PoolTrack> kCustomPool = [
     key: 'Am',
     configured: true,
     confirmed: 4,
-    assignedTo: 'HOR',
+    assignedTo: 'R1',
     slot: 2,
     added: 'last week',
   ),
@@ -611,7 +621,7 @@ const List<PoolTrack> kCustomPool = [
     key: 'G',
     configured: true,
     confirmed: 4,
-    assignedTo: 'HOR',
+    assignedTo: 'R1',
     slot: 3,
     added: 'last week',
   ),
@@ -639,7 +649,7 @@ const List<PoolTrack> kCustomPool = [
     key: 'C#m',
     configured: true,
     confirmed: 4,
-    assignedTo: 'HOR',
+    assignedTo: 'R1',
     slot: 4,
     added: 'last week',
   ),

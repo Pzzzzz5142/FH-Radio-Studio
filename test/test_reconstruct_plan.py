@@ -80,7 +80,7 @@ def test_reconstruct_resolves_changed_track_to_source(tmp_path: Path) -> None:
     types = {item["playlist_type"] for item in assignments}
     assert types == {"FreeRoam", "Event"}
     for item in assignments:
-        assert item["radio_code"] == "XS"
+        assert item["radio_code"] == "R4"
         assert item["slot"] == 1
         assert Path(str(item["source"])).name == "Local Artist - Diff Song.wav"
 
@@ -141,11 +141,10 @@ def test_reconstruct_skips_unchanged_radio(tmp_path: Path) -> None:
     assert assignments == []
 
 
-def test_is_ui_supported_radio_filters_streamer_by_name_only() -> None:
+def test_is_ui_supported_radio_filters_streamer_by_exact_name_only() -> None:
     assert is_ui_supported_radio("Horizon XS") is True
-    # Radio number is irrelevant; only the station name gates visibility.
-    assert is_ui_supported_radio("Streamer Mode") is False
     assert is_ui_supported_radio("  streamer mode  ") is False
+    assert is_ui_supported_radio("Streamer Mode Remix") is True
     assert is_ui_supported_radio("Anything") is True
 
 
@@ -178,7 +177,7 @@ def test_reconstruct_plan_command_writes_plan_file(tmp_path: Path) -> None:
     payload = json.loads(out_path.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 2
     assert len(payload["assignments"]) == 2
-    assert {item["radio_code"] for item in payload["assignments"]} == {"XS"}
+    assert {item["radio_code"] for item in payload["assignments"]} == {"R4"}
 
 
 def test_reconstruct_plan_command_emits_plan_on_stdout(tmp_path: Path) -> None:
@@ -212,6 +211,6 @@ def test_reconstruct_plan_command_emits_plan_on_stdout(tmp_path: Path) -> None:
     payload = json.loads(plan_lines[0][len(prefix) :])
     assert payload["schema_version"] == 2
     assert len(payload["assignments"]) == 2
-    assert {item["radio_code"] for item in payload["assignments"]} == {"XS"}
+    assert {item["radio_code"] for item in payload["assignments"]} == {"R4"}
     # The human summary goes to stderr so it never corrupts the stdout JSON line.
     assert "Assignments" in result.stderr

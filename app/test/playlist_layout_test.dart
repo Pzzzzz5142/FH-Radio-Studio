@@ -23,7 +23,7 @@ void main() {
     await _pumpPlaylist(tester, const Size(1365, 900));
 
     final poolPanel = find.byKey(const ValueKey('playlist-pool-side-panel'));
-    final firstRadio = find.byKey(const ValueKey('playlist-radio-column-HOR'));
+    final firstRadio = find.byKey(const ValueKey('playlist-radio-column-R1'));
 
     expect(poolPanel, findsOneWidget);
     expect(firstRadio, findsOneWidget);
@@ -45,8 +45,8 @@ void main() {
     await _pumpPlaylist(tester, const Size(720, 900));
 
     final poolPanel = find.byKey(const ValueKey('playlist-pool-side-panel'));
-    final firstRadio = find.byKey(const ValueKey('playlist-radio-column-HOR'));
-    final secondRadio = find.byKey(const ValueKey('playlist-radio-column-BAS'));
+    final firstRadio = find.byKey(const ValueKey('playlist-radio-column-R1'));
+    final secondRadio = find.byKey(const ValueKey('playlist-radio-column-R2'));
 
     expect(poolPanel, findsOneWidget);
     expect(firstRadio, findsOneWidget);
@@ -86,7 +86,7 @@ void main() {
       await _pumpPlaylist(tester, const Size(1365, 900));
 
       final builtinList = find.descendant(
-        of: find.byKey(const ValueKey('playlist-radio-column-BAS')),
+        of: find.byKey(const ValueKey('playlist-radio-column-R2')),
         matching: find.byType(ListView),
       );
 

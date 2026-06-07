@@ -914,24 +914,7 @@ def collect_music_inputs(inputs: List[str]) -> List[Path]:
 
 
 def radio_code_for_station(radio: int, name: str) -> str:
-    normalized = name.lower()
-    if "horizon pulse" in normalized:
-        return "HOR"
-    if "bass arena" in normalized:
-        return "BAS"
-    if "block party" in normalized:
-        return "BLK"
-    if "eurobeat" in normalized:
-        return "EUR"
-    if "rocas" in normalized:
-        return "ROC"
-    if normalized == "xs" or "horizon xs" in normalized:
-        return "XS"
-    if "timeless" in normalized:
-        return "TIM"
-    if "mixmaster" in normalized:
-        return "MIX"
-    return f"R{radio}"
+    return f"R{radio}" if radio > 0 else "R?"
 
 
 def normalize_playlist_type(value: object) -> str:
@@ -1203,8 +1186,6 @@ def station_number_by_code(root: ET.Element) -> Dict[str, int]:
         number = safe_int(station.get("Number"), 0)
         if number <= 0:
             continue
-        code = radio_code_for_station(number, station.get("Name", ""))
-        out[code] = number
         out[f"R{number}"] = number
     return out
 
@@ -1277,15 +1258,10 @@ def load_playlist_plan_builtin_targets(
     code_to_number = station_number_by_code(root)
     grouped: Dict[int, set[str]] = {}
     for item in items:
-        if isinstance(item, str):
-            parts = item.split("|")
-            raw_radio = parts[0].strip().upper() if parts else ""
-            raw_type = parts[1] if len(parts) > 1 else "FreeRoam"
-        elif isinstance(item, dict):
-            raw_radio = str(item.get("radio_code") or item.get("radioCode") or "").strip().upper()
-            raw_type = item.get("playlist_type") or item.get("playlistType") or "FreeRoam"
-        else:
+        if not isinstance(item, dict):
             continue
+        raw_radio = str(item.get("radio_code") or "").strip().upper()
+        raw_type = item.get("playlist_type") or "FreeRoam"
         if not raw_radio:
             continue
         radio = _resolve_playlist_plan_radio(raw_radio, code_to_number)
@@ -1328,7 +1304,7 @@ def load_playlist_plan_groups(
             continue
         raw_track_key = str(item.get("track_key") or "").strip()
         raw_source = str(item.get("source") or "").strip()
-        raw_radio = str(item.get("radio_code") or item.get("radioCode") or "").strip().upper()
+        raw_radio = str(item.get("radio_code") or "").strip().upper()
         if not raw_radio:
             continue
         radio = _resolve_playlist_plan_radio(raw_radio, code_to_number)
@@ -1357,9 +1333,7 @@ def load_playlist_plan_groups(
             continue
         if not source.is_file():
             die(f"Playlist plan music source not found: {source}")
-        playlist_type = normalize_playlist_type(
-            item.get("playlist_type") or item.get("playlistType") or "FreeRoam"
-        )
+        playlist_type = normalize_playlist_type(item.get("playlist_type") or "FreeRoam")
         key = source_key(source)
         dedupe_key = (radio, key, playlist_type)
         if dedupe_key in seen:
@@ -1473,11 +1447,7 @@ def load_playlist_groups_from_package(
                 continue
             if assignment.get("playlist_entry") is False:
                 continue
-            raw_radio = (
-                str(assignment.get("radio_code") or assignment.get("radioCode") or unit_code or "")
-                .strip()
-                .upper()
-            )
+            raw_radio = str(assignment.get("radio_code") or unit_code or "").strip().upper()
             radio = code_to_number.get(raw_radio) if raw_radio else unit_radio
             if radio is None and raw_radio.startswith("R"):
                 radio = safe_int(raw_radio[1:], 0) or None
@@ -1832,7 +1802,6 @@ def build_radio_package_unit(
 
     return {
         "radio": radio,
-        "radio_code": radio_code_for_station(radio, station.get("Name", "")),
         "station": station.get("Name"),
         "source_bank": _project_path_for_manifest(args, target_bank),
         "target_bank_name": target_bank.name,
@@ -2068,7 +2037,6 @@ def cmd_build_current_radio_package(
         "source_radio_info": _project_path_for_manifest(args, radio_info),
         "playlist_plan": None,
         "radio": args.radio,
-        "radio_code": radio_code_for_station(args.radio, station.get("Name", "")),
         "station": station.get("Name"),
         "source_bank": _project_path_for_manifest(args, target_bank),
         "target_bank_name": target_bank.name,
@@ -2083,7 +2051,6 @@ def cmd_build_current_radio_package(
         "radios": [
             {
                 "radio": args.radio,
-                "radio_code": radio_code_for_station(args.radio, station.get("Name", "")),
                 "station": station.get("Name"),
                 "source_bank": _project_path_for_manifest(args, target_bank),
                 "target_bank_name": target_bank.name,
@@ -2212,7 +2179,6 @@ def cmd_build_baseline_restore_package(
             restored_units.append(
                 {
                     "radio": radio,
-                    "radio_code": radio_code_for_station(radio, station.get("Name", "")),
                     "station": station.get("Name"),
                     "source_bank": _project_path_for_manifest(args, target_bank),
                     "_runtime_source_bank": str(target_bank),
@@ -2275,7 +2241,6 @@ def cmd_build_baseline_restore_package(
         "restored_radios": [
             {
                 "radio": item["radio"],
-                "radio_code": item["radio_code"],
                 "station": item["station"],
                 "playlist_types": item.get("restored_playlist_types") or [],
             }
@@ -2559,10 +2524,6 @@ def cmd_build_package_from_plan(
         package_manifest["restored_radios"] = [
             {
                 "radio": int(target["radio"]),
-                "radio_code": radio_code_for_station(
-                    int(target["radio"]),
-                    find_station(root, int(target["radio"])).get("Name", ""),
-                ),
                 "station": find_station(root, int(target["radio"])).get("Name"),
                 "playlist_types": list(target.get("playlist_types") or []),
             }
@@ -2852,7 +2813,6 @@ def cmd_build_package(args: argparse.Namespace) -> int:
 
     radio_package = {
         "radio": args.radio,
-        "radio_code": radio_code_for_station(args.radio, station.get("Name", "")),
         "station": station.get("Name"),
         "source_bank": _project_path_for_manifest(args, target_bank),
         "target_bank_name": target_bank.name,
@@ -2872,7 +2832,6 @@ def cmd_build_package(args: argparse.Namespace) -> int:
         **_package_game_version_fields(game_dir),
         "source_audio_dir": _project_path_for_manifest(args, audio_dir),
         "radio": args.radio,
-        "radio_code": radio_package["radio_code"],
         "station": station.get("Name"),
         "source_radio_info": _project_path_for_manifest(args, radio_info),
         "source_bank": _project_path_for_manifest(args, target_bank),

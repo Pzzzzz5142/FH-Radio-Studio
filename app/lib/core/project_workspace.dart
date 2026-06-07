@@ -21,6 +21,16 @@ class FhRadioStudioProject {
     '.m4a',
     '.aac',
   };
+  static const _legacyRadioCodes = {
+    'HOR',
+    'BAS',
+    'BLK',
+    'XS',
+    'ROC',
+    'TIM',
+    'EUR',
+    'MIX',
+  };
 
   static String defaultProjectDir() {
     return p.join(_homeDir(), defaultFolderName);
@@ -128,7 +138,8 @@ class FhRadioStudioProject {
       final decoded = jsonDecode(manifest.readAsStringSync(encoding: utf8));
       if (decoded is! Map) return true;
       if (decoded['path_schema'] != 2) return true;
-      return _hasLegacyProjectPathReferences(projectDir);
+      return _hasLegacyProjectPathReferences(projectDir) ||
+          _hasLegacyPlaylistSchemaReferences(projectDir);
     } on FormatException {
       return true;
     } on FileSystemException {
@@ -293,6 +304,44 @@ class FhRadioStudioProject {
   static String _pathKey(String path) => canonicalPathKey(path);
 
   static bool _hasLegacyProjectPathReferences(String projectDir) {
+    for (final file in _projectMigrationJsonFiles(projectDir)) {
+      if (!file.existsSync()) continue;
+      try {
+        final decoded = jsonDecode(file.readAsStringSync(encoding: utf8));
+        if (_containsLegacyProjectPath(
+          projectDir,
+          decoded,
+          projectJsonPathFields,
+        )) {
+          return true;
+        }
+      } on FormatException {
+        continue;
+      } on FileSystemException {
+        continue;
+      }
+    }
+    return false;
+  }
+
+  static bool _hasLegacyPlaylistSchemaReferences(String projectDir) {
+    for (final file in _projectMigrationJsonFiles(projectDir)) {
+      if (!file.existsSync()) continue;
+      try {
+        final decoded = jsonDecode(file.readAsStringSync(encoding: utf8));
+        if (_containsLegacyPlaylistSchema(decoded)) {
+          return true;
+        }
+      } on FormatException {
+        continue;
+      } on FileSystemException {
+        continue;
+      }
+    }
+    return false;
+  }
+
+  static List<File> _projectMigrationJsonFiles(String projectDir) {
     final files = <File>[
       File(p.join(metadataDir(projectDir), 'track_metadata.json')),
       File(p.join(metadataDir(projectDir), 'playlist_plan.json')),
@@ -327,24 +376,7 @@ class FhRadioStudioProject {
       }
     }
 
-    for (final file in files) {
-      if (!file.existsSync()) continue;
-      try {
-        final decoded = jsonDecode(file.readAsStringSync(encoding: utf8));
-        if (_containsLegacyProjectPath(
-          projectDir,
-          decoded,
-          projectJsonPathFields,
-        )) {
-          return true;
-        }
-      } on FormatException {
-        continue;
-      } on FileSystemException {
-        continue;
-      }
-    }
-    return false;
+    return files;
   }
 
   static bool _containsLegacyProjectPath(
@@ -385,5 +417,49 @@ class FhRadioStudioProject {
       Directory(projectDir).absolute.path,
       File(value).absolute.path,
     );
+  }
+
+  static bool _containsLegacyPlaylistSchema(Object? value) {
+    if (value is Map) {
+      for (final entry in value.entries) {
+        final key = '${entry.key}';
+        if (key == 'radioCode' || key == 'playlistType') {
+          return true;
+        }
+        if (key == 'radio_code' && _isLegacyRadioCode(entry.value)) {
+          return true;
+        }
+        if (key == 'builtin_targets' &&
+            _containsLegacyBuiltinTarget(entry.value)) {
+          return true;
+        }
+        if (_containsLegacyPlaylistSchema(entry.value)) {
+          return true;
+        }
+      }
+    } else if (value is List) {
+      for (final item in value) {
+        if (_containsLegacyPlaylistSchema(item)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  static bool _containsLegacyBuiltinTarget(Object? value) {
+    if (value is List) {
+      return value.any(_containsLegacyBuiltinTarget);
+    }
+    if (value is Map) {
+      return _containsLegacyPlaylistSchema(value);
+    }
+    if (value is! String) return false;
+    return value.trim().isNotEmpty;
+  }
+
+  static bool _isLegacyRadioCode(Object? value) {
+    if (value is! String) return false;
+    return _legacyRadioCodes.contains(value.trim().toUpperCase());
   }
 }

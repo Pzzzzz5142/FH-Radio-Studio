@@ -39,9 +39,12 @@
   Dart `playlistPlanProvider` and is never persisted to a shared file. The CLI's
   file-path modes (`--out <path>` / `--playlist-plan <path>`) remain for
   compatibility. See `docs/design-decisions.md`.
-- Dart helpers like `isUiSupportedRadio` / `_radioAssignmentLabel` are for
-  presentation only; keep their authoritative counterparts
-  (`is_ui_supported_radio`, `radio_code_for_station`) in the CLI.
+- Reconstruction-time radio scoping is authoritative in the CLI
+  (`is_ui_supported_radio`); the Dart `isUiSupportedRadio` mirror only hides a
+  station when rendering CLI output. Both gate on the station name (exact
+  `streamer mode`) only — never on radio number / `R10`. Radio codes are
+  canonical `R{Number}`; legacy abbreviations (`HOR`/`XS`/…) survive only in the
+  migration step.
 
 ## AI Timepoint Debugging
 

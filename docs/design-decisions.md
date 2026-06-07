@@ -4,6 +4,18 @@ This file records notable architectural decisions and the reasoning behind them.
 Newest entries go on top. Keep each entry short: what was decided, why, and what
 it implies for future work.
 
+## 2026-06-07 — 电台标识统一为 `R{number}`，过滤只按电台名
+
+**决策。** 电台规范标识是 `R{Number}`（直接由 RadioInfo 的 `Number` 派生），不再使用 legacy 名称缩写（`HOR`/`BAS`/`XS`/…）。legacy 缩写只在一次性 migration 中映射回 `R{n}`。电台可见性（隐藏 “Streamer Mode”）只按电台名精确匹配 `streamer mode` 判断，绝不按电台号 / `R10`。
+
+**原因。** 缩写码无法从游戏数据稳定派生，曾导致 App 与 CLI 两套命名漂移；Streamer Mode 的 `Number` 也不可靠。把标识收敛到 `R{Number}`、把过滤收敛到名字，可以删掉所有基于 code/number 的特判。
+
+**影响。**
+- `is_ui_supported_radio(name)` / `isUiSupportedRadio(name:)` 是唯一过滤入口，参数只剩 `name`；`R10` / `number == 10` 特判已删除。精确匹配，`"Streamer Mode Remix"` 不会被隐藏。
+- package 构建 manifest 用整数 `radio`（+ `station`）表示电台身份，不再冗余输出派生的 `radio_code`。`radio_code`（`R{n}`）仍是 App playlist plan（`reconstruct-plan` 输出 / `build-package` 输入）的标识，CLI 在该边界用 `station_number_by_code` 做 `radio_code ↔ Number` 翻译。
+- App 读 package unit 时若缺 `radio_code`，`readPackageUnit` 从整数 `radio` 派生 `R{n}` 兜底。
+- legacy 缩写码的唯一归宿是 migration（`migration.py` 的 `_LEGACY_RADIO_CODES`）和迁移检测（`project_workspace.dart` 的 `_legacyRadioCodes`）。
+
 ## 2026-06-01 — 项目内路径使用 `fh-project:/` 引用
 
 **决策。** 项目拥有的文件应持久化为 `fh-project:/...` 引用，而不是操作系统绝对路径。规范格式是 `fh-project:/sources/foo.flac`，运行时基于当前打开的项目目录解析。曲目 key 应从规范 `source_ref` 确定性派生，避免依赖项目根目录绝对路径。详见 [项目路径引用设计]。
@@ -69,11 +81,11 @@ mechanism in Dart that could drift out of sync with the CLI's resolution rules.
 - `reconstruct-plan` emits the same schema_version 2 document (`assignments` +
   `builtin_targets`) the build consumes, so the reconstructed plan stays an
   editable draft in the playlist screen.
-- Radio scoping (`is_ui_supported_radio`) and radio-code labeling
-  (`radio_code_for_station`) now have one canonical home in the CLI; the Dart
-  `isUiSupportedRadio` / `_radioAssignmentLabel` helpers remain only for purely
-  presentational use, not for reconstruction. Station visibility is gated by
-  name only (the "Streamer Mode" station), never by radio number / `R10`.
+- Radio scoping (`is_ui_supported_radio`) lives canonically in the CLI; the Dart
+  `isUiSupportedRadio` mirror is applied only when consuming CLI output to hide a
+  station in the UI, not for reconstruction. Station visibility is gated by name
+  only (exact `streamer mode`), never by radio number / `R10`. Radio codes are
+  canonical `R{Number}` — see the 2026-06-07 entry.
 - Package build inputs always come from the project (`sources` / `siren`) plus a
   playlist plan, never from a prepared package directory — the prepared package
   is the build output dir and is cleared before each build. When a rebuild needs

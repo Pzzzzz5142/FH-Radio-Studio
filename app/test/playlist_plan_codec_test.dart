@@ -7,7 +7,7 @@ void main() {
       final plan = const PlaylistPlan.empty()
           .assign(
             source: r'C:\proj\sources\a.wav',
-            radioCode: 'XS',
+            radioCode: 'R4',
             playlistType: 'FreeRoam',
             slot: 1,
           )
@@ -43,7 +43,7 @@ void main() {
       final encoded = const PlaylistPlan.empty()
           .assign(
             source: r'C:\proj\sources\a.wav',
-            radioCode: 'XS',
+            radioCode: 'R4',
             playlistType: 'FreeRoam',
             slot: 1,
           )
