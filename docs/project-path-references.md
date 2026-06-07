@@ -272,7 +272,7 @@ write_json(path, payload)
 - `app/lib/core/playlist_plan.dart`
   - `PlaylistAssignment.toJson()` 写 `assignments[].source`。
   - `encodeForCli()` 把 playlist draft 通过 stdin 传给 CLI，仍携带 `source`。
-  - `PlaylistPlanStore` 保留 legacy `.fh-radio-studio/playlist_plan.json` 读写兼容。
+  - `PlaylistPlanStore` 保留 `.fh-radio-studio/playlist_plan.json` 路径读/删兼容，但只消费已迁移/current schema；旧字段由项目迁移负责归一化。
   - `_normalizeProjectSource` 会把 legacy source 规整成本机绝对路径。
   - migration 后 playlist 记录应引用 `track_key`；CLI build 前再通过资产索引解析到运行时绝对路径。正常读取不得回退到 `assignments[].source` 中的项目内绝对路径。
 - `app/lib/core/track_timing_config.dart`
