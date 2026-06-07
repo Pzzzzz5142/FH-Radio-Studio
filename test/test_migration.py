@@ -3,8 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree as ET
 
 from backend.fh_radio_studio_cli.migration import migrate_project_paths
+from backend.fh_radio_studio_cli.package import (
+    load_playlist_plan_builtin_targets,
+    load_playlist_plan_groups,
+)
 from backend.fh_radio_studio_cli.project_refs import track_key_for_project_path
 
 
@@ -462,6 +467,68 @@ def test_migrate_project_paths_rewrites_010_durable_project_json(tmp_path: Path)
     assert migrated_project["current_project_dir"] == str(project.resolve())
     assert migrated_project["settings"]["game_dir"] == str(external_game)
     assert migrated_project["settings"]["preferred_path"] == str(external_target_table)
+
+
+def test_migrated_playlist_plan_is_runtime_file_contract(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source = project / "sources" / "Song.wav"
+    playlist = project / ".fh-radio-studio" / "playlist_plan.json"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"not-a-real-wav")
+    _write_json(
+        playlist,
+        {
+            "schema_version": 2,
+            "assignments": [
+                {
+                    "source": str(source),
+                    "radioCode": "XS",
+                    "playlistType": "Event",
+                    "slot": 2,
+                }
+            ],
+            "builtin_targets": [
+                "HOR|FreeRoam",
+                {"radioCode": "XS", "playlistType": "Event"},
+            ],
+        },
+    )
+
+    assert migrate_project_paths(project) > 0
+
+    migrated = _read_json(playlist)
+    assert migrated["assignments"] == [
+        {
+            "track_key": track_key_for_project_path(project, source),
+            "radio_code": "R4",
+            "playlist_type": "Event",
+            "slot": 2,
+        }
+    ]
+    assert migrated["builtin_targets"] == [
+        {"radio_code": "R1", "playlist_type": "FreeRoam"},
+        {"radio_code": "R4", "playlist_type": "Event"},
+    ]
+
+    root = ET.fromstring("""
+        <RadioInfo>
+          <RadioStations>
+            <RadioStation Number="1" Name="Horizon Pulse" />
+            <RadioStation Number="4" Name="Horizon XS" />
+          </RadioStations>
+        </RadioInfo>
+        """)
+    assert load_playlist_plan_builtin_targets(str(playlist), root) == [
+        {"radio": 1, "playlist_types": ["FreeRoam"]},
+        {"radio": 4, "playlist_types": ["Event"]},
+    ]
+    groups = load_playlist_plan_groups(str(playlist), root, project_dir=project)
+    assert len(groups) == 1
+    assert groups[0]["radio"] == 4
+    assert groups[0]["sources"] == [source]
+    source_key = next(iter(groups[0]["playlist_types_by_source"]))
+    assert groups[0]["playlist_types_by_source"][source_key] == ["Event"]
+    assert groups[0]["playlist_slots_by_source"][source_key] == {"Event": 2}
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:

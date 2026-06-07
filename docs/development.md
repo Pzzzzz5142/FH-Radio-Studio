@@ -110,7 +110,7 @@ uv run fh-radio-studio deploy-package ".\work\packages\current\package" `
 
 Package manifests use the `radios` shape. Summary and product metadata stays at the top level; per-radio payload lives under `radios`.
 
-Playlist drafts are owned by the Flutter in-memory `playlistPlanProvider`; UI/CLI exchange uses `reconstruct-plan --out -` and `build-package --playlist-plan -`. `.fh-radio-studio/playlist_plan.json` is legacy read/delete compatibility only.
+Playlist drafts are owned by the Flutter in-memory `playlistPlanProvider`; UI/CLI exchange uses `reconstruct-plan --out -` and `build-package --playlist-plan -`. `.fh-radio-studio/playlist_plan.json` is read/delete compatibility for already-migrated/current-schema files only; old schema fields must be normalized by project migration before runtime readers consume the plan.
 
 Language changes are packaged through `build-package --source ... --target ...` and written by `deploy-package`.
 
