@@ -152,6 +152,39 @@ void main() {
     expect(find.text('24 / 25'), findsNothing);
   });
 
+  testWidgets('playlist pool column builds large lists lazily', (tester) async {
+    var built = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildAppTheme(
+          brightness: Brightness.light,
+          accent: AppAccent.lime,
+        ),
+        home: Scaffold(
+          body: SizedBox(
+            width: 320,
+            height: 560,
+            child: PlaylistColumn.poolBuilder(
+              count: 400,
+              isDragOver: false,
+              itemCount: 400,
+              itemBuilder: (context, index) {
+                built += 1;
+                return SizedBox(height: 48, child: Text('pool item $index'));
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(built, lessThan(400));
+    expect(find.text('pool item 0'), findsOneWidget);
+    expect(find.text('pool item 399'), findsNothing);
+  });
+
   testWidgets('RmPanel keeps compact header actions right aligned', (
     tester,
   ) async {

@@ -50,13 +50,18 @@ class PlaylistState {
   }
 
   List<PoolTrack> poolForDisplay(PlaylistPlan plan) {
+    final assignedTrackKeys = _assignedTrackKeys(plan);
     final indexed = <({int index, PoolTrack track})>[
       for (var index = 0; index < pool.length; index += 1)
         (index: index, track: pool[index]),
     ];
     indexed.sort((a, b) {
-      final aAssigned = plan.assignmentsForPath(a.track.source).isNotEmpty;
-      final bAssigned = plan.assignmentsForPath(b.track.source).isNotEmpty;
+      final aAssigned = assignedTrackKeys.contains(
+        PlaylistAssignment.keyForPath(a.track.source),
+      );
+      final bAssigned = assignedTrackKeys.contains(
+        PlaylistAssignment.keyForPath(b.track.source),
+      );
       if (aAssigned != bAssigned) return aAssigned ? 1 : -1;
       final byCompleteness = _configurationCompleteness(
         b.track,
@@ -86,6 +91,18 @@ class PlaylistState {
       splitPlaylistTypes: splitPlaylistTypes ?? this.splitPlaylistTypes,
     );
   }
+}
+
+Set<String> _assignedTrackKeys(PlaylistPlan plan) {
+  final keys = <String>{};
+  for (final assignment in plan.assignments.values) {
+    if (!assignment.isAssigned) continue;
+    if (assignment.trackKey.isNotEmpty) keys.add(assignment.trackKey);
+    if (assignment.source.trim().isNotEmpty) {
+      keys.add(PlaylistAssignment.keyForPath(assignment.source));
+    }
+  }
+  return keys;
 }
 
 PoolTrack? _poolTrackForSource(List<PoolTrack> pool, String source) {

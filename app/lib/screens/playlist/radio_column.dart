@@ -25,7 +25,18 @@ class PlaylistColumn extends StatefulWidget {
     required this.children,
     required this.isDragOver,
     this.emptyText,
-  });
+  }) : itemCount = children.length,
+       itemBuilder = null;
+
+  const PlaylistColumn.builder({
+    super.key,
+    required this.kind,
+    required this.header,
+    required this.itemCount,
+    required this.itemBuilder,
+    required this.isDragOver,
+    this.emptyText,
+  }) : children = const [];
 
   /// 普通电台列 (custom or builtin)
   factory PlaylistColumn.radio({
@@ -66,9 +77,27 @@ class PlaylistColumn extends StatefulWidget {
     );
   }
 
+  factory PlaylistColumn.poolBuilder({
+    required int count,
+    required bool isDragOver,
+    required int itemCount,
+    required IndexedWidgetBuilder itemBuilder,
+  }) {
+    return PlaylistColumn.builder(
+      kind: ColumnKind.pool,
+      isDragOver: isDragOver,
+      header: _PoolHeader(count: count),
+      emptyText: '没有导入歌曲',
+      itemCount: itemCount,
+      itemBuilder: itemBuilder,
+    );
+  }
+
   final ColumnKind kind;
   final Widget header;
   final List<Widget> children;
+  final int itemCount;
+  final IndexedWidgetBuilder? itemBuilder;
   final bool isDragOver;
   final String? emptyText;
 
@@ -160,16 +189,22 @@ class _PlaylistColumnState extends State<PlaylistColumn> {
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.all(8),
-                  child: widget.children.isEmpty
+                  child: widget.itemCount == 0
                       ? _empty(context)
                       : ListView.separated(
                           primary: false,
                           physics: builtin && !_ctrlPressed
                               ? const NeverScrollableScrollPhysics()
                               : const ClampingScrollPhysics(),
-                          itemCount: widget.children.length,
+                          itemCount: widget.itemCount,
                           separatorBuilder: (_, _) => const SizedBox(height: 4),
-                          itemBuilder: (_, i) => widget.children[i],
+                          itemBuilder: (context, i) {
+                            final itemBuilder = widget.itemBuilder;
+                            if (itemBuilder != null) {
+                              return itemBuilder(context, i);
+                            }
+                            return widget.children[i];
+                          },
                         ),
                 ),
               ),

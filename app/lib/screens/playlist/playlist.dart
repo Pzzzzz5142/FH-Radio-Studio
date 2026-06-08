@@ -35,9 +35,6 @@ class PlaylistScreen extends ConsumerStatefulWidget {
 }
 
 class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
-  String? _dragOverRadio;
-  bool _dragOverPool = false;
-
   bool _matches(PlaylistState s, PoolTrack t) {
     final q = s.search.trim().toLowerCase();
     if (q.isEmpty) return true;
@@ -1028,7 +1025,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     final replaceableCapacity = baselineTrackRefs?.length ?? r.slot;
     final capacity = isCustom ? replaceableCapacity : originalTrackCount;
 
-    Widget buildColumn() {
+    Widget buildColumn({required bool isDragOver}) {
       final children = <Widget>[];
       if (isCustom) {
         if (!readOnly && (customTracks.isNotEmpty || draftCustom)) {
@@ -1073,7 +1070,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
         isCustom: isCustom,
         count: count,
         capacity: capacity,
-        isDragOver: _dragOverRadio == r.code,
+        isDragOver: isDragOver,
         onRestoreBuiltin: !readOnly && !editingLocked && isCustom
             ? () => unawaited(_restoreBuiltin(r, playlistType, customTracks))
             : null,
@@ -1081,23 +1078,19 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
       );
     }
 
-    if (readOnly || editingLocked) return buildColumn();
+    if (readOnly || editingLocked) return buildColumn(isDragOver: false);
 
     return DragTarget<_PlaylistDragData>(
       onWillAcceptWithDetails: (details) {
-        final canAccept = _canAcceptTrack(
+        return _canAcceptTrack(
           details.data,
           r,
           plan,
           playlistType,
           replaceableCapacity,
         );
-        if (canAccept) setState(() => _dragOverRadio = r.code);
-        return canAccept;
       },
-      onLeave: (_) => setState(() => _dragOverRadio = null),
       onAcceptWithDetails: (details) {
-        setState(() => _dragOverRadio = null);
         _assign(
           details.data,
           r,
@@ -1108,7 +1101,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
         );
       },
       builder: (context, candidate, rejected) {
-        return buildColumn();
+        return buildColumn(isDragOver: candidate.isNotEmpty);
       },
     );
   }
@@ -1177,53 +1170,95 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     PlaylistPlan plan,
     StudioState cli,
   ) {
-    final column = PlaylistColumn.pool(
-      count: pool.length,
-      isDragOver: _dragOverPool,
-      children: [
-        for (final t in pool)
-          _draggableTrack(
-            t,
-            assignmentLabels: _assignmentLabels(t, plan, s),
+    final assignmentLabelsByTrackKey = _assignmentLabelsByTrackKey(plan, s);
+    Widget buildColumn({required bool isDragOver}) {
+      return PlaylistColumn.poolBuilder(
+        count: pool.length,
+        isDragOver: isDragOver,
+        itemCount: pool.length,
+        itemBuilder: (context, index) {
+          final track = pool[index];
+          final trackKey = PlaylistAssignment.keyForPath(track.source);
+          return _draggableTrack(
+            track,
+            assignmentLabels: assignmentLabelsByTrackKey[trackKey] ?? const [],
             locked: cli.projectEditingLocked,
-          ),
-      ],
-    );
+          );
+        },
+      );
+    }
+
+    final column = buildColumn(isDragOver: false);
     if (cli.projectEditingLocked) return column;
 
     return DragTarget<_PlaylistDragData>(
       onWillAcceptWithDetails: (_) {
-        setState(() => _dragOverPool = true);
         return true;
       },
-      onLeave: (_) => setState(() => _dragOverPool = false),
       onAcceptWithDetails: (details) {
-        setState(() => _dragOverPool = false);
         unawaited(_handlePoolDrop(context, s, catalog, plan, details.data));
       },
       builder: (context, candidate, rejected) {
-        return column;
+        return buildColumn(isDragOver: candidate.isNotEmpty);
       },
     );
   }
 
-  List<String> _assignmentLabels(
-    PoolTrack t,
+  Map<String, List<String>> _assignmentLabelsByTrackKey(
     PlaylistPlan plan,
     PlaylistState s,
   ) {
-    final assignments = plan.assignmentsForPath(t.source);
-    if (s.splitPlaylistTypes) {
-      return [for (final assignment in assignments) assignment.listLabel];
-    }
-    final labels = <String>[];
-    final seen = <String>{};
+    final labelsByTrackKey = <String, List<String>>{};
+    final seenByTrackKey = <String, Set<String>>{};
+    final assignments =
+        plan.assignments.values
+            .where((assignment) => assignment.isAssigned)
+            .toList()
+          ..sort(_compareAssignmentsForDisplay);
+
     for (final assignment in assignments) {
-      final key = '${assignment.radioCode}|${assignment.slot}';
-      if (!seen.add(key)) continue;
-      labels.add('${assignment.radioCode} · ${assignment.slot}');
+      final label = s.splitPlaylistTypes
+          ? assignment.listLabel
+          : '${assignment.radioCode} · ${assignment.slot}';
+      final dedupeKey = s.splitPlaylistTypes
+          ? label
+          : '${assignment.radioCode}|${assignment.slot}';
+      for (final trackKey in _assignmentTrackKeys(assignment)) {
+        final seen = seenByTrackKey.putIfAbsent(trackKey, () => <String>{});
+        if (!seen.add(dedupeKey)) continue;
+        labelsByTrackKey.putIfAbsent(trackKey, () => <String>[]).add(label);
+      }
     }
-    return labels;
+
+    return labelsByTrackKey;
+  }
+
+  Set<String> _assignmentTrackKeys(PlaylistAssignment assignment) {
+    final keys = <String>{};
+    if (assignment.trackKey.isNotEmpty) keys.add(assignment.trackKey);
+    if (assignment.source.trim().isNotEmpty) {
+      keys.add(PlaylistAssignment.keyForPath(assignment.source));
+    }
+    return keys;
+  }
+
+  int _compareAssignmentsForDisplay(
+    PlaylistAssignment a,
+    PlaylistAssignment b,
+  ) {
+    final byRadio = a.radioCode.compareTo(b.radioCode);
+    if (byRadio != 0) return byRadio;
+    final byType = _playlistTypeSortKey(
+      a.playlistType,
+    ).compareTo(_playlistTypeSortKey(b.playlistType));
+    if (byType != 0) return byType;
+    final bySlot = a.slot.compareTo(b.slot);
+    if (bySlot != 0) return bySlot;
+    return a.source.toLowerCase().compareTo(b.source.toLowerCase());
+  }
+
+  int _playlistTypeSortKey(String type) {
+    return PlaylistAssignment.normalizePlaylistType(type) == 'FreeRoam' ? 0 : 1;
   }
 
   Widget _draggableTrack(
