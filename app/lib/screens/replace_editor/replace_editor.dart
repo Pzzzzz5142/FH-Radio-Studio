@@ -170,6 +170,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       if (!mounted) return;
       _hotkeysFocus.requestFocus();
       _startInitialAnalysis();
+      unawaited(_warmUpAudio());
     });
   }
 
@@ -189,6 +190,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
           .read(replaceEditorProvider(widget.trackId).notifier)
           .setPlayback(PlaybackMode.idle, playing: false);
       _startInitialAnalysis();
+      unawaited(_warmUpAudio());
     });
   }
 
@@ -1247,6 +1249,17 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     unawaited(n.analyze());
   }
 
+  Future<void> _warmUpAudio() async {
+    if (!widget.enableAudio) return;
+    final state = ref.read(replaceEditorProvider(widget.trackId));
+    if (state.track.source.trim().isEmpty) return;
+    await _ensureAudioLoaded(
+      state,
+      ref.read(replaceEditorProvider(widget.trackId).notifier),
+      preservePreviewState: true,
+    );
+  }
+
   Future<void> _togglePlayback(
     ReplaceEditorState s,
     ReplaceEditorNotifier n,
@@ -1338,7 +1351,12 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       range: _PreviewRange(start: start, end: end, loop: false),
       playhead: start,
     );
-    await _ensureAudioLoaded(s, n, preservePreviewState: true);
+    await _ensureAudioLoaded(
+      s,
+      n,
+      initialStartSec: start,
+      preservePreviewState: true,
+    );
     final player = _player;
     if (!_isCurrentPlaybackCommand(command) ||
         _loadedSource == null ||
@@ -1373,7 +1391,12 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       range: _PreviewRange(start: start, end: end, loop: true),
       playhead: auditionStart,
     );
-    await _ensureAudioLoaded(s, n, preservePreviewState: true);
+    await _ensureAudioLoaded(
+      s,
+      n,
+      initialStartSec: auditionStart,
+      preservePreviewState: true,
+    );
     final player = _player;
     if (!_isCurrentPlaybackCommand(command) ||
         _loadedSource == null ||
