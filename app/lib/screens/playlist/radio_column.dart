@@ -15,15 +15,14 @@ import '../../widgets/rm_icon.dart';
 /// - pool: 虚线边 + 接受 unassign
 enum ColumnKind { customRadio, builtinRadio, pool }
 
-/// 列容器。拖拽接受逻辑（`DragTarget`）由外层主屏处理；
-/// 本 widget 只接收 `isDragOver` 与对应外观切换。
+/// 列容器。拖拽接受与悬停高亮（`DragTarget` + overlay）由外层主屏处理；
+/// 本 widget 只负责列的静态外观。
 class PlaylistColumn extends StatefulWidget {
   const PlaylistColumn({
     super.key,
     required this.kind,
     required this.header,
     required this.children,
-    required this.isDragOver,
     this.emptyText,
   }) : itemCount = children.length,
        itemBuilder = null;
@@ -34,7 +33,6 @@ class PlaylistColumn extends StatefulWidget {
     required this.header,
     required this.itemCount,
     required this.itemBuilder,
-    required this.isDragOver,
     this.emptyText,
   }) : children = const [];
 
@@ -44,13 +42,11 @@ class PlaylistColumn extends StatefulWidget {
     required bool isCustom,
     required int count,
     int? capacity,
-    required bool isDragOver,
     required List<Widget> children,
     VoidCallback? onRestoreBuiltin,
   }) {
     return PlaylistColumn(
       kind: isCustom ? ColumnKind.customRadio : ColumnKind.builtinRadio,
-      isDragOver: isDragOver,
       header: _RadioHeader(
         radio: radio,
         isCustom: isCustom,
@@ -63,29 +59,13 @@ class PlaylistColumn extends StatefulWidget {
     );
   }
 
-  factory PlaylistColumn.pool({
-    required int count,
-    required bool isDragOver,
-    required List<Widget> children,
-  }) {
-    return PlaylistColumn(
-      kind: ColumnKind.pool,
-      isDragOver: isDragOver,
-      header: _PoolHeader(count: count),
-      emptyText: '没有导入歌曲',
-      children: children,
-    );
-  }
-
   factory PlaylistColumn.poolBuilder({
     required int count,
-    required bool isDragOver,
     required int itemCount,
     required IndexedWidgetBuilder itemBuilder,
   }) {
     return PlaylistColumn.builder(
       kind: ColumnKind.pool,
-      isDragOver: isDragOver,
       header: _PoolHeader(count: count),
       emptyText: '没有导入歌曲',
       itemCount: itemCount,
@@ -98,7 +78,6 @@ class PlaylistColumn extends StatefulWidget {
   final List<Widget> children;
   final int itemCount;
   final IndexedWidgetBuilder? itemBuilder;
-  final bool isDragOver;
   final String? emptyText;
 
   @override
@@ -134,18 +113,8 @@ class _PlaylistColumnState extends State<PlaylistColumn> {
     final builtin = widget.kind == ColumnKind.builtinRadio;
     final pool = widget.kind == ColumnKind.pool;
 
-    Color bg = pool ? rm.raised : rm.panel;
-    Color borderColor = pool ? Colors.transparent : rm.border;
-
-    if (widget.isDragOver) {
-      if (builtin) {
-        bg = rm.warnBg;
-        borderColor = rm.warn;
-      } else {
-        bg = rm.accent.bg;
-        borderColor = rm.accent.base;
-      }
-    }
+    final Color bg = pool ? rm.raised : rm.panel;
+    final Color borderColor = pool ? Colors.transparent : rm.border;
 
     final borderRadius = BorderRadius.circular(RmTokens.rLg);
     final content = Container(
@@ -158,7 +127,7 @@ class _PlaylistColumnState extends State<PlaylistColumn> {
       ),
       child: Stack(
         children: [
-          if (builtin && !widget.isDragOver)
+          if (builtin)
             Positioned.fill(
               child: CustomPaint(
                 painter: _DiagonalStripePainter(
@@ -217,7 +186,7 @@ class _PlaylistColumnState extends State<PlaylistColumn> {
     if (!pool) return content;
     return CustomPaint(
       foregroundPainter: _DashedRRectPainter(
-        color: widget.isDragOver ? rm.accent.base : rm.borderStrong,
+        color: rm.borderStrong,
         radius: RmTokens.rLg,
       ),
       child: content,

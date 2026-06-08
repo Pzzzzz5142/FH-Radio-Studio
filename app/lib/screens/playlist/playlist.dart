@@ -1025,7 +1025,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     final replaceableCapacity = baselineTrackRefs?.length ?? r.slot;
     final capacity = isCustom ? replaceableCapacity : originalTrackCount;
 
-    Widget buildColumn({required bool isDragOver}) {
+    Widget buildColumn() {
       final children = <Widget>[];
       if (isCustom) {
         if (!readOnly && (customTracks.isNotEmpty || draftCustom)) {
@@ -1070,7 +1070,6 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
         isCustom: isCustom,
         count: count,
         capacity: capacity,
-        isDragOver: isDragOver,
         onRestoreBuiltin: !readOnly && !editingLocked && isCustom
             ? () => unawaited(_restoreBuiltin(r, playlistType, customTracks))
             : null,
@@ -1078,7 +1077,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
       );
     }
 
-    final column = buildColumn(isDragOver: false);
+    final column = buildColumn();
     if (readOnly || editingLocked) return column;
 
     return DragTarget<_PlaylistDragData>(
@@ -1176,24 +1175,19 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     StudioState cli,
   ) {
     final assignmentLabelsByTrackKey = _assignmentLabelsByTrackKey(plan, s);
-    Widget buildColumn({required bool isDragOver}) {
-      return PlaylistColumn.poolBuilder(
-        count: pool.length,
-        isDragOver: isDragOver,
-        itemCount: pool.length,
-        itemBuilder: (context, index) {
-          final track = pool[index];
-          final trackKey = PlaylistAssignment.keyForPath(track.source);
-          return _draggableTrack(
-            track,
-            assignmentLabels: assignmentLabelsByTrackKey[trackKey] ?? const [],
-            locked: cli.projectEditingLocked,
-          );
-        },
-      );
-    }
-
-    final column = buildColumn(isDragOver: false);
+    final column = PlaylistColumn.poolBuilder(
+      count: pool.length,
+      itemCount: pool.length,
+      itemBuilder: (context, index) {
+        final track = pool[index];
+        final trackKey = PlaylistAssignment.keyForPath(track.source);
+        return _draggableTrack(
+          track,
+          assignmentLabels: assignmentLabelsByTrackKey[trackKey] ?? const [],
+          locked: cli.projectEditingLocked,
+        );
+      },
+    );
     if (cli.projectEditingLocked) return column;
 
     return DragTarget<_PlaylistDragData>(
