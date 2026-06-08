@@ -1285,7 +1285,10 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
         originPlaylistType: originPlaylistType,
       ),
       feedback: Material(
-        color: Colors.transparent,
+        color: context.rm.panel,
+        elevation: 8,
+        borderRadius: BorderRadius.circular(RmTokens.rSm),
+        clipBehavior: Clip.antiAlias,
         child: SizedBox(
           width: 260,
           child: TrackCard.fromPoolTrack(
