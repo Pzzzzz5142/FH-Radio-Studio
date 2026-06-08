@@ -401,18 +401,28 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('manual-refine-ai-apply-1')));
       await tester.pump();
       final previewState = container.read(replaceEditorProvider('cp-1'));
+      final expectedAuditionStart = loopPreviewAuditionStartForTesting(
+        startSec: secondAi.start,
+        endSec: secondAi.end,
+      );
       expect(previewState.playbackMode, PlaybackMode.loopPreview);
       expect(previewState.playing, isTrue);
-      expect(
-        previewState.playhead,
-        closeTo(
-          loopPreviewAuditionStartForTesting(
-            startSec: secondAi.start,
-            endSec: secondAi.end,
-          ),
-          0.001,
-        ),
+      expect(previewState.playhead, closeTo(expectedAuditionStart, 0.001));
+      expect(find.text('暂停试听'), findsNothing);
+      expect(find.text('继续试听'), findsNothing);
+
+      notifier.setPlayhead(expectedAuditionStart + 0.75);
+      notifier.setPlayback(PlaybackMode.loopPreview, playing: true);
+      await tester.pump();
+      await tester.tap(
+        find.byKey(const ValueKey('manual-refine-loop-preview')),
       );
+      await tester.pump();
+
+      final restartedPreview = container.read(replaceEditorProvider('cp-1'));
+      expect(restartedPreview.playbackMode, PlaybackMode.loopPreview);
+      expect(restartedPreview.playing, isTrue);
+      expect(restartedPreview.playhead, closeTo(expectedAuditionStart, 0.001));
 
       await tester.tap(find.text('确认选点'));
       await tester.pump();
@@ -493,18 +503,26 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('manual-refine-ai-apply-1')));
     await tester.pump();
     final previewState = container.read(replaceEditorProvider('cp-1'));
+    final expectedPreviewStart = pointPreviewWindowForTesting(
+      timeSec: secondAi.t,
+      durationSec: previewState.ai.durationSec,
+    ).start;
     expect(previewState.playbackMode, PlaybackMode.pointPreview);
     expect(previewState.playing, isTrue);
-    expect(
-      previewState.playhead,
-      closeTo(
-        pointPreviewWindowForTesting(
-          timeSec: secondAi.t,
-          durationSec: previewState.ai.durationSec,
-        ).start,
-        0.001,
-      ),
-    );
+    expect(previewState.playhead, closeTo(expectedPreviewStart, 0.001));
+    expect(find.text('暂停试听'), findsNothing);
+    expect(find.text('继续试听'), findsNothing);
+
+    notifier.setPlayhead(expectedPreviewStart + 0.75);
+    notifier.setPlayback(PlaybackMode.pointPreview, playing: true);
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('manual-refine-point-preview')));
+    await tester.pump();
+
+    final restartedPreview = container.read(replaceEditorProvider('cp-1'));
+    expect(restartedPreview.playbackMode, PlaybackMode.pointPreview);
+    expect(restartedPreview.playing, isTrue);
+    expect(restartedPreview.playhead, closeTo(expectedPreviewStart, 0.001));
     expect(tester.takeException(), isNull);
   });
 

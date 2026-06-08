@@ -811,9 +811,32 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       session,
     );
     if (session.kind.isLoop) {
-      unawaited(_playLoopPreview(state, notifier, session.start, session.end));
+      if (widget.enableAudio) {
+        unawaited(
+          _playLoopPreview(state, notifier, session.start, session.end),
+        );
+      } else {
+        final auditionStart = loopPreviewAuditionStartForTesting(
+          startSec: session.start,
+          endSec: session.end,
+        );
+        notifier.setPlayhead(auditionStart);
+        notifier.setPlayback(PlaybackMode.loopPreview, playing: true);
+      }
     } else {
-      unawaited(_playPointPreview(state, notifier, session.pointTime));
+      if (widget.enableAudio) {
+        unawaited(_playPointPreview(state, notifier, session.pointTime));
+      } else {
+        final window = pointPreviewWindowForTesting(
+          timeSec: session.pointTime,
+          durationSec: _previewDuration(
+            state,
+            session.pointTime + pointPreviewDurationSec,
+          ),
+        );
+        notifier.setPlayhead(window.start);
+        notifier.setPlayback(PlaybackMode.pointPreview, playing: true);
+      }
     }
   }
 
@@ -2569,32 +2592,14 @@ class _ManualRefineOverlay extends StatelessWidget {
 
   Widget _manualAuditionButton(BuildContext context) {
     final isLoop = session.kind.isLoop;
-    final activeMode = isLoop
-        ? PlaybackMode.loopPreview
-        : PlaybackMode.pointPreview;
-    final previewActive = state.playbackMode == activeMode;
-    final previewPlaying = previewActive && state.playing;
     return RmButton(
       key: ValueKey(
         isLoop ? 'manual-refine-loop-preview' : 'manual-refine-point-preview',
       ),
-      onPressed: previewActive ? onTogglePlay : onAudition,
+      onPressed: onAudition,
       size: RmButtonSize.sm,
-      leading: RmIcon(
-        previewPlaying
-            ? 'pause'
-            : isLoop
-            ? 'loop'
-            : 'play',
-        size: 12,
-      ),
-      label: previewPlaying
-          ? '暂停试听'
-          : previewActive
-          ? '继续试听'
-          : isLoop
-          ? '试听拼接'
-          : '试听',
+      leading: RmIcon(isLoop ? 'loop' : 'play', size: 12),
+      label: isLoop ? '试听拼接' : '试听',
     );
   }
 
