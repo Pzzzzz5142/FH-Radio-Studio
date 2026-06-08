@@ -1078,7 +1078,8 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
       );
     }
 
-    if (readOnly || editingLocked) return buildColumn(isDragOver: false);
+    final column = buildColumn(isDragOver: false);
+    if (readOnly || editingLocked) return column;
 
     return DragTarget<_PlaylistDragData>(
       onWillAcceptWithDetails: (details) {
@@ -1101,7 +1102,11 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
         );
       },
       builder: (context, candidate, rejected) {
-        return buildColumn(isDragOver: candidate.isNotEmpty);
+        return _DragTargetHoverFrame(
+          highlighted: candidate.isNotEmpty,
+          color: isCustom ? context.rm.accent.base : context.rm.warn,
+          child: column,
+        );
       },
     );
   }
@@ -1199,7 +1204,11 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
         unawaited(_handlePoolDrop(context, s, catalog, plan, details.data));
       },
       builder: (context, candidate, rejected) {
-        return buildColumn(isDragOver: candidate.isNotEmpty);
+        return _DragTargetHoverFrame(
+          highlighted: candidate.isNotEmpty,
+          color: context.rm.accent.base,
+          child: column,
+        );
       },
     );
   }
@@ -1297,6 +1306,42 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
         child: TrackCard.fromPoolTrack(t, assignmentLabels: assignmentLabels),
       ),
       child: TrackCard.fromPoolTrack(t, assignmentLabels: assignmentLabels),
+    );
+  }
+}
+
+class _DragTargetHoverFrame extends StatelessWidget {
+  const _DragTargetHoverFrame({
+    required this.highlighted,
+    required this.color,
+    required this.child,
+  });
+
+  final bool highlighted;
+  final Color color;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        RepaintBoundary(child: child),
+        Positioned.fill(
+          child: IgnorePointer(
+            child: AnimatedOpacity(
+              opacity: highlighted ? 1 : 0,
+              duration: const Duration(milliseconds: 90),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: color.withAlpha(16),
+                  border: Border.all(color: color, width: 1.5),
+                  borderRadius: BorderRadius.circular(RmTokens.rLg),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
