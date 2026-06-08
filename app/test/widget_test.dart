@@ -139,7 +139,6 @@ void main() {
               isCustom: false,
               count: 24,
               capacity: 24,
-              isDragOver: false,
               children: [Text('baseline track')],
             ),
           ),
@@ -167,7 +166,6 @@ void main() {
             height: 560,
             child: PlaylistColumn.poolBuilder(
               count: 400,
-              isDragOver: false,
               itemCount: 400,
               itemBuilder: (context, index) {
                 built += 1;

@@ -43,4 +43,9 @@ void main() {
       isFalse,
     );
   });
+
+  test('native mpv preview timestamps keep sub-millisecond precision', () {
+    expect(previewMpvTimestampForTesting(68.720375), '68.720375');
+    expect(previewMpvTimestampForTesting(62), '62.000000');
+  });
 }

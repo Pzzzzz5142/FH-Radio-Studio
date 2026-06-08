@@ -44,6 +44,11 @@ const double previewSeekPositionToleranceSec = 0.35;
 const Duration previewSeekPositionHold = Duration(seconds: 2);
 
 @visibleForTesting
+String previewMpvTimestampForTesting(double seconds) {
+  return _mpvTimestamp(seconds);
+}
+
+@visibleForTesting
 ({double start, double end}) pointPreviewWindowForTesting({
   required double timeSec,
   required double durationSec,
@@ -73,6 +78,11 @@ bool isStalePreviewStartupPositionForTesting({
 bool _isStalePreviewStartupPosition(double positionSec, double targetSec) {
   if (!positionSec.isFinite || !targetSec.isFinite) return false;
   return (positionSec - targetSec).abs() > previewSeekPositionToleranceSec;
+}
+
+String _mpvTimestamp(double seconds) {
+  final safeSeconds = seconds.isFinite ? seconds : 0.0;
+  return safeSeconds.toStringAsFixed(6);
 }
 
 class ReplaceEditorScreen extends ConsumerStatefulWidget {
@@ -141,6 +151,11 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       _completedSub = player.stream.completed.listen((completed) {
         if (!mounted || !completed) return;
         final n = ref.read(replaceEditorProvider(widget.trackId).notifier);
+        _previewRange = null;
+        _rangeSeeking = false;
+        _pausedByUser = false;
+        _clearPreviewPositionHold();
+        unawaited(_clearNativePreviewBounds(player));
         n.setPlayback(PlaybackMode.idle, playing: false);
       });
       _errorSub = player.stream.error.listen((message) {
@@ -155,6 +170,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       if (!mounted) return;
       _hotkeysFocus.requestFocus();
       _startInitialAnalysis();
+      unawaited(_warmUpAudio());
     });
   }
 
@@ -174,6 +190,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
           .read(replaceEditorProvider(widget.trackId).notifier)
           .setPlayback(PlaybackMode.idle, playing: false);
       _startInitialAnalysis();
+      unawaited(_warmUpAudio());
     });
   }
 
@@ -794,9 +811,32 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       session,
     );
     if (session.kind.isLoop) {
-      unawaited(_playLoopPreview(state, notifier, session.start, session.end));
+      if (widget.enableAudio) {
+        unawaited(
+          _playLoopPreview(state, notifier, session.start, session.end),
+        );
+      } else {
+        final auditionStart = loopPreviewAuditionStartForTesting(
+          startSec: session.start,
+          endSec: session.end,
+        );
+        notifier.setPlayhead(auditionStart);
+        notifier.setPlayback(PlaybackMode.loopPreview, playing: true);
+      }
     } else {
-      unawaited(_playPointPreview(state, notifier, session.pointTime));
+      if (widget.enableAudio) {
+        unawaited(_playPointPreview(state, notifier, session.pointTime));
+      } else {
+        final window = pointPreviewWindowForTesting(
+          timeSec: session.pointTime,
+          durationSec: _previewDuration(
+            state,
+            session.pointTime + pointPreviewDurationSec,
+          ),
+        );
+        notifier.setPlayhead(window.start);
+        notifier.setPlayback(PlaybackMode.pointPreview, playing: true);
+      }
     }
   }
 
@@ -1180,9 +1220,8 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     final player = _audioPlayer;
     try {
       _loadedSource = null;
+      await _clearNativePreviewBounds(player);
       await player.stop();
-      // Let media_kit/mpv apply the preview start during media load so the
-      // first decoded audio frame comes from the audition target.
       final media = Media(
         Uri.file(source).toString(),
         start: initialStartSec == null ? null : _duration(initialStartSec),
@@ -1218,6 +1257,10 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     _rangeSeeking = false;
     _previewRange = null;
     _clearPreviewPositionHold();
+    final player = _player;
+    if (player != null) {
+      unawaited(_clearNativePreviewBounds(player));
+    }
   }
 
   void _startInitialAnalysis() {
@@ -1227,6 +1270,17 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     _analysisStartedFor = s.track.id;
     final n = ref.read(replaceEditorProvider(widget.trackId).notifier);
     unawaited(n.analyze());
+  }
+
+  Future<void> _warmUpAudio() async {
+    if (!widget.enableAudio) return;
+    final state = ref.read(replaceEditorProvider(widget.trackId));
+    if (state.track.source.trim().isEmpty) return;
+    await _ensureAudioLoaded(
+      state,
+      ref.read(replaceEditorProvider(widget.trackId).notifier),
+      preservePreviewState: true,
+    );
   }
 
   Future<void> _togglePlayback(
@@ -1266,7 +1320,9 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     _previewRange = null;
     _rangeSeeking = false;
     final restartAtEnd = s.playhead >= s.ai.durationSec - 0.05;
-    await player.seek(_duration(restartAtEnd ? 0 : s.playhead));
+    await _clearNativePreviewBounds(player);
+    if (!_isCurrentPlaybackCommand(command)) return;
+    await _seekPlayerTo(player, restartAtEnd ? 0 : s.playhead, exact: true);
     if (!_isCurrentPlaybackCommand(command)) return;
     await player.play();
     if (!_isCurrentPlaybackCommand(command)) return;
@@ -1294,7 +1350,9 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
         player == null) {
       return;
     }
-    await player.seek(_duration(next));
+    await _clearNativePreviewBounds(player);
+    if (!_isCurrentPlaybackCommand(command)) return;
+    await _seekPlayerTo(player, next, exact: true);
   }
 
   Future<void> _playPointPreview(
@@ -1320,7 +1378,6 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       s,
       n,
       initialStartSec: start,
-      forceReload: true,
       preservePreviewState: true,
     );
     final player = _player;
@@ -1330,12 +1387,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       _cancelPreviewStartup(command);
       return;
     }
-    if (!await _startPreviewPlayback(
-      command,
-      player,
-      start,
-      sourceOpenedAtTarget: true,
-    )) {
+    if (!await _startPreviewPlayback(command, player, start, stopAtSec: end)) {
       return;
     }
     n.setPlayback(PlaybackMode.pointPreview, playing: true);
@@ -1366,7 +1418,6 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       s,
       n,
       initialStartSec: auditionStart,
-      forceReload: true,
       preservePreviewState: true,
     );
     final player = _player;
@@ -1380,7 +1431,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       command,
       player,
       auditionStart,
-      sourceOpenedAtTarget: true,
+      loopBounds: (start: start, end: end),
     )) {
       return;
     }
@@ -1396,23 +1447,37 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     int command,
     Player player,
     double seconds, {
-    bool sourceOpenedAtTarget = false,
+    double? stopAtSec,
+    ({double start, double end})? loopBounds,
   }) async {
-    final target = _duration(seconds);
     _holdPreviewPosition(command, seconds);
-    if (!sourceOpenedAtTarget) {
-      await player.pause();
-      if (!_isCurrentPlaybackCommand(command)) return false;
-      await player.seek(target);
-      if (!_isCurrentPlaybackCommand(command)) return false;
-      await Future<void>.delayed(Duration.zero);
-      if (!_isCurrentPlaybackCommand(command)) return false;
-    }
-    await player.play();
+    await player.pause();
     if (!_isCurrentPlaybackCommand(command)) return false;
-    if (!sourceOpenedAtTarget) {
-      await player.seek(target);
+    final playerManagedLoop =
+        loopBounds != null &&
+        await _configureNativeLoopBounds(
+          player,
+          loopBounds.start,
+          loopBounds.end,
+        );
+    if (!_isCurrentPlaybackCommand(command)) return false;
+    if (loopBounds == null) {
+      await _clearNativeLoopBounds(player);
+      if (!_isCurrentPlaybackCommand(command)) return false;
+      await _setNativePreviewEnd(player, stopAtSec);
+    } else if (!playerManagedLoop) {
+      await _setNativePreviewEnd(player, null);
     }
+    if (!_isCurrentPlaybackCommand(command)) return false;
+    final range = _previewRange;
+    if (range != null && range.loop && playerManagedLoop) {
+      _previewRange = range.withPlayerManagedLoop();
+    }
+    await _seekPlayerTo(player, seconds, exact: true);
+    if (!_isCurrentPlaybackCommand(command)) return false;
+    await Future<void>.delayed(Duration.zero);
+    if (!_isCurrentPlaybackCommand(command)) return false;
+    await player.play();
     return _isCurrentPlaybackCommand(command);
   }
 
@@ -1432,12 +1497,19 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       return;
     }
 
+    if (range.loop && range.playerManagedLoop) {
+      n.setPlayhead(range.start);
+      return;
+    }
+
     if (range.loop) {
       _rangeSeeking = true;
       n.setPlayhead(range.start);
       final command = _playbackVersion;
       _holdPreviewPosition(command, range.start);
-      final seek = player?.seek(_duration(range.start));
+      final seek = player == null
+          ? null
+          : _seekPlayerTo(player, range.start, exact: true);
       if (seek == null) {
         _rangeSeeking = false;
       } else {
@@ -1457,6 +1529,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     n.setPlayhead(range.end);
     n.setPlayback(PlaybackMode.idle, playing: false);
     if (player != null) {
+      unawaited(_clearNativePreviewBounds(player));
       unawaited(player.pause());
     }
   }
@@ -1517,6 +1590,91 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
 
   Duration _duration(double seconds) {
     return Duration(milliseconds: (seconds * 1000).round());
+  }
+
+  Future<void> _seekPlayerTo(
+    Player player,
+    double seconds, {
+    required bool exact,
+  }) async {
+    final native = player.platform;
+    if (native is NativePlayer) {
+      try {
+        await (native as dynamic).command([
+          'seek',
+          _mpvTimestamp(seconds),
+          exact ? 'absolute+exact' : 'absolute',
+        ]);
+        native.state = native.state.copyWith(completed: false);
+        return;
+      } on Object {
+        // Some media_kit platforms expose a NativePlayer stub without raw mpv
+        // commands. Fall back to the public API.
+      }
+    }
+    await player.seek(_duration(seconds));
+  }
+
+  Future<bool> _configureNativeLoopBounds(
+    Player player,
+    double startSec,
+    double endSec,
+  ) async {
+    final native = player.platform;
+    if (native is! NativePlayer) return false;
+    try {
+      await (native as dynamic).setProperty('end', 'none');
+      await (native as dynamic).setProperty(
+        'ab-loop-a',
+        _mpvTimestamp(startSec),
+      );
+      await (native as dynamic).setProperty('ab-loop-b', _mpvTimestamp(endSec));
+      return true;
+    } on Object {
+      try {
+        await (native as dynamic).setProperty('ab-loop-a', 'no');
+        await (native as dynamic).setProperty('ab-loop-b', 'no');
+      } on Object {
+        // Keep the original failure path: Dart-side looping will take over.
+      }
+      return false;
+    }
+  }
+
+  Future<void> _setNativePreviewEnd(Player player, double? seconds) async {
+    final native = player.platform;
+    if (native is! NativePlayer) return;
+    try {
+      await (native as dynamic).setProperty(
+        'end',
+        seconds == null ? 'none' : _mpvTimestamp(seconds),
+      );
+    } on Object {
+      // Best-effort native preview bound; public media_kit playback still works.
+    }
+  }
+
+  Future<void> _clearNativeLoopBounds(Player player) async {
+    final native = player.platform;
+    if (native is! NativePlayer) return;
+    try {
+      await (native as dynamic).setProperty('ab-loop-a', 'no');
+      await (native as dynamic).setProperty('ab-loop-b', 'no');
+    } on Object {
+      // Best-effort native preview bound reset.
+    }
+  }
+
+  Future<void> _clearNativePreviewBounds(Player player) async {
+    final native = player.platform;
+    if (native is! NativePlayer) return;
+    try {
+      await (native as dynamic).setProperty('end', 'none');
+      await (native as dynamic).setProperty('ab-loop-a', 'no');
+      await (native as dynamic).setProperty('ab-loop-b', 'no');
+    } on Object {
+      // Best-effort native preview bound reset.
+    }
   }
 
   void _saveConfig(
@@ -2434,32 +2592,14 @@ class _ManualRefineOverlay extends StatelessWidget {
 
   Widget _manualAuditionButton(BuildContext context) {
     final isLoop = session.kind.isLoop;
-    final activeMode = isLoop
-        ? PlaybackMode.loopPreview
-        : PlaybackMode.pointPreview;
-    final previewActive = state.playbackMode == activeMode;
-    final previewPlaying = previewActive && state.playing;
     return RmButton(
       key: ValueKey(
         isLoop ? 'manual-refine-loop-preview' : 'manual-refine-point-preview',
       ),
-      onPressed: previewActive ? onTogglePlay : onAudition,
+      onPressed: onAudition,
       size: RmButtonSize.sm,
-      leading: RmIcon(
-        previewPlaying
-            ? 'pause'
-            : isLoop
-            ? 'loop'
-            : 'play',
-        size: 12,
-      ),
-      label: previewPlaying
-          ? '暂停试听'
-          : previewActive
-          ? '继续试听'
-          : isLoop
-          ? '试听拼接'
-          : '试听',
+      leading: RmIcon(isLoop ? 'loop' : 'play', size: 12),
+      label: isLoop ? '试听拼接' : '试听',
     );
   }
 
@@ -3210,9 +3350,20 @@ class _PreviewRange {
     required this.start,
     required this.end,
     required this.loop,
+    this.playerManagedLoop = false,
   });
 
   final double start;
   final double end;
   final bool loop;
+  final bool playerManagedLoop;
+
+  _PreviewRange withPlayerManagedLoop() {
+    return _PreviewRange(
+      start: start,
+      end: end,
+      loop: loop,
+      playerManagedLoop: true,
+    );
+  }
 }

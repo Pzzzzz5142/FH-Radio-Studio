@@ -1025,7 +1025,7 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     final replaceableCapacity = baselineTrackRefs?.length ?? r.slot;
     final capacity = isCustom ? replaceableCapacity : originalTrackCount;
 
-    Widget buildColumn({required bool isDragOver}) {
+    Widget buildColumn() {
       final children = <Widget>[];
       if (isCustom) {
         if (!readOnly && (customTracks.isNotEmpty || draftCustom)) {
@@ -1070,7 +1070,6 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
         isCustom: isCustom,
         count: count,
         capacity: capacity,
-        isDragOver: isDragOver,
         onRestoreBuiltin: !readOnly && !editingLocked && isCustom
             ? () => unawaited(_restoreBuiltin(r, playlistType, customTracks))
             : null,
@@ -1078,7 +1077,8 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
       );
     }
 
-    if (readOnly || editingLocked) return buildColumn(isDragOver: false);
+    final column = buildColumn();
+    if (readOnly || editingLocked) return column;
 
     return DragTarget<_PlaylistDragData>(
       onWillAcceptWithDetails: (details) {
@@ -1101,7 +1101,11 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
         );
       },
       builder: (context, candidate, rejected) {
-        return buildColumn(isDragOver: candidate.isNotEmpty);
+        return _DragTargetHoverFrame(
+          highlighted: candidate.isNotEmpty,
+          color: isCustom ? context.rm.accent.base : context.rm.warn,
+          child: column,
+        );
       },
     );
   }
@@ -1171,24 +1175,19 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
     StudioState cli,
   ) {
     final assignmentLabelsByTrackKey = _assignmentLabelsByTrackKey(plan, s);
-    Widget buildColumn({required bool isDragOver}) {
-      return PlaylistColumn.poolBuilder(
-        count: pool.length,
-        isDragOver: isDragOver,
-        itemCount: pool.length,
-        itemBuilder: (context, index) {
-          final track = pool[index];
-          final trackKey = PlaylistAssignment.keyForPath(track.source);
-          return _draggableTrack(
-            track,
-            assignmentLabels: assignmentLabelsByTrackKey[trackKey] ?? const [],
-            locked: cli.projectEditingLocked,
-          );
-        },
-      );
-    }
-
-    final column = buildColumn(isDragOver: false);
+    final column = PlaylistColumn.poolBuilder(
+      count: pool.length,
+      itemCount: pool.length,
+      itemBuilder: (context, index) {
+        final track = pool[index];
+        final trackKey = PlaylistAssignment.keyForPath(track.source);
+        return _draggableTrack(
+          track,
+          assignmentLabels: assignmentLabelsByTrackKey[trackKey] ?? const [],
+          locked: cli.projectEditingLocked,
+        );
+      },
+    );
     if (cli.projectEditingLocked) return column;
 
     return DragTarget<_PlaylistDragData>(
@@ -1199,7 +1198,11 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
         unawaited(_handlePoolDrop(context, s, catalog, plan, details.data));
       },
       builder: (context, candidate, rejected) {
-        return buildColumn(isDragOver: candidate.isNotEmpty);
+        return _DragTargetHoverFrame(
+          highlighted: candidate.isNotEmpty,
+          color: context.rm.accent.base,
+          child: column,
+        );
       },
     );
   }
@@ -1282,7 +1285,10 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
         originPlaylistType: originPlaylistType,
       ),
       feedback: Material(
-        color: Colors.transparent,
+        color: context.rm.panel,
+        elevation: 8,
+        borderRadius: BorderRadius.circular(RmTokens.rSm),
+        clipBehavior: Clip.antiAlias,
         child: SizedBox(
           width: 260,
           child: TrackCard.fromPoolTrack(
@@ -1297,6 +1303,42 @@ class _PlaylistScreenState extends ConsumerState<PlaylistScreen> {
         child: TrackCard.fromPoolTrack(t, assignmentLabels: assignmentLabels),
       ),
       child: TrackCard.fromPoolTrack(t, assignmentLabels: assignmentLabels),
+    );
+  }
+}
+
+class _DragTargetHoverFrame extends StatelessWidget {
+  const _DragTargetHoverFrame({
+    required this.highlighted,
+    required this.color,
+    required this.child,
+  });
+
+  final bool highlighted;
+  final Color color;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        RepaintBoundary(child: child),
+        Positioned.fill(
+          child: IgnorePointer(
+            child: AnimatedOpacity(
+              opacity: highlighted ? 1 : 0,
+              duration: const Duration(milliseconds: 90),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: color.withAlpha(16),
+                  border: Border.all(color: color, width: 1.5),
+                  borderRadius: BorderRadius.circular(RmTokens.rLg),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
