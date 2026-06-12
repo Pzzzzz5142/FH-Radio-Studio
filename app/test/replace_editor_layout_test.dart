@@ -24,6 +24,7 @@ import 'package:fh_radio_studio/screens/replace_editor/manual_focus_waveform.dar
 import 'package:fh_radio_studio/screens/replace_editor/replace_state.dart';
 import 'package:fh_radio_studio/screens/replace_editor/side_panel.dart';
 import 'package:fh_radio_studio/screens/replace_editor/time_group_card.dart';
+import 'package:fh_radio_studio/screens/replace_editor/waveform_painter.dart';
 import 'package:fh_radio_studio/state/app_state.dart';
 import 'package:fh_radio_studio/state/audio_analysis_state.dart';
 import 'package:fh_radio_studio/state/custom_pool_tracks.dart';
@@ -104,6 +105,47 @@ void main() {
       );
     },
   );
+
+  testWidgets('main waveform tap down starts playback from pause', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1200, 850);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'replace_editor_main_waveform_tap_',
+    );
+    addTearDown(() {
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    await _pumpEditor(tester, tempRoot.path);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ReplaceEditorScreen)),
+    );
+    final initial = container.read(replaceEditorProvider('cp-1'));
+    expect(initial.playing, isFalse);
+    expect(initial.playbackMode, PlaybackMode.idle);
+
+    final waveform = find
+        .byWidgetPredicate(
+          (widget) =>
+              widget is CustomPaint && widget.painter is WaveformPainter,
+        )
+        .first;
+    await tester.tapAt(tester.getCenter(waveform));
+    await tester.pump();
+
+    final state = container.read(replaceEditorProvider('cp-1'));
+    expect(state.playhead, closeTo(state.ai.durationSec / 2, 0.001));
+    expect(state.playbackMode, PlaybackMode.full);
+    expect(state.playing, isTrue);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('AI summary tag expands to fit completed analysis text', (
     tester,
@@ -563,6 +605,140 @@ void main() {
       closeTo(
         loopPreviewAuditionStartForTesting(
           startSec: expectedStart,
+          endSec: expectedEnd,
+        ),
+        0.001,
+      ),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'manual refine waveform start drag plays from the moved pointer',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1200, 1100);
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final tempRoot = Directory.systemTemp.createTempSync(
+        'replace_editor_manual_waveform_start_play_',
+      );
+      addTearDown(() {
+        if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+      });
+
+      await _pumpEditor(tester, tempRoot.path);
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(ReplaceEditorScreen)),
+      );
+      final notifier = container.read(replaceEditorProvider('cp-1').notifier);
+      notifier.setConfirmed(GroupKind.tl, false);
+      await tester.pump();
+
+      final manualTl = find.byKey(const ValueKey('editor-manual-refine-tl'));
+      await Scrollable.ensureVisible(
+        tester.element(manualTl),
+        alignment: 0.45,
+        duration: Duration.zero,
+      );
+      await tester.pump();
+      await tester.tap(manualTl);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 260));
+
+      final initialState = container.read(replaceEditorProvider('cp-1'));
+      expect(initialState.playing, isFalse);
+      final target = initialState.tl.start + 8;
+      await tester.dragFrom(
+        _manualFocusOffset(
+          tester,
+          seconds: initialState.tl.start,
+          duration: initialState.ai.durationSec,
+        ),
+        _manualFocusDragDelta(
+          tester,
+          fromSeconds: initialState.tl.start,
+          toSeconds: target,
+          duration: initialState.ai.durationSec,
+        ),
+      );
+      await tester.pump();
+
+      final state = container.read(replaceEditorProvider('cp-1'));
+      final expectedStart = _nearestBeatForTest(target, state.ai.beats);
+      expect(state.playbackMode, PlaybackMode.full);
+      expect(state.playing, isTrue);
+      expect(state.playhead, closeTo(expectedStart, 0.001));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('manual refine waveform end drag auditions the seam from pause', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1200, 1100);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'replace_editor_manual_waveform_end_preview_',
+    );
+    addTearDown(() {
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    await _pumpEditor(tester, tempRoot.path);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ReplaceEditorScreen)),
+    );
+    final notifier = container.read(replaceEditorProvider('cp-1').notifier);
+    notifier.setConfirmed(GroupKind.tl, false);
+    await tester.pump();
+
+    final manualTl = find.byKey(const ValueKey('editor-manual-refine-tl'));
+    await Scrollable.ensureVisible(
+      tester.element(manualTl),
+      alignment: 0.45,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+    await tester.tap(manualTl);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    final initialState = container.read(replaceEditorProvider('cp-1'));
+    expect(initialState.playing, isFalse);
+    final target = initialState.tl.end + 4;
+    await tester.dragFrom(
+      _manualFocusOffset(
+        tester,
+        seconds: initialState.tl.end,
+        duration: initialState.ai.durationSec,
+      ),
+      _manualFocusDragDelta(
+        tester,
+        fromSeconds: initialState.tl.end,
+        toSeconds: target,
+        duration: initialState.ai.durationSec,
+      ),
+    );
+    await tester.pump();
+
+    final state = container.read(replaceEditorProvider('cp-1'));
+    final expectedEnd = _nearestBeatForTest(target, state.ai.beats);
+    expect(state.playbackMode, PlaybackMode.loopPreview);
+    expect(state.playing, isTrue);
+    expect(
+      state.playhead,
+      closeTo(
+        loopPreviewAuditionStartForTesting(
+          startSec: initialState.tl.start,
           endSec: expectedEnd,
         ),
         0.001,
@@ -1467,6 +1643,45 @@ Finder _manualMainIcon(String name) {
       (widget) => widget is RmIcon && widget.name == name,
     ),
   );
+}
+
+Offset _manualFocusOffset(
+  WidgetTester tester, {
+  required double seconds,
+  required double duration,
+}) {
+  final rect = tester.getRect(find.byType(ManualFocusWaveform));
+  final x = rect.left + rect.width * (seconds / duration).clamp(0.0, 1.0);
+  return Offset(x, rect.top + 60);
+}
+
+Offset _manualFocusDragDelta(
+  WidgetTester tester, {
+  required double fromSeconds,
+  required double toSeconds,
+  required double duration,
+}) {
+  final from = _manualFocusOffset(
+    tester,
+    seconds: fromSeconds,
+    duration: duration,
+  );
+  final to = _manualFocusOffset(tester, seconds: toSeconds, duration: duration);
+  return to - from;
+}
+
+double _nearestBeatForTest(double seconds, List<double> beats) {
+  if (beats.isEmpty) return seconds;
+  var best = beats.first;
+  var bestDist = (best - seconds).abs();
+  for (final beat in beats) {
+    final dist = (beat - seconds).abs();
+    if (dist < bestDist) {
+      best = beat;
+      bestDist = dist;
+    }
+  }
+  return best;
 }
 
 String _formatManualFineTimecodeForTest(double seconds) {

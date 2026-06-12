@@ -667,8 +667,11 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
               viewport: viewport,
               aiCandidates: _aiCandidatesFor(s, session.kind),
               snapActive: !_altHeld,
-              onPlace: (seconds, {required isMove}) =>
-                  _placeManualDraft(seconds, isMove: isMove),
+              onPlace: (seconds, {required isMove}) => _placeManualDraft(
+                seconds,
+                isMove: isMove,
+                auditionMoved: true,
+              ),
               onApplyCandidate: _applyAiCandidateToManual,
               onPickTarget: _setManualFineTarget,
               onNudge: _nudgeManualDraftTarget,
@@ -886,6 +889,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     double seconds, {
     bool snap = true,
     bool isMove = false,
+    bool auditionMoved = false,
   }) {
     final session = _manualSession;
     if (session == null) return;
@@ -906,12 +910,26 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       );
     }
     final updated = working.placeAt(next, duration: state.ai.durationSec);
+    final moved = _manualSessionMoved(working, updated);
     setState(() => _manualSession = updated);
     _syncManualDraftAuditionAfterEdit(
       state,
       ref.read(replaceEditorProvider(widget.trackId).notifier),
       updated,
+      forceAudition: auditionMoved && moved,
     );
+  }
+
+  bool _manualSessionMoved(
+    _ManualRefineSession before,
+    _ManualRefineSession after,
+  ) {
+    const epsilon = 0.001;
+    if (before.kind.isLoop) {
+      return (before.start - after.start).abs() >= epsilon ||
+          (before.end - after.end).abs() >= epsilon;
+    }
+    return (before.pointTime - after.pointTime).abs() >= epsilon;
   }
 
   /// 返回离 [seconds] 最近的拍点；没有拍点数据时原样返回。
@@ -978,12 +996,17 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
   void _syncManualDraftAuditionAfterEdit(
     ReplaceEditorState state,
     ReplaceEditorNotifier notifier,
-    _ManualRefineSession updated,
-  ) {
+    _ManualRefineSession updated, {
+    bool forceAudition = false,
+  }) {
     if (updated.kind.isLoop &&
         updated.activeTarget == FineTarget.loopEnd &&
-        state.playing) {
+        (state.playing || forceAudition)) {
       _playManualLoopPreview(state, notifier, updated.start, updated.end);
+      return;
+    }
+    if (forceAudition) {
+      unawaited(_playFullFrom(state, notifier, updated.focusTime));
       return;
     }
     unawaited(_seekTo(state, notifier, updated.focusTime));
@@ -1076,7 +1099,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       before: WaveformCard(
         state: s,
         aiPending: s.aiPending,
-        onSeek: (value) => unawaited(_seekTo(s, n, value)),
+        onSeek: (value) => unawaited(_seekMainWaveformAndPlayIfMoved(n, value)),
         onZoomIn: n.zoomIn,
         onZoomOut: n.zoomOut,
       ),
@@ -1367,6 +1390,59 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     await _clearNativePreviewBounds(player);
     if (!_isCurrentPlaybackCommand(command)) return;
     await _seekPlayerTo(player, next, exact: true);
+  }
+
+  Future<void> _playFullFrom(
+    ReplaceEditorState s,
+    ReplaceEditorNotifier n,
+    double seconds,
+  ) async {
+    final command = _beginPlaybackCommand();
+    final next = seconds.clamp(0, s.ai.durationSec).toDouble();
+    n.setPlayhead(next);
+    _previewRange = null;
+    _rangeSeeking = false;
+    _pausedByUser = false;
+    if (!widget.enableAudio) {
+      n.setPlayback(PlaybackMode.full, playing: true);
+      return;
+    }
+    _holdPreviewPosition(command, next);
+    await _ensureAudioLoaded(
+      s,
+      n,
+      initialStartSec: next,
+      preservePreviewState: true,
+    );
+    final player = _player;
+    if (!_isCurrentPlaybackCommand(command) ||
+        _loadedSource == null ||
+        player == null) {
+      _clearPreviewPositionHold(command);
+      return;
+    }
+    await _clearNativePreviewBounds(player);
+    if (!_isCurrentPlaybackCommand(command)) return;
+    await _seekPlayerTo(player, next, exact: true);
+    if (!_isCurrentPlaybackCommand(command)) return;
+    await Future<void>.delayed(Duration.zero);
+    if (!_isCurrentPlaybackCommand(command)) return;
+    await player.play();
+    if (!_isCurrentPlaybackCommand(command)) return;
+    n.setPlayback(PlaybackMode.full, playing: true);
+  }
+
+  Future<void> _seekMainWaveformAndPlayIfMoved(
+    ReplaceEditorNotifier n,
+    double seconds,
+  ) async {
+    final state = ref.read(replaceEditorProvider(widget.trackId));
+    final next = seconds.clamp(0, state.ai.durationSec).toDouble();
+    if ((next - state.playhead).abs() < 0.001) {
+      await _seekTo(state, n, next);
+      return;
+    }
+    await _playFullFrom(state, n, next);
   }
 
   Future<void> _playPointPreview(
