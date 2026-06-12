@@ -835,6 +835,181 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('manual refine undo restores the previous point setting', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1200, 1100);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'replace_editor_manual_undo_point_',
+    );
+    addTearDown(() {
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    await _pumpEditor(tester, tempRoot.path);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ReplaceEditorScreen)),
+    );
+    final notifier = container.read(replaceEditorProvider('cp-1').notifier);
+    notifier.setConfirmed(GroupKind.td, false);
+    await tester.pump();
+
+    final editorState = container.read(replaceEditorProvider('cp-1'));
+    final initialPoint = editorState.td.t;
+    final nudgedPoint = initialPoint + 60 / editorState.ai.bpm;
+    final manualTd = find.byKey(const ValueKey('editor-manual-refine-td'));
+    await Scrollable.ensureVisible(
+      tester.element(manualTd),
+      alignment: 0.45,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+    await tester.tap(manualTd);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    final finePanel = find.byKey(const ValueKey('manual-refine-fine-panel'));
+    expect(
+      find.descendant(
+        of: finePanel,
+        matching: find.text(_formatManualFineTimecodeForTest(initialPoint)),
+      ),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('manual-refine-undo')), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    expect(
+      find.descendant(
+        of: finePanel,
+        matching: find.text(_formatManualFineTimecodeForTest(nudgedPoint)),
+      ),
+      findsOneWidget,
+    );
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    try {
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+    } finally {
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    }
+    await tester.pump();
+
+    expect(
+      find.descendant(
+        of: finePanel,
+        matching: find.text(_formatManualFineTimecodeForTest(initialPoint)),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: finePanel,
+        matching: find.text(_formatManualFineTimecodeForTest(nudgedPoint)),
+      ),
+      findsNothing,
+    );
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    try {
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+    } finally {
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    }
+    await tester.pump();
+
+    final stateAfterEmptyUndo = container.read(replaceEditorProvider('cp-1'));
+    expect(stateAfterEmptyUndo.tdConfirmed, isFalse);
+    semantics.dispose();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('manual refine undo queue does not cross closed stations', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1200, 1100);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'replace_editor_manual_undo_cross_station_',
+    );
+    addTearDown(() {
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    await _pumpEditor(tester, tempRoot.path);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ReplaceEditorScreen)),
+    );
+    final notifier = container.read(replaceEditorProvider('cp-1').notifier);
+    notifier.setConfirmed(GroupKind.tl, false);
+    notifier.setConfirmed(GroupKind.td, false);
+    await tester.pump();
+
+    final manualTl = find.byKey(const ValueKey('editor-manual-refine-tl'));
+    await Scrollable.ensureVisible(
+      tester.element(manualTl),
+      alignment: 0.45,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+    await tester.tap(manualTl);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+    expect(find.byKey(const ValueKey('manual-refine-overlay')), findsNothing);
+
+    final initialTd = container.read(replaceEditorProvider('cp-1')).td.t;
+    final manualTd = find.byKey(const ValueKey('editor-manual-refine-td'));
+    await Scrollable.ensureVisible(
+      tester.element(manualTd),
+      alignment: 0.45,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+    await tester.tap(manualTd);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    try {
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+    } finally {
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    }
+    await tester.pump();
+
+    final finePanel = find.byKey(const ValueKey('manual-refine-fine-panel'));
+    final stateAfterUndo = container.read(replaceEditorProvider('cp-1'));
+    expect(stateAfterUndo.tdConfirmed, isFalse);
+    expect(find.textContaining('TrackDrop · 人工精修'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: finePanel,
+        matching: find.text(_formatManualFineTimecodeForTest(initialTd)),
+      ),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('manual refine alt indicator responds to rapid toggles', (
     tester,
   ) async {

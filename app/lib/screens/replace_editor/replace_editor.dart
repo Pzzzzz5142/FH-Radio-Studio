@@ -133,6 +133,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
   double _sidePanelExtraScroll = 0;
   _TransportDockMetrics? _transportDockMetrics;
   _ManualRefineSession? _manualSession;
+  final List<_ManualRefineSession> _manualUndoStack = <_ManualRefineSession>[];
   bool _altHeld = false;
   bool _shiftHeld = false;
   bool _ctrlHeld = false;
@@ -180,6 +181,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     if (oldWidget.trackId == widget.trackId) return;
     _analysisStartedFor = null;
     _clearLocalPlaybackState();
+    _clearManualRefineDraft();
     final player = _player;
     if (player != null) {
       unawaited(player.stop());
@@ -206,6 +208,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       unawaited(player.dispose());
     }
     _clearPreviewPositionHold();
+    _manualUndoStack.clear();
     _pageScrollController.dispose();
     _hotkeysFocus.dispose();
     super.dispose();
@@ -294,11 +297,19 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
         ? _ctrlHeld
         : HardwareKeyboard.instance.isControlPressed;
     final manualNudge = ctrl ? 0.001 : (shift ? 0.010 : (60 / s.ai.bpm));
+    final undoModifier = manualOpen
+        ? ctrl || HardwareKeyboard.instance.isMetaPressed
+        : HardwareKeyboard.instance.isControlPressed ||
+              HardwareKeyboard.instance.isMetaPressed;
+    final undoShortcut =
+        undoModifier && e.logicalKey == LogicalKeyboardKey.keyZ;
     if (_manualSession != null && e.logicalKey == LogicalKeyboardKey.escape) {
       _cancelManualRefine();
     } else if (_manualSession != null &&
         e.logicalKey == LogicalKeyboardKey.enter) {
       _confirmManualRefine(n);
+    } else if (_manualSession != null && undoShortcut) {
+      _undoManualRefine();
     } else if (_manualSession != null &&
         e.logicalKey == LogicalKeyboardKey.arrowLeft) {
       _nudgeManualDraft(-manualNudge);
@@ -307,9 +318,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       _nudgeManualDraft(manualNudge);
     } else if (e.logicalKey == LogicalKeyboardKey.space) {
       unawaited(_togglePlayback(s, n));
-    } else if ((HardwareKeyboard.instance.isControlPressed ||
-            HardwareKeyboard.instance.isMetaPressed) &&
-        e.logicalKey == LogicalKeyboardKey.keyZ) {
+    } else if (undoShortcut) {
       n.undo();
     } else if (e.logicalKey == LogicalKeyboardKey.enter) {
       n.confirmActive();
@@ -667,11 +676,13 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
               viewport: viewport,
               aiCandidates: _aiCandidatesFor(s, session.kind),
               snapActive: !_altHeld,
+              canUndo: _manualUndoStack.isNotEmpty,
               onPlace: (seconds, {required isMove}) => _placeManualDraft(
                 seconds,
                 isMove: isMove,
                 auditionMoved: true,
               ),
+              onUndo: _undoManualRefine,
               onApplyCandidate: _applyAiCandidateToManual,
               onPickTarget: _setManualFineTarget,
               onNudge: _nudgeManualDraftTarget,
@@ -765,6 +776,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     final session = _ManualRefineSession.fromState(state, kind);
     setState(() {
       _manualSession = session;
+      _manualUndoStack.clear();
       _altHeld = HardwareKeyboard.instance.isAltPressed;
       _shiftHeld = HardwareKeyboard.instance.isShiftPressed;
       _ctrlHeld = HardwareKeyboard.instance.isControlPressed;
@@ -785,7 +797,15 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     if (_manualSession == null) return;
     final notifier = ref.read(replaceEditorProvider(widget.trackId).notifier);
     _pauseManualRefinePlayback(notifier);
-    setState(() => _manualSession = null);
+    setState(_clearManualRefineDraft);
+  }
+
+  void _clearManualRefineDraft() {
+    _manualSession = null;
+    _manualUndoStack.clear();
+    _altHeld = false;
+    _shiftHeld = false;
+    _ctrlHeld = false;
   }
 
   void _pauseManualRefinePlayback(ReplaceEditorNotifier notifier) {
@@ -879,7 +899,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       notifier.applyManualPoint(session.kind, session.pointTime);
     }
     _pauseManualRefinePlayback(notifier);
-    setState(() => _manualSession = null);
+    setState(_clearManualRefineDraft);
     _scheduleSavePromptIfNeeded(
       ref.read(replaceEditorProvider(widget.trackId)),
     );
@@ -911,7 +931,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     }
     final updated = working.placeAt(next, duration: state.ai.durationSec);
     final moved = _manualSessionMoved(working, updated);
-    setState(() => _manualSession = updated);
+    _setManualSession(updated, undoFrom: session);
     _syncManualDraftAuditionAfterEdit(
       state,
       ref.read(replaceEditorProvider(widget.trackId).notifier),
@@ -956,7 +976,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       candidate,
       duration: state.ai.durationSec,
     );
-    setState(() => _manualSession = updated);
+    _setManualSession(updated, undoFrom: session);
     if (updated.kind.isLoop) {
       _playManualLoopPreview(state, notifier, updated.start, updated.end);
       return;
@@ -967,7 +987,10 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
   void _setManualFineTarget(FineTarget target) {
     final session = _manualSession;
     if (session == null) return;
-    setState(() => _manualSession = session.copyWith(activeTarget: target));
+    _setManualSession(
+      session.copyWith(activeTarget: target),
+      undoFrom: session,
+    );
   }
 
   void _nudgeManualDraft(double deltaSec) {
@@ -985,11 +1008,50 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       deltaSec,
       duration: state.ai.durationSec,
     );
-    setState(() => _manualSession = updated);
+    _setManualSession(updated, undoFrom: session);
     _syncManualDraftAuditionAfterEdit(
       state,
       ref.read(replaceEditorProvider(widget.trackId).notifier),
       updated,
+    );
+  }
+
+  void _setManualSession(
+    _ManualRefineSession updated, {
+    required _ManualRefineSession undoFrom,
+  }) {
+    if (updated.sameSettingAs(undoFrom)) return;
+    setState(() {
+      _rememberManualSession(undoFrom);
+      _manualSession = updated;
+    });
+  }
+
+  void _rememberManualSession(_ManualRefineSession session) {
+    if (_manualUndoStack.isNotEmpty &&
+        _manualUndoStack.last.sameSettingAs(session)) {
+      return;
+    }
+    _manualUndoStack.add(session);
+    if (_manualUndoStack.length > 40) {
+      _manualUndoStack.removeAt(0);
+    }
+  }
+
+  void _undoManualRefine() {
+    final current = _manualSession;
+    if (current == null || _manualUndoStack.isEmpty) return;
+    final previous = _manualUndoStack.removeLast();
+    if (previous.kind != current.kind) {
+      setState(_manualUndoStack.clear);
+      return;
+    }
+    final state = ref.read(replaceEditorProvider(widget.trackId));
+    setState(() => _manualSession = previous);
+    _syncManualDraftAuditionAfterEdit(
+      state,
+      ref.read(replaceEditorProvider(widget.trackId).notifier),
+      previous,
     );
   }
 
@@ -2407,7 +2469,9 @@ class _ManualRefineOverlay extends StatelessWidget {
     required this.viewport,
     required this.aiCandidates,
     required this.snapActive,
+    required this.canUndo,
     required this.onPlace,
+    required this.onUndo,
     required this.onApplyCandidate,
     required this.onPickTarget,
     required this.onNudge,
@@ -2426,7 +2490,9 @@ class _ManualRefineOverlay extends StatelessWidget {
 
   /// 磁吸到拍是否生效（按住 Alt 时为 false）。
   final bool snapActive;
+  final bool canUndo;
   final void Function(double seconds, {required bool isMove}) onPlace;
+  final VoidCallback onUndo;
   final ValueChanged<dynamic> onApplyCandidate;
   final ValueChanged<FineTarget> onPickTarget;
   final void Function(FineTarget target, double deltaSec) onNudge;
@@ -2546,6 +2612,13 @@ class _ManualRefineOverlay extends StatelessWidget {
           ),
           _statusPill(context),
           const SizedBox(width: 10),
+          RmButton.icon(
+            key: const ValueKey('manual-refine-undo'),
+            onPressed: canUndo ? onUndo : null,
+            icon: const RmIcon('undo', size: 13),
+            tooltip: '撤回上一步',
+          ),
+          const SizedBox(width: 8),
           RmButton.icon(
             onPressed: onCancel,
             icon: const RmIcon('x', size: 13),
@@ -3190,7 +3263,7 @@ class _ManualRefineOverlay extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  '←/→ 1拍 · Shift+←/→ 10ms · Ctrl+←/→ 1ms · Alt 自由放置 · Enter 确认 · Esc 取消',
+                  '←/→ 1拍 · Shift+←/→ 10ms · Ctrl+←/→ 1ms · Ctrl+Z 撤回 · Alt 自由放置 · Enter 确认 · Esc 取消',
                   style: RmText.sans(12.5, color: rm.fg3),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -3375,6 +3448,15 @@ class _ManualRefineSession {
     }
     final point = candidate as PointCandidate;
     return (point.t - pointTime).abs() < epsilon;
+  }
+
+  bool sameSettingAs(_ManualRefineSession other) {
+    const epsilon = 0.001;
+    return kind == other.kind &&
+        activeTarget == other.activeTarget &&
+        (pointTime - other.pointTime).abs() < epsilon &&
+        (start - other.start).abs() < epsilon &&
+        (end - other.end).abs() < epsilon;
   }
 
   _ManualRefineSession _withLoop({
