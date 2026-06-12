@@ -438,6 +438,139 @@ void main() {
     },
   );
 
+  testWidgets('manual refine loop end play auditions the seam', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1200, 1100);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'replace_editor_manual_loop_end_preview_',
+    );
+    addTearDown(() {
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    await _pumpEditor(tester, tempRoot.path);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ReplaceEditorScreen)),
+    );
+    final notifier = container.read(replaceEditorProvider('cp-1').notifier);
+    notifier.setConfirmed(GroupKind.tl, false);
+    await tester.pump();
+
+    final manualTl = find.byKey(const ValueKey('editor-manual-refine-tl'));
+    final expectedLoop = container.read(replaceEditorProvider('cp-1')).tl;
+    await Scrollable.ensureVisible(
+      tester.element(manualTl),
+      alignment: 0.45,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+    await tester.tap(manualTl);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    await tester.tap(find.text('端点 B'));
+    await tester.pump();
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey('manual-refine-main-editor')),
+        matching: find.byKey(const ValueKey('editor-play-inline')),
+      ),
+    );
+    await tester.pump();
+
+    final previewState = container.read(replaceEditorProvider('cp-1'));
+    expect(previewState.playbackMode, PlaybackMode.loopPreview);
+    expect(previewState.playing, isTrue);
+    expect(
+      previewState.playhead,
+      closeTo(
+        loopPreviewAuditionStartForTesting(
+          startSec: expectedLoop.start,
+          endSec: expectedLoop.end,
+        ),
+        0.001,
+      ),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('manual refine loop end nudge while playing auditions the seam', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1200, 1100);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final tempRoot = Directory.systemTemp.createTempSync(
+      'replace_editor_manual_loop_end_nudge_',
+    );
+    addTearDown(() {
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    await _pumpEditor(tester, tempRoot.path);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ReplaceEditorScreen)),
+    );
+    final notifier = container.read(replaceEditorProvider('cp-1').notifier);
+    notifier.setConfirmed(GroupKind.tl, false);
+    await tester.pump();
+
+    final manualTl = find.byKey(const ValueKey('editor-manual-refine-tl'));
+    final initialState = container.read(replaceEditorProvider('cp-1'));
+    final expectedLoop = initialState.tl;
+    final beatSec = 60 / initialState.ai.bpm;
+    await Scrollable.ensureVisible(
+      tester.element(manualTl),
+      alignment: 0.45,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+    await tester.tap(manualTl);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+
+    notifier.setPlayback(PlaybackMode.full, playing: true);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+
+    var previewState = container.read(replaceEditorProvider('cp-1'));
+    final expectedStart = expectedLoop.start + beatSec;
+    expect(previewState.playbackMode, isNot(PlaybackMode.loopPreview));
+    expect(previewState.playhead, closeTo(expectedStart, 0.001));
+
+    await tester.tap(find.text('端点 B'));
+    notifier.setPlayback(PlaybackMode.full, playing: true);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+
+    previewState = container.read(replaceEditorProvider('cp-1'));
+    final expectedEnd = expectedLoop.end + beatSec;
+    expect(previewState.playbackMode, PlaybackMode.loopPreview);
+    expect(previewState.playing, isTrue);
+    expect(
+      previewState.playhead,
+      closeTo(
+        loopPreviewAuditionStartForTesting(
+          startSec: expectedStart,
+          endSec: expectedEnd,
+        ),
+        0.001,
+      ),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('manual refine point mode puts audition in the transport bar', (
     tester,
   ) async {

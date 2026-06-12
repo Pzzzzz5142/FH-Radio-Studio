@@ -675,15 +675,7 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
               onAudition: () => _previewManualAudition(n),
               onCancel: _cancelManualRefine,
               onConfirm: () => _confirmManualRefine(n),
-              onTogglePlay: () => unawaited(
-                _togglePlayback(
-                  _manualPreviewState(
-                    ref.read(replaceEditorProvider(widget.trackId)),
-                    _manualSession!,
-                  ),
-                  n,
-                ),
-              ),
+              onTogglePlay: () => _toggleManualPlayback(n),
               onRewind: () => _placeManualDraft(0, snap: false),
               onSkipFwd: () => _placeManualDraft(s.ai.durationSec, snap: false),
             ),
@@ -811,33 +803,68 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       session,
     );
     if (session.kind.isLoop) {
-      if (widget.enableAudio) {
-        unawaited(
-          _playLoopPreview(state, notifier, session.start, session.end),
-        );
-      } else {
-        final auditionStart = loopPreviewAuditionStartForTesting(
-          startSec: session.start,
-          endSec: session.end,
-        );
-        notifier.setPlayhead(auditionStart);
-        notifier.setPlayback(PlaybackMode.loopPreview, playing: true);
-      }
+      _playManualLoopPreview(state, notifier, session.start, session.end);
     } else {
-      if (widget.enableAudio) {
-        unawaited(_playPointPreview(state, notifier, session.pointTime));
-      } else {
-        final window = pointPreviewWindowForTesting(
-          timeSec: session.pointTime,
-          durationSec: _previewDuration(
-            state,
-            session.pointTime + pointPreviewDurationSec,
-          ),
-        );
-        notifier.setPlayhead(window.start);
-        notifier.setPlayback(PlaybackMode.pointPreview, playing: true);
-      }
+      _playManualPointPreview(state, notifier, session.pointTime);
     }
+  }
+
+  void _toggleManualPlayback(ReplaceEditorNotifier notifier) {
+    final session = _manualSession;
+    if (session == null) return;
+    final state = ref.read(replaceEditorProvider(widget.trackId));
+    final previewState = _manualPreviewState(state, session);
+    if (session.kind.isLoop &&
+        session.activeTarget == FineTarget.loopEnd &&
+        !previewState.playing &&
+        previewState.playbackMode != PlaybackMode.loopPreview) {
+      _playManualLoopPreview(
+        previewState,
+        notifier,
+        session.start,
+        session.end,
+      );
+      return;
+    }
+    unawaited(_togglePlayback(previewState, notifier));
+  }
+
+  void _playManualPointPreview(
+    ReplaceEditorState state,
+    ReplaceEditorNotifier notifier,
+    double timeSec,
+  ) {
+    if (widget.enableAudio) {
+      unawaited(_playPointPreview(state, notifier, timeSec));
+      return;
+    }
+    final window = pointPreviewWindowForTesting(
+      timeSec: timeSec,
+      durationSec: _previewDuration(state, timeSec + pointPreviewDurationSec),
+    );
+    notifier.setPlayhead(window.start);
+    notifier.setPlayback(PlaybackMode.pointPreview, playing: true);
+  }
+
+  void _playManualLoopPreview(
+    ReplaceEditorState state,
+    ReplaceEditorNotifier notifier,
+    double startSec,
+    double endSec,
+  ) {
+    if (widget.enableAudio) {
+      unawaited(_playLoopPreview(state, notifier, startSec, endSec));
+      return;
+    }
+    final duration = _previewDuration(state, math.max(startSec, endSec));
+    final start = startSec.clamp(0, duration).toDouble();
+    final end = endSec.clamp(start + 0.1, duration).toDouble();
+    final auditionStart = loopPreviewAuditionStartForTesting(
+      startSec: start,
+      endSec: end,
+    );
+    notifier.setPlayhead(auditionStart);
+    notifier.setPlayback(PlaybackMode.loopPreview, playing: true);
   }
 
   void _confirmManualRefine(ReplaceEditorNotifier notifier) {
@@ -880,12 +907,10 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     }
     final updated = working.placeAt(next, duration: state.ai.durationSec);
     setState(() => _manualSession = updated);
-    unawaited(
-      _seekTo(
-        state,
-        ref.read(replaceEditorProvider(widget.trackId).notifier),
-        updated.focusTime,
-      ),
+    _syncManualDraftAuditionAfterEdit(
+      state,
+      ref.read(replaceEditorProvider(widget.trackId).notifier),
+      updated,
     );
   }
 
@@ -915,33 +940,10 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
     );
     setState(() => _manualSession = updated);
     if (updated.kind.isLoop) {
-      if (widget.enableAudio) {
-        unawaited(
-          _playLoopPreview(state, notifier, updated.start, updated.end),
-        );
-      } else {
-        final auditionStart = loopPreviewAuditionStartForTesting(
-          startSec: updated.start,
-          endSec: updated.end,
-        );
-        notifier.setPlayhead(auditionStart);
-        notifier.setPlayback(PlaybackMode.loopPreview, playing: true);
-      }
+      _playManualLoopPreview(state, notifier, updated.start, updated.end);
       return;
     }
-    if (widget.enableAudio) {
-      unawaited(_playPointPreview(state, notifier, updated.pointTime));
-    } else {
-      final window = pointPreviewWindowForTesting(
-        timeSec: updated.pointTime,
-        durationSec: _previewDuration(
-          state,
-          updated.pointTime + pointPreviewDurationSec,
-        ),
-      );
-      notifier.setPlayhead(window.start);
-      notifier.setPlayback(PlaybackMode.pointPreview, playing: true);
-    }
+    _playManualPointPreview(state, notifier, updated.pointTime);
   }
 
   void _setManualFineTarget(FineTarget target) {
@@ -966,13 +968,25 @@ class _ReplaceEditorScreenState extends ConsumerState<ReplaceEditorScreen> {
       duration: state.ai.durationSec,
     );
     setState(() => _manualSession = updated);
-    unawaited(
-      _seekTo(
-        state,
-        ref.read(replaceEditorProvider(widget.trackId).notifier),
-        updated.focusTime,
-      ),
+    _syncManualDraftAuditionAfterEdit(
+      state,
+      ref.read(replaceEditorProvider(widget.trackId).notifier),
+      updated,
     );
+  }
+
+  void _syncManualDraftAuditionAfterEdit(
+    ReplaceEditorState state,
+    ReplaceEditorNotifier notifier,
+    _ManualRefineSession updated,
+  ) {
+    if (updated.kind.isLoop &&
+        updated.activeTarget == FineTarget.loopEnd &&
+        state.playing) {
+      _playManualLoopPreview(state, notifier, updated.start, updated.end);
+      return;
+    }
+    unawaited(_seekTo(state, notifier, updated.focusTime));
   }
 
   Widget _editorBody(
